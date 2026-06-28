@@ -5,23 +5,22 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import mongoose from "mongoose";
 import { ApolloServer } from "@apollo/server";
-import { expressMiddleware } from "@apollo/server/express4";
+// ✅ FIX C1: импорт middleware вынесен из @apollo/server в отдельный пакет
+import { expressMiddleware } from "@as-integrations/express4";
 import { ApolloServerPluginDrainHttpServer } from "@apollo/server/plugin/drainHttpServer";
 import { makeExecutableSchema } from "@graphql-tools/schema";
 import { WebSocketServer } from "ws";
 import { useServer } from "graphql-ws/lib/use/ws";
 import jwt from "jsonwebtoken";
+import rateLimit from "express-rate-limit";
 
 import { typeDefs } from "./schema.js";
 import { resolvers } from "./resolvers/index.js";
-import { authMiddleware } from "./middleware/auth.js";
 import { User } from "./models/User.js";
 import { Restaurant } from "./models/Restaurant.js";
 import { Owner } from "./models/Owner.js";
 import { Rider } from "./models/Rider.js";
 import { handlePaymentWebhook } from "./webhooks/payments.js";
-import { Order } from "./models/Order.js";
-import rateLimit from "express-rate-limit";
 
 const PORT = process.env.PORT || 8001;
 const MONGO_URI =
@@ -63,40 +62,22 @@ async function start() {
   const app = express();
   const httpServer = http.createServer(app);
 
-  const wsServer = new WebSocketServer({
-    server: httpServer,
-    path: "/graphql",
-  });
-  const serverCleanup = useServer(
-    {
-      schema,
-      context: async (ctx) => {
-        const params = ctx.connectionParams || {};
-        const auth = params.authorization || params.Authorization || "";
-        return resolveContextFromAuthHeader(auth);
-      },
-    },
-    wsServer,
-  );
+  // ⚠️ FIX L2: CORS + bodyParser поднимаем ДО всех роутов,
+  // иначе preflight-запросы на /payments/* упадут
+  app.use(cors());
+  app.use(bodyParser.json({ limit: "5mb" }));
 
-  const apollo = new ApolloServer({
-    schema,
-    plugins: [
-      ApolloServerPluginDrainHttpServer({ httpServer }),
-      {
-        async serverWillStart() {
-          return {
-            async drainServer() {
-              await serverCleanup.dispose();
-            },
-          };
-        },
-      },
-    ],
+  // ===== Webhook-эндпоинты (для будущей интеграции Alif/DC) =====
+  app.post("/payments/webhook/alif", bodyParser.json(), async (req, res) => {
+    const out = await handlePaymentWebhook(req, "ALIF_MOBI");
+    res.json(out);
   });
-  await apollo.start();
+  app.post("/payments/webhook/dc", bodyParser.json(), async (req, res) => {
+    const out = await handlePaymentWebhook(req, "DS_BANK");
+    res.json(out);
+  });
 
-  // Mock redirect — открывается в браузере, имитирует банковскую страницу
+  // ===== Mock redirect — имитация банковской страницы =====
   app.get("/payments/mock-redirect", (req, res) => {
     const { provider, orderId, ref, return: ret } = req.query;
     res.send(`
@@ -117,14 +98,13 @@ async function start() {
   `);
   });
 
-  // Mock confirm — посылает webhook-like запрос самому себе
+  // Mock confirm — имитация банковского webhook
   app.post(
     "/payments/mock-confirm",
     express.urlencoded({ extended: true }),
     async (req, res) => {
       const { orderId, provider, status, providerRef, returnUrl } = req.body;
       const method = provider === "ALIF_MOBI" ? "ALIF_MOBI" : "DS_BANK";
-      // Имитация банковского webhook
       const fakeReq = {
         body: { orderId, status, providerRef },
         headers: {
@@ -141,41 +121,63 @@ async function start() {
     },
   );
 
-  // Реальные webhook-эндпоинты — для будущей интеграции
-  app.post("/payments/webhook/alif", bodyParser.json(), async (req, res) => {
-    const out = await handlePaymentWebhook(req, "ALIF_MOBI");
-    res.json(out);
-  });
-  app.post("/payments/webhook/dc", bodyParser.json(), async (req, res) => {
-    const out = await handlePaymentWebhook(req, "DS_BANK");
-    res.json(out);
-  });
-
-  app.use(cors());
-  app.use(bodyParser.json({ limit: "5mb" }));
+  // ===== Health check =====
   app.get("/health", (_, res) => res.json({ ok: true }));
 
-  app.use(
-    "/graphql",
-    expressMiddleware(apollo, {
-      context: async ({ req }) => {
-        // 🔧 DEBUG: логируем ВСЕ запросы
-        if (req.body?.query) {
-          console.log("📨 [GraphQL Request]", req.body.query.slice(0, 300));
-          if (req.body.variables) {
-            console.log("📨 [Variables]", JSON.stringify(req.body.variables));
-          }
-        }
-        return resolveContextFromAuthHeader(req.headers.authorization || "");
+  // ===== WebSocket-сервер для GraphQL Subscriptions =====
+  const wsServer = new WebSocketServer({
+    server: httpServer,
+    path: "/graphql",
+  });
+  const serverCleanup = useServer(
+    {
+      schema,
+      context: async (ctx) => {
+        const params = ctx.connectionParams || {};
+        const auth = params.authorization || params.Authorization || "";
+        return resolveContextFromAuthHeader(auth);
       },
+    },
+    wsServer,
+  );
+
+  // ===== Apollo Server =====
+  const apollo = new ApolloServer({
+    schema,
+    plugins: [
+      ApolloServerPluginDrainHttpServer({ httpServer }),
+      {
+        async serverWillStart() {
+          return {
+            async drainServer() {
+              await serverCleanup.dispose();
+            },
+          };
+        },
+      },
+    ],
+  });
+  await apollo.start();
+
+  // ===== Health/инфо для мониторинга =====
+  app.get("/info", (_, res) =>
+    res.json({
+      ok: true,
+      service: "dastbadast-multivendor-api",
+      version: "1.0.0",
+      mongo: MONGO_URI.replace(/\/\/.*@/, "//***@"),
     }),
   );
 
+  // ⚠️ FIX C3: rate-limit ДО expressMiddleware — иначе запрос
+  // всегда попадает в Apollo и до лимитера не доходит
   app.use(
     "/graphql",
     rateLimit({
       windowMs: 60_000,
       max: 200,
+      standardHeaders: true,
+      legacyHeaders: false,
       message: {
         errors: [
           {
@@ -187,15 +189,33 @@ async function start() {
     }),
   );
 
+  // ===== GraphQL HTTP endpoint =====
+  app.use(
+    "/graphql",
+    expressMiddleware(apollo, {
+      context: async ({ req }) => {
+        if (req.body?.query) {
+          console.log("📨 [GraphQL Request]", req.body.query.slice(0, 300));
+          if (req.body.variables) {
+            console.log("📨 [Variables]", JSON.stringify(req.body.variables));
+          }
+        }
+        return resolveContextFromAuthHeader(req.headers.authorization || "");
+      },
+    }),
+  );
+
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(
       `🚀 API http://0.0.0.0:${PORT}/graphql (доступен в LAN для Expo)`,
     );
     console.log(`🔌 WS    ws://0.0.0.0:${PORT}/graphql`);
+    console.log(`❤️  Health http://0.0.0.0:${PORT}/health`);
   });
 }
 
 start().catch((err) => {
+  console.error("❌ Fatal startup error:");
   console.error(err);
   process.exit(1);
 });

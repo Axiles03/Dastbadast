@@ -1,4 +1,4 @@
-import { configuration } from "./configuration.js";
+import { configuration, updateConfiguration } from "./configuration.js";
 import { deliveryZone } from "./zone-public.js";
 import { chatMessages, sendChatMessage } from "./chat.js";
 import { restaurants, restaurant } from "./restaurant.js";
@@ -80,12 +80,13 @@ import {
   subscriptionRiderOrderCompleted,
   newChatMessage,
 } from "./subscriptions.js";
-import { JSONScalar } from "../utils/scalars.js";
+import { JSONScalar, DateTimeScalar } from "../utils/scalars.js";
 
 const mongoId = (parent) => parent?.id ?? parent?._id?.toString();
 
 export const resolvers = {
   JSON: JSONScalar,
+  DateTime: DateTimeScalar,
   Query: {
     configuration,
     deliveryZone,
@@ -153,6 +154,7 @@ export const resolvers = {
     createZone,
     updateZone,
     deleteZone,
+    updateConfiguration,
   },
   Subscription: {
     orderStatusChanged,
