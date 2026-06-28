@@ -1,0 +1,30 @@
+---
+description: Dastbadast UI — тёмный POS-стиль (референс Pakecho Restaurant)
+globs: dastbadast-multivendor-*/**/*
+alwaysApply: false
+---
+
+# Dastbadast Design System
+
+## Палитра (все приложения)
+- `dbd-bg` / фон: `#1F1D2B`
+- `dbd-card` / карточки: `#252836`
+- `dbd-accent` / кнопки, цена, active: `#EA7369`
+- `dbd-border`: `#393C49`
+- `dbd-text`: `#FFFFFF`
+- `dbd-muted`: `#92929D`
+
+## Web (меню ресторана)
+- Трёхколоночная структура: узкий nav → меню (категории сверху + сетка блюд) → панель заказа
+- Категории: горизонтальный скролл, иконка + название, active = border accent
+- Карточка блюда: фото сверху (rounded-2xl), название, цена accent, рейтинг/отзывы
+- Скругления: `rounded-2xl` / `rounded-3xl`
+
+## Store / Rider / Admin
+- Те же цвета через `lib/styles.ts` или Tailwind tokens
+- StyleSheet в RN (не NativeWind без полной настройки)
+- Минимальная высота кнопок 48px
+
+## Блюда
+- Обязательно поле `image` (URL)
+- Отзывы: рейтинг 1–5 + комментарий на блюдо

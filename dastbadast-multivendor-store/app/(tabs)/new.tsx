@@ -1,0 +1,298 @@
+import { useEffect, useCallback, useMemo } from "react";
+import {
+  View,
+  Text,
+  FlatList,
+  Pressable,
+  ActivityIndicator,
+  Alert,
+  TouchableOpacity
+} from "react-native";
+import { useQuery, useMutation, useSubscription } from "@apollo/client/react";
+import {
+  RESTAURANT_ORDERS,
+  ACCEPT_ORDER,
+  CANCEL_ORDER,
+  SUB_PLACE_ORDER,
+} from "../../lib/api/graphql/queries";
+import { useAuth } from "../../lib/auth-context";
+import Toast from "react-native-toast-message";
+import * as Haptics from "expo-haptics";
+import { playNewOrderSignal } from "../../lib/sound";
+import {
+  formatTimeAgo,
+  formatOrdersCount,
+  formatItemsCount,
+} from "../../lib/format";
+import { EmptyState } from "../../components/EmptyState";
+import { cn } from "../../lib/cn";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+const PREP_TIME = 20;
+
+export default function NewOrders() {
+  const { restaurant } = useAuth();
+
+  const {
+    data,
+    loading,
+    refetch,
+    error: queryError,
+  } = useQuery(RESTAURANT_ORDERS, {
+    variables: { status: "PENDING" },
+    pollInterval: 15_000,
+    skip: !restaurant?.id,
+  }) as any;
+
+  useSubscription(SUB_PLACE_ORDER, {
+    variables: { restaurantId: restaurant?.id },
+    skip: !restaurant?.id,
+    onData: ({ data: subData, client }: any) => {
+      const order = subData?.data?.subscribePlaceOrder;
+      if (!order) return;
+      Haptics.notificationAsync(
+        Haptics.NotificationFeedbackType.Success
+      ).catch(() => {});
+      Toast.show({
+        type: "success",
+        text1: "🔔 Новый заказ!",
+        text2: `Сумма: ${order.amounts?.total} сом.`,
+        visibilityTime: 5000,
+      });
+      client.refetchQueries({ include: [RESTAURANT_ORDERS] });
+    },
+  });
+
+  useEffect(() => {
+    if (restaurant?.id) refetch();
+  }, [restaurant?.id, refetch]);
+
+  const [acceptOrder, { loading: acLoading }] = useMutation(ACCEPT_ORDER);
+  const [cancelOrder, { loading: cancelLoading }] = useMutation(CANCEL_ORDER);
+
+  const onAccept = useCallback(
+    (orderId: string) => {
+      Alert.alert("Принять заказ?", `Время приготовления: ${PREP_TIME} минут`, [
+        { text: "Отмена", style: "cancel" },
+        {
+          text: "Принять",
+          onPress: async () => {
+            try {
+              await acceptOrder({
+                variables: { input: { orderId, prepTime: PREP_TIME } },
+              });
+              Toast.show({
+                type: "success",
+                text1: "✅ Заказ принят",
+                text2: "Курьер сам заберёт из списка",
+              });
+              refetch();
+            } catch (e: any) {
+              Alert.alert("Ошибка", e?.message ?? "Не удалось принять");
+            }
+          },
+        },
+      ]);
+    },
+    [acceptOrder, refetch]
+  );
+
+  const onCancel = useCallback(
+    (orderId: string) => {
+      Alert.alert("Отменить заказ?", "Клиент получит уведомление", [
+        { text: "Назад", style: "cancel" },
+        {
+          text: "Отменить",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await cancelOrder({
+                variables: { input: { orderId, reason: "Нет продуктов" } },
+              });
+              Toast.show({ type: "info", text1: "Заказ отменён" });
+              refetch();
+            } catch (e: any) {
+              Alert.alert("Ошибка", e?.message ?? "Не удалось отменить");
+            }
+          },
+        },
+      ]);
+    },
+    [cancelOrder, refetch]
+  );
+
+  const orders = data?.restaurantOrders ?? [];
+  const busy = acLoading || cancelLoading;
+
+  const stats = useMemo(() => {
+    const total = orders.length;
+    const totalAmount = orders.reduce(
+      (s: number, o: any) => s + (o.amounts?.total ?? 0),
+      0
+    );
+    return { total, totalAmount };
+  }, [orders]);
+
+  if (loading && !orders.length) {
+    return (
+      <View className="flex-1 items-center justify-center bg-soft-bg">
+        <ActivityIndicator size="large" color="#F26A4A" />
+        <Text className="text-text-muted text-sm mt-3">Загружаем заказы…</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View className="flex-1 bg-soft-bg">
+      <View className="px-5 pb-2 flex-row items-end justify-between">
+        <View className="flex-1">
+          <Text className="text-2xl font-extrabold text-text tracking-tight">
+            Новые заказы
+          </Text>
+          <Text className="text-sm text-text-muted mt-0.5">
+            Готовьте быстрее — клиент уже ждёт
+          </Text>
+        </View>
+        {stats.total > 0 && (
+          <View className="bg-accent rounded-2xl px-3.5 py-2 items-center min-w-[60px] shadow-soft-sm">
+            <Text className="text-text-inverse text-xl font-black leading-none">
+              {stats.total}
+            </Text>
+            <Text className="text-text-inverse/90 text-2xs font-bold mt-0.5">
+              {formatOrdersCount(stats.total)}
+            </Text>
+          </View>
+        )}
+      </View>
+
+      {queryError && (
+        <View className="mx-5 my-2 bg-red-soft border border-red/30 rounded-xl px-3 py-2">
+          <Text className="text-red-dark text-sm font-semibold">
+            ⚠️ {queryError.message}
+          </Text>
+        </View>
+      )}
+
+      <FlatList
+        data={orders}
+        keyExtractor={(o: any) => o.id}
+        contentContainerStyle={
+          orders.length === 0
+            ? { flexGrow: 1 }
+            : { padding: 16, paddingBottom: 24 }
+        }
+        ListEmptyComponent={
+          <EmptyState
+            emoji="🎉"
+            title="Нет новых заказов"
+            subtitle="Здесь появятся заказы, как только клиенты их оформят"
+          />
+        }
+        renderItem={({ item }: any) => {
+          const minutesAgo = Math.floor(
+            (Date.now() - new Date(item.createdAt).getTime()) / 60_000
+          );
+          const isUrgent = minutesAgo >= 10;
+
+          return (
+            <View
+              className={cn(
+                "bg-soft-surface border rounded-2xl p-4 mb-3.5 shadow-soft-sm",
+                isUrgent
+                  ? "bg-accent-soft border-accent border-2"
+                  : "border-border"
+              )}
+            >
+              <View className="flex-row justify-between items-start mb-3">
+                <View className="flex-1 mr-3">
+                  <View className="flex-row items-center gap-2 mb-1">
+                    <Text className="text-lg font-extrabold text-text tracking-tight">
+                      #{item.orderId}
+                    </Text>
+                    {isUrgent && (
+                      <View className="bg-red rounded-full px-2 py-0.5">
+                        <Text className="text-text-inverse text-2xs font-extrabold">
+                          🔥 Срочно
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text className="text-xs text-text-muted font-medium">
+                    ⏱ {formatTimeAgo(item.createdAt)}
+                  </Text>
+                </View>
+                <View className="items-end">
+                  <Text className="text-lg font-extrabold text-accent tracking-tight">
+                    {item.amounts?.total} сом.
+                  </Text>
+                  <Text className="text-2xs text-text-muted font-bold mt-0.5">
+                    {formatItemsCount(item.items?.length || 0)}
+                  </Text>
+                </View>
+              </View>
+
+              <View className="bg-soft-surface-2 rounded-xl p-3 mb-2.5">
+                <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
+                  📍 Доставить
+                </Text>
+                <Text className="text-sm text-text font-semibold leading-5">
+                  {item.deliveryAddress?.city
+                    ? `${item.deliveryAddress.city}, `
+                    : ""}
+                  {item.deliveryAddress?.address}
+                </Text>
+              </View>
+
+              <View className="pt-2.5 border-t border-border">
+                {item.items?.map((it: any) => (
+                  <Text
+                    key={it.foodId}
+                    className="text-sm text-text-soft leading-6"
+                  >
+                    • {it.title}{" "}
+                    <Text className="text-accent font-extrabold">
+                      ×{it.quantity}
+                    </Text>
+                  </Text>
+                ))}
+              </View>
+
+              {item.note && (
+                <View className="mt-2.5 bg-warning-soft rounded-xl p-2.5 border-l-[3px] border-warning">
+                  <Text className="text-sm text-text italic">💬 {item.note}</Text>
+                </View>
+              )}
+
+              <View className="flex-row gap-2 mt-3.5">
+                <TouchableOpacity
+                  disabled={busy}
+                  onPress={() => onAccept(item.id)}
+                  className={cn(
+                    "flex-1 h-12 rounded-xl items-center justify-center bg-success shadow-soft-sm",
+                    busy ? "opacity-40" : "active:opacity-80"
+                  )}
+                >
+                  <Text className="text-text-inverse font-extrabold text-base tracking-wide">
+                    ✓ Принять
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  disabled={busy}
+                  onPress={() => onCancel(item.id)}
+                  className={cn(
+                    "flex-1 h-12 rounded-xl items-center justify-center bg-soft-surface border border-red",
+                    busy ? "opacity-40" : "active:opacity-80"
+                  )}
+                >
+                  <Text className="text-red-dark font-extrabold text-base tracking-wide">
+                    ✕ Отменить
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          );
+        }}
+      />
+    </View>
+  );
+}

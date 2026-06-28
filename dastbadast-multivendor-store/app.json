@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "Dastbadast Store",
+    "slug": "dastbadast-store",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "dbdstore",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "tj.dastbadast.store"
+    },
+    "android": {
+      "package": "tj.dastbadast.store"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar"
+    ]
+  }
+}
