@@ -5,7 +5,7 @@ import {
   ScrollView,
   Pressable,
   ActivityIndicator,
-  TextInput,
+  TextInput, 
 } from "react-native";
 import { useQuery } from "@apollo/client/react";
 import { useLocalSearchParams, useRouter } from "expo-router";
