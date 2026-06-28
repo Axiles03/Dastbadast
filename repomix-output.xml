@@ -5909,14 +5909,6 @@ npm-debug.log*
 legacy-peer-deps=true
 </file>
 
-<file path="dastbadast-multivendor-admin/next-env.d.ts">
-/// <reference types="next" />
-/// <reference types="next/image-types/global" />
-
-// NOTE: This file should not be edited
-// see https://nextjs.org/docs/basic-features/typescript for more information.
-</file>
-
 <file path="dastbadast-multivendor-admin/next.config.js">
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -8074,256 +8066,6 @@ export async function foodRatingStats(foodId) {
 }
 </file>
 
-<file path="dastbadast-multivendor-api/src/resolvers/index.js">
-import { configuration } from "./configuration.js";
-import { deliveryZone } from "./zone-public.js";
-import { chatMessages, sendChatMessage } from "./chat.js";
-import { restaurants, restaurant } from "./restaurant.js";
-import {
-  profile,
-  addresses,
-  selectedAddress,
-  createUser,
-  login,
-  createAddress,
-  editAddress,
-  deleteAddress,
-  selectAddress,
-  adminUsers,
-  adminUserDetail,
-  toggleUserActive,
-} from "./user.js";
-import {
-  orders,
-  order,
-  placeOrder,
-  restaurantOrders,
-  meRestaurant,
-  restaurantLogin,
-  confirmOrderReceived,
-  refreshOrderStatus,
-} from "./order.js";
-import { acceptOrder, cancelOrder } from "./order-actions.js";
-import { foodReviews, addFoodReview, foodRatingStats } from "./food-review.js";
-import {
-  createCategory,
-  updateCategory,
-  deleteCategory,
-  createFood,
-  updateFood,
-  deleteFood,
-} from "./restaurant-menu.js";
-import {
-  allOrders,
-  ownerLogin,
-  meOwner,
-  createRider,
-  riders,
-  assignRider,
-  createRestaurant,
-  adminAccounting,
-  owners,
-  ownerOne,
-  createOwner,
-  updateOwner,
-  deactivateOwner,
-  resetOwnerPassword,
-  zones,
-  zoneOne,
-  createZone,
-  updateZone,
-  deleteZone,
-  adminDashboardMetrics,
-} from "./admin.js";
-import {
-  meRider,
-  riderOrders,
-  availableOrdersForRiders,
-  riderLogin,
-  claimOrder,
-  updateOrderStatusRider,
-  updateRiderLocation,
-  toggleRider,
-  rider as riderOne,
-} from "./rider.js";
-import {
-  orderStatusChanged,
-  subscriptionOrder,
-  subscribePlaceOrder,
-  subscriptionAssignedRider,
-  subscriptionZoneOrders,
-  subscriptionAvailableOrders,
-  subscriptionRiderLocation,
-  subscriptionRiderOrderCompleted,
-  newChatMessage,
-} from "./subscriptions.js";
-import { JSONScalar } from "../utils/scalars.js";
-
-const mongoId = (parent) => parent?.id ?? parent?._id?.toString();
-
-export const resolvers = {
-  JSON: JSONScalar,
-  Query: {
-    configuration,
-    deliveryZone,
-    restaurants,
-    restaurant,
-    foodReviews,
-    profile,
-    addresses,
-    selectedAddress,
-    orders,
-    order,
-    restaurantOrders,
-    meRestaurant,
-    allOrders,
-    riders,
-    meOwner,
-    meRider,
-    riderOrders,
-    availableOrdersForRiders,
-    chatMessages,
-    adminAccounting,
-    rider: riderOne,
-    owners,
-    owner: ownerOne,
-    adminUsers,
-    adminUserDetail,
-    zones,
-    zone: zoneOne,
-    adminDashboardMetrics,
-  },
-  Mutation: {
-    createUser,
-    login,
-    createAddress,
-    editAddress,
-    deleteAddress,
-    selectAddress,
-    placeOrder,
-    addFoodReview,
-    restaurantLogin,
-    acceptOrder,
-    cancelOrder,
-    createCategory,
-    updateCategory,
-    deleteCategory,
-    createFood,
-    updateFood,
-    deleteFood,
-    ownerLogin,
-    createRider,
-    createRestaurant,
-    assignRider,
-    riderLogin,
-    claimOrder,
-    updateOrderStatusRider,
-    confirmOrderReceived,
-    updateRiderLocation,
-    toggleRider,
-    sendChatMessage,
-    createOwner,
-    updateOwner,
-    deactivateOwner,
-    resetOwnerPassword,
-    toggleUserActive,
-    createZone,
-    updateZone,
-    deleteZone,
-  },
-  Subscription: {
-    orderStatusChanged,
-    subscriptionOrder,
-    subscribePlaceOrder,
-    subscriptionAssignedRider,
-    subscriptionZoneOrders,
-    subscriptionAvailableOrders,
-    subscriptionRiderLocation,
-    subscriptionRiderOrderCompleted,
-    newChatMessage,
-  },
-  Restaurant: {
-    id: mongoId,
-    categories: async (parent) => {
-      const { Category } = await import("../models/Category.js");
-      return Category.find({ restaurantId: parent._id });
-    },
-  },
-  Category: {
-    id: mongoId,
-    foods: async (parent, _a, ctx) => {
-      const { Food } = await import("../models/Food.js");
-      const filter = { categoryId: parent._id };
-      const isOwner =
-        ctx.restaurant &&
-        parent.restaurantId &&
-        parent.restaurantId.toString() === ctx.restaurant._id.toString();
-      if (!isOwner) {
-        filter.isActive = true;
-        filter.isAvailable = true;
-      } else {
-        filter.isActive = true;
-      }
-      return Food.find(filter).sort({ createdAt: 1 });
-    },
-  },
-  Address: { id: mongoId },
-  Order: {
-    id: mongoId,
-    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
-    updatedAt: (p) => p.updatedAt?.toISOString?.() ?? String(p.updatedAt ?? ""),
-    paidAt: (p) => p.paidAt?.toISOString?.() ?? null,
-    statusTimestamps: (p) => {
-      const t = p.statusTimestamps || {};
-      return {
-        pendingAt: t.pendingAt?.toISOString?.() ?? null,
-        acceptedAt: t.acceptedAt?.toISOString?.() ?? null,
-        assignedAt: t.assignedAt?.toISOString?.() ?? null,
-        pickedAt: t.pickedAt?.toISOString?.() ?? null,
-        deliveredAt: t.deliveredAt?.toISOString?.() ?? null,
-        cancelledAt: t.cancelledAt?.toISOString?.() ?? null,
-        prepTime: t.prepTime ?? null,
-      };
-    },
-  },
-
-  User: { id: mongoId },
-  Food: {
-    id: mongoId,
-    averageRating: async (parent) => {
-      const s = await foodRatingStats(parent._id);
-      return s.averageRating;
-    },
-    reviewCount: async (parent) => {
-      const s = await foodRatingStats(parent._id);
-      return s.reviewCount;
-    },
-    reviews: async (parent) => {
-      const { FoodReview } = await import("../models/FoodReview.js");
-      return FoodReview.find({ foodId: parent._id })
-        .sort({ createdAt: -1 })
-        .limit(10);
-    },
-  },
-  FoodReview: {
-    id: mongoId,
-    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
-  },
-  Rider: { id: mongoId },
-  Owner: {
-    id: mongoId,
-    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
-    lastLoginAt: (p) => p.lastLoginAt?.toISOString?.() ?? null,
-  },
-
-  Zone: { id: mongoId },
-  ChatMessage: {
-    id: mongoId,
-    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
-  },
-};
-</file>
-
 <file path="dastbadast-multivendor-api/src/resolvers/order-actions.js">
 import { GraphQLError } from 'graphql';
 import { Order } from '../models/Order.js';
@@ -9516,43 +9258,6 @@ export function shortOrderId() {
 }
 </file>
 
-<file path="dastbadast-multivendor-api/src/utils/scalars.js">
-import { GraphQLScalarType, Kind } from 'graphql';
-
-function parseLiteral(ast) {
-  switch (ast.kind) {
-    case Kind.STRING:
-    case Kind.BOOLEAN:
-      return ast.value;
-    case Kind.INT:
-      return parseInt(ast.value, 10);
-    case Kind.FLOAT:
-      return parseFloat(ast.value);
-    case Kind.OBJECT: {
-      const value = {};
-      ast.fields.forEach((field) => {
-        value[field.name.value] = parseLiteral(field.value);
-      });
-      return value;
-    }
-    case Kind.LIST:
-      return ast.values.map(parseLiteral);
-    case Kind.NULL:
-      return null;
-    default:
-      return null;
-  }
-}
-
-export const JSONScalar = new GraphQLScalarType({
-  name: 'JSON',
-  description: 'Arbitrary JSON value',
-  serialize: (value) => value,
-  parseValue: (value) => value,
-  parseLiteral,
-});
-</file>
-
 <file path="dastbadast-multivendor-api/src/utils/zone.js">
 // zone.js
 // Ray casting algorithm. coords: [lng, lat] одной точки.
@@ -9625,210 +9330,6 @@ export async function handlePaymentWebhook(req, method) {
 
   return { received: true, processed: true, orderId: order._id, status: order.orderStatus };
 }
-</file>
-
-<file path="dastbadast-multivendor-api/src/index.js">
-import "dotenv/config";
-import express from "express";
-import http from "http";
-import cors from "cors";
-import bodyParser from "body-parser";
-import mongoose from "mongoose";
-import { ApolloServer } from "@apollo/server";
-import { expressMiddleware } from "@apollo/server/express4";
-import { ApolloServerPluginDrainHttpServer } from "@apollo/server/plugin/drainHttpServer";
-import { makeExecutableSchema } from "@graphql-tools/schema";
-import { WebSocketServer } from "ws";
-import { useServer } from "graphql-ws/lib/use/ws";
-import jwt from "jsonwebtoken";
-
-import { typeDefs } from "./schema.js";
-import { resolvers } from "./resolvers/index.js";
-import { authMiddleware } from "./middleware/auth.js";
-import { User } from "./models/User.js";
-import { Restaurant } from "./models/Restaurant.js";
-import { Owner } from "./models/Owner.js";
-import { Rider } from "./models/Rider.js";
-import { handlePaymentWebhook } from "./webhooks/payments.js";
-import { Order } from "./models/Order.js";
-import rateLimit from "express-rate-limit";
-
-const PORT = process.env.PORT || 8001;
-const MONGO_URI =
-  process.env.MONGO_URI || "mongodb://localhost:27017/dastbadast";
-const SECRET = process.env.JWT_SECRET || "dastbadast-dev-secret-change-me";
-
-async function resolveContextFromAuthHeader(header) {
-  if (!header || typeof header !== "string" || !header.startsWith("Bearer ")) {
-    return { user: null, restaurant: null, owner: null, rider: null };
-  }
-  const token = header.slice(7);
-  try {
-    const payload = jwt.verify(token, SECRET);
-    if (payload.kind === "restaurant") {
-      const r = await Restaurant.findById(payload.sub);
-      return { user: null, restaurant: r, owner: null, rider: null };
-    }
-    if (payload.kind === "owner") {
-      const o = await Owner.findById(payload.sub);
-      return { user: null, restaurant: null, owner: o, rider: null };
-    }
-    if (payload.kind === "rider") {
-      const r = await Rider.findById(payload.sub);
-      return { user: null, restaurant: null, owner: null, rider: r };
-    }
-    const u = await User.findById(payload.sub);
-    return { user: u, restaurant: null, owner: null, rider: null };
-  } catch {
-    return { user: null, restaurant: null, owner: null, rider: null };
-  }
-}
-
-async function start() {
-  await mongoose.connect(MONGO_URI);
-  console.log("✅ MongoDB connected");
-
-  const schema = makeExecutableSchema({ typeDefs, resolvers });
-
-  const app = express();
-  const httpServer = http.createServer(app);
-
-  const wsServer = new WebSocketServer({
-    server: httpServer,
-    path: "/graphql",
-  });
-  const serverCleanup = useServer(
-    {
-      schema,
-      context: async (ctx) => {
-        const params = ctx.connectionParams || {};
-        const auth = params.authorization || params.Authorization || "";
-        return resolveContextFromAuthHeader(auth);
-      },
-    },
-    wsServer,
-  );
-
-  const apollo = new ApolloServer({
-    schema,
-    plugins: [
-      ApolloServerPluginDrainHttpServer({ httpServer }),
-      {
-        async serverWillStart() {
-          return {
-            async drainServer() {
-              await serverCleanup.dispose();
-            },
-          };
-        },
-      },
-    ],
-  });
-  await apollo.start();
-
-  // Mock redirect — открывается в браузере, имитирует банковскую страницу
-  app.get("/payments/mock-redirect", (req, res) => {
-    const { provider, orderId, ref, return: ret } = req.query;
-    res.send(`
-    <html><body style="font-family:sans-serif;padding:30px;max-width:520px;margin:auto">
-      <h2>Mock ${provider} payment</h2>
-      <p>Order: <code>${orderId}</code></p>
-      <p>Ref: <code>${ref}</code></p>
-      <form method="POST" action="/payments/mock-confirm">
-        <input type="hidden" name="orderId" value="${orderId}"/>
-        <input type="hidden" name="provider" value="${provider}"/>
-        <input type="hidden" name="providerRef" value="${ref}"/>
-        <input type="hidden" name="returnUrl" value="${ret || "/"}"/>
-        <button name="status" value="PAID" style="padding:10px 20px;background:green;color:white;border:0;border-radius:6px;cursor:pointer">Оплатить (имитация)</button>
-        <button name="status" value="FAILED" style="padding:10px 20px;background:#999;color:white;border:0;border-radius:6px;cursor:pointer;margin-left:8px">Отклонить</button>
-      </form>
-      <p style="color:#666;font-size:12px;margin-top:16px">Это заглушка. Реальный платёж будет идти через банк-шлюз Alif/DS.</p>
-    </body></html>
-  `);
-  });
-
-  // Mock confirm — посылает webhook-like запрос самому себе
-  app.post(
-    "/payments/mock-confirm",
-    express.urlencoded({ extended: true }),
-    async (req, res) => {
-      const { orderId, provider, status, providerRef, returnUrl } = req.body;
-      const method = provider === "ALIF_MOBI" ? "ALIF_MOBI" : "DS_BANK";
-      // Имитация банковского webhook
-      const fakeReq = {
-        body: { orderId, status, providerRef },
-        headers: {
-          "x-internal-token":
-            process.env.PAYMENTS_INTERNAL_TOKEN || "dev-token",
-        },
-      };
-      const out = await handlePaymentWebhook(fakeReq, method);
-      res.redirect(
-        303,
-        (returnUrl || "/") +
-          `?orderId=${orderId}&payment=${status}&orderStatus=${out.status || ""}`,
-      );
-    },
-  );
-
-  // Реальные webhook-эндпоинты — для будущей интеграции
-  app.post("/payments/webhook/alif", bodyParser.json(), async (req, res) => {
-    const out = await handlePaymentWebhook(req, "ALIF_MOBI");
-    res.json(out);
-  });
-  app.post("/payments/webhook/dc", bodyParser.json(), async (req, res) => {
-    const out = await handlePaymentWebhook(req, "DS_BANK");
-    res.json(out);
-  });
-
-  app.use(cors());
-  app.use(bodyParser.json({ limit: "5mb" }));
-  app.get("/health", (_, res) => res.json({ ok: true }));
-
-  app.use(
-    "/graphql",
-    expressMiddleware(apollo, {
-      context: async ({ req }) => {
-        // 🔧 DEBUG: логируем ВСЕ запросы
-        if (req.body?.query) {
-          console.log("📨 [GraphQL Request]", req.body.query.slice(0, 300));
-          if (req.body.variables) {
-            console.log("📨 [Variables]", JSON.stringify(req.body.variables));
-          }
-        }
-        return resolveContextFromAuthHeader(req.headers.authorization || "");
-      },
-    }),
-  );
-
-  app.use(
-    "/graphql",
-    rateLimit({
-      windowMs: 60_000,
-      max: 200,
-      message: {
-        errors: [
-          {
-            message: "Too many requests",
-            extensions: { code: "RATE_LIMITED" },
-          },
-        ],
-      },
-    }),
-  );
-
-  httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(
-      `🚀 API http://0.0.0.0:${PORT}/graphql (доступен в LAN для Expo)`,
-    );
-    console.log(`🔌 WS    ws://0.0.0.0:${PORT}/graphql`);
-  });
-}
-
-start().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
 </file>
 
 <file path="dastbadast-multivendor-api/src/pubsub.js">
@@ -10447,42 +9948,6 @@ node_modules/
 *.log
 </file>
 
-<file path="dastbadast-multivendor-api/package.json">
-{
-  "name": "dastbadast-multivendor-api",
-  "version": "1.0.0",
-  "type": "module",
-  "engines": {
-    "node": ">=20"
-  },
-  "scripts": {
-    "dev": "nodemon src/index.js",
-    "start": "node src/index.js",
-    "seed": "node scripts/seed.js"
-  },
-  "dependencies": {
-    "@apollo/server": "^5.5.1",
-    "@graphql-tools/schema": "^10.0.4",
-    "bcryptjs": "^2.4.3",
-    "body-parser": "^1.20.5",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "express-rate-limit": "^8.5.2",
-    "graphql": "^16.9.0",
-    "graphql-subscriptions": "^3.0.0",
-    "graphql-ws": "^5.16.0",
-    "jsonwebtoken": "^9.0.2",
-    "lucide-react": "^1.17.0",
-    "mongoose": "^8.6.0",
-    "ws": "^8.18.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.4"
-  }
-}
-</file>
-
 <file path="dastbadast-multivendor-api/README.md">
 # dastbadast-multivendor-api
 
@@ -11010,319 +10475,6 @@ function Row({ label, value }: { label: string; value: string }) {
       <Text className="text-sm text-text font-bold">{value}</Text>
     </View>
   );
-}
-</file>
-
-<file path="dastbadast-multivendor-client/app/(app)/restaurant/[id].tsx">
-import { useState, useMemo } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  Pressable,
-  ActivityIndicator,
-  TextInput,
-} from "react-native";
-import { useQuery } from "@apollo/client/react";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
-import { GET_RESTAURANT, GET_CONFIGURATION } from "../../../lib/api/queries";
-import { useCart } from "../../../lib/cart-context";
-import { EmptyState } from "../../../components/EmptyState";
-import { CartBar } from "../../../components/CartBar";
-import { coverFor } from "../../../components/FoodCard";
-import { SafeAreaView } from "react-native-safe-area-context";
-
-export default function RestaurantPage() {
-  const { id } = useLocalSearchParams<{ id: string }>();
-  const router = useRouter();
-  const { add, items } = useCart();
-
-  // ⭐ useQuery<any> — фикс
-  const { data: cfg } = useQuery<any>(GET_CONFIGURATION);
-  const { data, loading, error } = useQuery<any>(GET_RESTAURANT, {
-    variables: { id: id || "" },
-    skip: !id,
-  });
-
-  const [search, setSearch] = useState("");
-  const sym = cfg?.configuration?.currencySymbol ?? "сом.";
-
-  const r = data?.restaurant;
-  const categories = r?.categories ?? [];
-  const [activeCat, setActiveCat] = useState<string>("");
-
-  const currentCat =
-    categories.find((c: any) => c.id === activeCat) || categories[0];
-
-  const filteredFoods = useMemo(() => {
-    if (!currentCat) return [];
-    const q = search.trim().toLowerCase();
-    const list = currentCat.foods ?? [];
-    if (!q) return list;
-    return list.filter(
-      (f: any) =>
-        f.title.toLowerCase().includes(q) ||
-        (f.description || "").toLowerCase().includes(q),
-    );
-  }, [currentCat, search]);
-
-  if (loading) {
-    return (
-      <View className="flex-1 items-center justify-center bg-soft-bg">
-        <ActivityIndicator color="#F26A4A" size="large" />
-      </View>
-    );
-  }
-
-  if (error || !r) {
-    return (
-      <View className="flex-1 bg-soft-bg">
-        <EmptyState
-          emoji="😕"
-          title="Ресторан не найден"
-          subtitle="Попробуйте вернуться на главную"
-        />
-        <Pressable
-          onPress={() => router.back()}
-          className="mx-5 mt-2 h-12 bg-soft-surface border border-border rounded-2xl items-center justify-center"
-        >
-          <Text className="text-text font-extrabold">Назад</Text>
-        </Pressable>
-      </View>
-    );
-  }
-
-  return (
-    <SafeAreaView className="flex-1 bg-soft-bg">
-      <ScrollView
-        contentContainerStyle={{ paddingBottom: 100 }}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Header bar */}
-        <View className="flex-row items-center justify-between px-5 pt-4 pb-2">
-          <Pressable
-            onPress={() => router.back()}
-            className="w-10 h-10 rounded-full bg-soft-surface border border-border items-center justify-center active:opacity-80"
-          >
-            <Ionicons name="chevron-back" size={20} color="#1F1B16" />
-          </Pressable>
-          <Text
-            className="text-base font-extrabold text-text flex-1 text-center"
-            numberOfLines={1}
-          >
-            {r.name}
-          </Text>
-          <View className="w-10 h-10" />
-        </View>
-
-        <View className="px-5 mb-3">
-          <Text className="text-2xl font-extrabold text-text tracking-tight">
-            {r.name}
-          </Text>
-          {r.address && (
-            <Text className="text-sm text-text-soft mt-1">{r.address}</Text>
-          )}
-          <View className="flex-row gap-2 mt-2 flex-wrap">
-            <View className="bg-soft-surface-2 border border-border rounded-full px-3 py-1">
-              <Text className="text-2xs font-bold text-text-soft">
-                Мин. заказ · {r.minimumOrder} {sym}
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Search */}
-        <View className="flex-row items-center bg-soft-surface border border-border rounded-2xl px-4 mx-5 py-2 mb-3 shadow-soft-sm">
-          <Ionicons name="search-outline" size={16} color="#9A9388" />
-          <TextInput
-            className="flex-1 ml-2 text-sm text-text"
-            placeholder="Поиск блюда..."
-            placeholderTextColor="#9A9388"
-            value={search}
-            onChangeText={setSearch}
-          />
-        </View>
-
-        {/* Categories chips */}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{
-            paddingHorizontal: 20,
-            gap: 10,
-            paddingBottom: 8,
-          }}
-        >
-          {categories.map((c: any) => (
-            <Pressable
-              key={c.id}
-              onPress={() => setActiveCat(c.id)}
-              className={`px-4 py-3 rounded-2xl border min-w-[88px] items-center ${
-                currentCat?.id === c.id
-                  ? "bg-accent-soft border-accent"
-                  : "bg-soft-surface border-border"
-              }`}
-            >
-              <Text className="text-2xl mb-1">{categoryEmoji(c.title)}</Text>
-              <Text
-                className={`text-xs font-extrabold text-center ${
-                  currentCat?.id === c.id ? "text-accent" : "text-text"
-                }`}
-              >
-                {c.title}
-              </Text>
-              <Text className="text-2xs text-text-muted mt-0.5">
-                {c.foods?.length ?? 0} шт.
-              </Text>
-            </Pressable>
-          ))}
-        </ScrollView>
-
-        {/* Foods list */}
-        <View className="px-5 mt-3">
-          <Text className="text-lg font-extrabold text-text mb-2.5">
-            {currentCat?.title || "Меню"}
-          </Text>
-          {filteredFoods.length === 0 ? (
-            <Text className="text-text-soft text-sm py-4">
-              Ничего не найдено
-            </Text>
-          ) : (
-            filteredFoods.map((f: any) => {
-              const inCart = items.find((i) => i.foodId === f.id);
-              return (
-                <View
-                  key={f.id}
-                  className="bg-soft-surface border border-border rounded-2xl p-3 flex-row gap-3 mb-3 shadow-soft-sm"
-                >
-                  <View className="w-20 h-20 rounded-2xl bg-soft-surface-2 overflow-hidden">
-                    <View className="w-full h-full items-center justify-center">
-                      <Text className="text-3xl">🍽</Text>
-                    </View>
-                  </View>
-                  <View className="flex-1 min-w-0">
-                    <Text
-                      className="text-sm font-extrabold text-text"
-                      numberOfLines={1}
-                    >
-                      {f.title}
-                    </Text>
-                    {f.description && (
-                      <Text
-                        className="text-xs text-text-soft mt-0.5"
-                        numberOfLines={2}
-                      >
-                        {f.description}
-                      </Text>
-                    )}
-                    <View className="flex-row items-center justify-between mt-1.5">
-                      <View>
-                        <Text className="text-sm font-extrabold text-accent">
-                          {f.price} {sym}
-                        </Text>
-                        {typeof f.averageRating === "number" &&
-                          f.averageRating > 0 && (
-                            <View className="flex-row items-center mt-0.5">
-                              <Ionicons name="star" size={10} color="#F5A623" />
-                              <Text className="text-2xs text-text-muted ml-0.5">
-                                {f.averageRating.toFixed(1)} ·{" "}
-                                {f.reviewCount ?? 0} отз.
-                              </Text>
-                            </View>
-                          )}
-                      </View>
-                      {inCart ? (
-                        <View className="flex-row items-center bg-accent-soft border border-accent rounded-full px-2.5 py-1">
-                          <Pressable
-                            onPress={() =>
-                              add({
-                                foodId: f.id,
-                                title: f.title,
-                                price: f.price,
-                                image: coverFor(f.title, f.image),
-                                description: f.description,
-                                quantity: -1,
-                                restaurantId: r.id,
-                                restaurantName: r.name,
-                              })
-                            }
-                            className="w-6 h-6 items-center justify-center"
-                          >
-                            <Ionicons name="remove" size={16} color="#DC5635" />
-                          </Pressable>
-                          <Text className="font-extrabold text-sm text-accent mx-2">
-                            {inCart.quantity}
-                          </Text>
-                          <Pressable
-                            onPress={() =>
-                              add({
-                                foodId: f.id,
-                                title: f.title,
-                                price: f.price,
-                                image: coverFor(f.title, f.image),
-                                description: f.description,
-                                quantity: 1,
-                                restaurantId: r.id,
-                                restaurantName: r.name,
-                              })
-                            }
-                            className="w-6 h-6 items-center justify-center"
-                          >
-                            <Ionicons name="add" size={16} color="#DC5635" />
-                          </Pressable>
-                        </View>
-                      ) : (
-                        <Pressable
-                          onPress={() =>
-                            add({
-                              foodId: f.id,
-                              title: f.title,
-                              price: f.price,
-                              image: coverFor(f.title, f.image),
-                              description: f.description,
-                              quantity: 1,
-                              restaurantId: r.id,
-                              restaurantName: r.name,
-                            })
-                          }
-                          className="bg-accent w-9 h-9 rounded-full items-center justify-center shadow-soft-sm active:scale-95"
-                        >
-                          <Ionicons name="add" size={20} color="white" />
-                        </Pressable>
-                      )}
-                    </View>
-                  </View>
-                </View>
-              );
-            })
-          )}
-        </View>
-      </ScrollView>
-
-      <CartBar symbol={sym} />
-    </SafeAreaView>
-  );
-}
-
-function categoryEmoji(title: string): string {
-  const t = title.toLowerCase();
-  if (t.includes("бургер") || t.includes("burger")) return "🍔";
-  if (
-    t.includes("напит") ||
-    t.includes("drink") ||
-    t.includes("чай") ||
-    t.includes("кофе")
-  )
-    return "🥤";
-  if (t.includes("десерт") || t.includes("слад")) return "🧁";
-  if (t.includes("суп") || t.includes("лапш") || t.includes("лагман"))
-    return "🍜";
-  if (t.includes("салат")) return "🥗";
-  if (t.includes("пицц")) return "🍕";
-  if (t.includes("основ") || t.includes("горяч")) return "🍽️";
-  if (t.includes("шашлык") || t.includes("мяс")) return "🥩";
-  return "🍴";
 }
 </file>
 
@@ -27731,6 +26883,864 @@ Email: admin@dastbadast.tj
 ```
 </file>
 
+<file path="dastbadast-multivendor-admin/next-env.d.ts">
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/app/building-your-application/configuring/typescript for more information.
+</file>
+
+<file path="dastbadast-multivendor-api/src/resolvers/index.js">
+import { configuration, updateConfiguration } from "./configuration.js";
+import { deliveryZone } from "./zone-public.js";
+import { chatMessages, sendChatMessage } from "./chat.js";
+import { restaurants, restaurant } from "./restaurant.js";
+import {
+  profile,
+  addresses,
+  selectedAddress,
+  createUser,
+  login,
+  createAddress,
+  editAddress,
+  deleteAddress,
+  selectAddress,
+  adminUsers,
+  adminUserDetail,
+  toggleUserActive,
+} from "./user.js";
+import {
+  orders,
+  order,
+  placeOrder,
+  restaurantOrders,
+  meRestaurant,
+  restaurantLogin,
+  confirmOrderReceived,
+  refreshOrderStatus,
+} from "./order.js";
+import { acceptOrder, cancelOrder } from "./order-actions.js";
+import { foodReviews, addFoodReview, foodRatingStats } from "./food-review.js";
+import {
+  createCategory,
+  updateCategory,
+  deleteCategory,
+  createFood,
+  updateFood,
+  deleteFood,
+} from "./restaurant-menu.js";
+import {
+  allOrders,
+  ownerLogin,
+  meOwner,
+  createRider,
+  riders,
+  assignRider,
+  createRestaurant,
+  adminAccounting,
+  owners,
+  ownerOne,
+  createOwner,
+  updateOwner,
+  deactivateOwner,
+  resetOwnerPassword,
+  zones,
+  zoneOne,
+  createZone,
+  updateZone,
+  deleteZone,
+  adminDashboardMetrics,
+} from "./admin.js";
+import {
+  meRider,
+  riderOrders,
+  availableOrdersForRiders,
+  riderLogin,
+  claimOrder,
+  updateOrderStatusRider,
+  updateRiderLocation,
+  toggleRider,
+  rider as riderOne,
+} from "./rider.js";
+import {
+  orderStatusChanged,
+  subscriptionOrder,
+  subscribePlaceOrder,
+  subscriptionAssignedRider,
+  subscriptionZoneOrders,
+  subscriptionAvailableOrders,
+  subscriptionRiderLocation,
+  subscriptionRiderOrderCompleted,
+  newChatMessage,
+} from "./subscriptions.js";
+import { JSONScalar, DateTimeScalar } from "../utils/scalars.js";
+
+const mongoId = (parent) => parent?.id ?? parent?._id?.toString();
+
+export const resolvers = {
+  JSON: JSONScalar,
+  DateTime: DateTimeScalar,
+  Query: {
+    configuration,
+    deliveryZone,
+    restaurants,
+    restaurant,
+    foodReviews,
+    profile,
+    addresses,
+    selectedAddress,
+    orders,
+    order,
+    restaurantOrders,
+    meRestaurant,
+    allOrders,
+    riders,
+    meOwner,
+    meRider,
+    riderOrders,
+    availableOrdersForRiders,
+    chatMessages,
+    adminAccounting,
+    rider: riderOne,
+    owners,
+    owner: ownerOne,
+    adminUsers,
+    adminUserDetail,
+    zones,
+    zone: zoneOne,
+    adminDashboardMetrics,
+  },
+  Mutation: {
+    createUser,
+    login,
+    createAddress,
+    editAddress,
+    deleteAddress,
+    selectAddress,
+    placeOrder,
+    addFoodReview,
+    restaurantLogin,
+    acceptOrder,
+    cancelOrder,
+    createCategory,
+    updateCategory,
+    deleteCategory,
+    createFood,
+    updateFood,
+    deleteFood,
+    ownerLogin,
+    createRider,
+    createRestaurant,
+    assignRider,
+    riderLogin,
+    claimOrder,
+    updateOrderStatusRider,
+    confirmOrderReceived,
+    updateRiderLocation,
+    toggleRider,
+    sendChatMessage,
+    createOwner,
+    updateOwner,
+    deactivateOwner,
+    resetOwnerPassword,
+    toggleUserActive,
+    createZone,
+    updateZone,
+    deleteZone,
+    updateConfiguration,
+  },
+  Subscription: {
+    orderStatusChanged,
+    subscriptionOrder,
+    subscribePlaceOrder,
+    subscriptionAssignedRider,
+    subscriptionZoneOrders,
+    subscriptionAvailableOrders,
+    subscriptionRiderLocation,
+    subscriptionRiderOrderCompleted,
+    newChatMessage,
+  },
+  Restaurant: {
+    id: mongoId,
+    categories: async (parent) => {
+      const { Category } = await import("../models/Category.js");
+      return Category.find({ restaurantId: parent._id });
+    },
+  },
+  Category: {
+    id: mongoId,
+    foods: async (parent, _a, ctx) => {
+      const { Food } = await import("../models/Food.js");
+      const filter = { categoryId: parent._id };
+      const isOwner =
+        ctx.restaurant &&
+        parent.restaurantId &&
+        parent.restaurantId.toString() === ctx.restaurant._id.toString();
+      if (!isOwner) {
+        filter.isActive = true;
+        filter.isAvailable = true;
+      } else {
+        filter.isActive = true;
+      }
+      return Food.find(filter).sort({ createdAt: 1 });
+    },
+  },
+  Address: { id: mongoId },
+  Order: {
+    id: mongoId,
+    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
+    updatedAt: (p) => p.updatedAt?.toISOString?.() ?? String(p.updatedAt ?? ""),
+    paidAt: (p) => p.paidAt?.toISOString?.() ?? null,
+    statusTimestamps: (p) => {
+      const t = p.statusTimestamps || {};
+      return {
+        pendingAt: t.pendingAt?.toISOString?.() ?? null,
+        acceptedAt: t.acceptedAt?.toISOString?.() ?? null,
+        assignedAt: t.assignedAt?.toISOString?.() ?? null,
+        pickedAt: t.pickedAt?.toISOString?.() ?? null,
+        deliveredAt: t.deliveredAt?.toISOString?.() ?? null,
+        cancelledAt: t.cancelledAt?.toISOString?.() ?? null,
+        prepTime: t.prepTime ?? null,
+      };
+    },
+  },
+
+  User: { id: mongoId },
+  Food: {
+    id: mongoId,
+    averageRating: async (parent) => {
+      const s = await foodRatingStats(parent._id);
+      return s.averageRating;
+    },
+    reviewCount: async (parent) => {
+      const s = await foodRatingStats(parent._id);
+      return s.reviewCount;
+    },
+    reviews: async (parent) => {
+      const { FoodReview } = await import("../models/FoodReview.js");
+      return FoodReview.find({ foodId: parent._id })
+        .sort({ createdAt: -1 })
+        .limit(10);
+    },
+  },
+  FoodReview: {
+    id: mongoId,
+    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
+  },
+  Rider: { id: mongoId },
+  Owner: {
+    id: mongoId,
+    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
+    lastLoginAt: (p) => p.lastLoginAt?.toISOString?.() ?? null,
+  },
+
+  Zone: { id: mongoId },
+  ChatMessage: {
+    id: mongoId,
+    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
+  },
+};
+</file>
+
+<file path="dastbadast-multivendor-api/src/utils/scalars.js">
+import { GraphQLScalarType, Kind } from "graphql";
+
+function parseLiteral(ast) {
+  switch (ast.kind) {
+    case Kind.STRING:
+    case Kind.BOOLEAN:
+      return ast.value;
+    case Kind.INT:
+      return parseInt(ast.value, 10);
+    case Kind.FLOAT:
+      return parseFloat(ast.value);
+    case Kind.OBJECT: {
+      const value = {};
+      ast.fields.forEach((field) => {
+        value[field.name.value] = parseLiteral(field.value);
+      });
+      return value;
+    }
+    case Kind.LIST:
+      return ast.values.map(parseLiteral);
+    case Kind.NULL:
+      return null;
+    default:
+      return null;
+  }
+}
+
+export const JSONScalar = new GraphQLScalarType({
+  name: "JSON",
+  description: "Arbitrary JSON value",
+  serialize: (value) => value,
+  parseValue: (value) => value,
+  parseLiteral,
+});
+
+/**
+ * DateTime scalar — сериализует/парсит ISO-строки.
+ * Используется во всех полях с типом Date в MongoDB
+ * (statusTimestamps, paidAt, createdAt и т.д.), которые в схеме
+ * резолвятся через .toISOString().
+ */
+export const DateTimeScalar = new GraphQLScalarType({
+  name: "DateTime",
+  description: "ISO-8601 date-time string",
+  serialize(value) {
+    if (value == null) return null;
+    if (value instanceof Date) return value.toISOString();
+    return String(value);
+  },
+  parseValue(value) {
+    if (value == null) return null;
+    return new Date(value);
+  },
+  parseLiteral(ast) {
+    if (ast.kind === Kind.STRING) return new Date(ast.value);
+    return null;
+  },
+});
+</file>
+
+<file path="dastbadast-multivendor-api/src/index.js">
+import "dotenv/config";
+import express from "express";
+import http from "http";
+import cors from "cors";
+import bodyParser from "body-parser";
+import mongoose from "mongoose";
+import { ApolloServer } from "@apollo/server";
+// ✅ FIX C1: импорт middleware вынесен из @apollo/server в отдельный пакет
+import { expressMiddleware } from "@as-integrations/express4";
+import { ApolloServerPluginDrainHttpServer } from "@apollo/server/plugin/drainHttpServer";
+import { makeExecutableSchema } from "@graphql-tools/schema";
+import { WebSocketServer } from "ws";
+import { useServer } from "graphql-ws/lib/use/ws";
+import jwt from "jsonwebtoken";
+import rateLimit from "express-rate-limit";
+
+import { typeDefs } from "./schema.js";
+import { resolvers } from "./resolvers/index.js";
+import { User } from "./models/User.js";
+import { Restaurant } from "./models/Restaurant.js";
+import { Owner } from "./models/Owner.js";
+import { Rider } from "./models/Rider.js";
+import { handlePaymentWebhook } from "./webhooks/payments.js";
+
+const PORT = process.env.PORT || 8001;
+const MONGO_URI =
+  process.env.MONGO_URI || "mongodb://localhost:27017/dastbadast";
+const SECRET = process.env.JWT_SECRET || "dastbadast-dev-secret-change-me";
+
+async function resolveContextFromAuthHeader(header) {
+  if (!header || typeof header !== "string" || !header.startsWith("Bearer ")) {
+    return { user: null, restaurant: null, owner: null, rider: null };
+  }
+  const token = header.slice(7);
+  try {
+    const payload = jwt.verify(token, SECRET);
+    if (payload.kind === "restaurant") {
+      const r = await Restaurant.findById(payload.sub);
+      return { user: null, restaurant: r, owner: null, rider: null };
+    }
+    if (payload.kind === "owner") {
+      const o = await Owner.findById(payload.sub);
+      return { user: null, restaurant: null, owner: o, rider: null };
+    }
+    if (payload.kind === "rider") {
+      const r = await Rider.findById(payload.sub);
+      return { user: null, restaurant: null, owner: null, rider: r };
+    }
+    const u = await User.findById(payload.sub);
+    return { user: u, restaurant: null, owner: null, rider: null };
+  } catch {
+    return { user: null, restaurant: null, owner: null, rider: null };
+  }
+}
+
+async function start() {
+  await mongoose.connect(MONGO_URI);
+  console.log("✅ MongoDB connected");
+
+  const schema = makeExecutableSchema({ typeDefs, resolvers });
+
+  const app = express();
+  const httpServer = http.createServer(app);
+
+  // ⚠️ FIX L2: CORS + bodyParser поднимаем ДО всех роутов,
+  // иначе preflight-запросы на /payments/* упадут
+  app.use(cors());
+  app.use(bodyParser.json({ limit: "5mb" }));
+
+  // ===== Webhook-эндпоинты (для будущей интеграции Alif/DC) =====
+  app.post("/payments/webhook/alif", bodyParser.json(), async (req, res) => {
+    const out = await handlePaymentWebhook(req, "ALIF_MOBI");
+    res.json(out);
+  });
+  app.post("/payments/webhook/dc", bodyParser.json(), async (req, res) => {
+    const out = await handlePaymentWebhook(req, "DS_BANK");
+    res.json(out);
+  });
+
+  // ===== Mock redirect — имитация банковской страницы =====
+  app.get("/payments/mock-redirect", (req, res) => {
+    const { provider, orderId, ref, return: ret } = req.query;
+    res.send(`
+    <html><body style="font-family:sans-serif;padding:30px;max-width:520px;margin:auto">
+      <h2>Mock ${provider} payment</h2>
+      <p>Order: <code>${orderId}</code></p>
+      <p>Ref: <code>${ref}</code></p>
+      <form method="POST" action="/payments/mock-confirm">
+        <input type="hidden" name="orderId" value="${orderId}"/>
+        <input type="hidden" name="provider" value="${provider}"/>
+        <input type="hidden" name="providerRef" value="${ref}"/>
+        <input type="hidden" name="returnUrl" value="${ret || "/"}"/>
+        <button name="status" value="PAID" style="padding:10px 20px;background:green;color:white;border:0;border-radius:6px;cursor:pointer">Оплатить (имитация)</button>
+        <button name="status" value="FAILED" style="padding:10px 20px;background:#999;color:white;border:0;border-radius:6px;cursor:pointer;margin-left:8px">Отклонить</button>
+      </form>
+      <p style="color:#666;font-size:12px;margin-top:16px">Это заглушка. Реальный платёж будет идти через банк-шлюз Alif/DS.</p>
+    </body></html>
+  `);
+  });
+
+  // Mock confirm — имитация банковского webhook
+  app.post(
+    "/payments/mock-confirm",
+    express.urlencoded({ extended: true }),
+    async (req, res) => {
+      const { orderId, provider, status, providerRef, returnUrl } = req.body;
+      const method = provider === "ALIF_MOBI" ? "ALIF_MOBI" : "DS_BANK";
+      const fakeReq = {
+        body: { orderId, status, providerRef },
+        headers: {
+          "x-internal-token":
+            process.env.PAYMENTS_INTERNAL_TOKEN || "dev-token",
+        },
+      };
+      const out = await handlePaymentWebhook(fakeReq, method);
+      res.redirect(
+        303,
+        (returnUrl || "/") +
+          `?orderId=${orderId}&payment=${status}&orderStatus=${out.status || ""}`,
+      );
+    },
+  );
+
+  // ===== Health check =====
+  app.get("/health", (_, res) => res.json({ ok: true }));
+
+  // ===== WebSocket-сервер для GraphQL Subscriptions =====
+  const wsServer = new WebSocketServer({
+    server: httpServer,
+    path: "/graphql",
+  });
+  const serverCleanup = useServer(
+    {
+      schema,
+      context: async (ctx) => {
+        const params = ctx.connectionParams || {};
+        const auth = params.authorization || params.Authorization || "";
+        return resolveContextFromAuthHeader(auth);
+      },
+    },
+    wsServer,
+  );
+
+  // ===== Apollo Server =====
+  const apollo = new ApolloServer({
+    schema,
+    plugins: [
+      ApolloServerPluginDrainHttpServer({ httpServer }),
+      {
+        async serverWillStart() {
+          return {
+            async drainServer() {
+              await serverCleanup.dispose();
+            },
+          };
+        },
+      },
+    ],
+  });
+  await apollo.start();
+
+  // ===== Health/инфо для мониторинга =====
+  app.get("/info", (_, res) =>
+    res.json({
+      ok: true,
+      service: "dastbadast-multivendor-api",
+      version: "1.0.0",
+      mongo: MONGO_URI.replace(/\/\/.*@/, "//***@"),
+    }),
+  );
+
+  // ⚠️ FIX C3: rate-limit ДО expressMiddleware — иначе запрос
+  // всегда попадает в Apollo и до лимитера не доходит
+  app.use(
+    "/graphql",
+    rateLimit({
+      windowMs: 60_000,
+      max: 200,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: {
+        errors: [
+          {
+            message: "Too many requests",
+            extensions: { code: "RATE_LIMITED" },
+          },
+        ],
+      },
+    }),
+  );
+
+  // ===== GraphQL HTTP endpoint =====
+  app.use(
+    "/graphql",
+    expressMiddleware(apollo, {
+      context: async ({ req }) => {
+        if (req.body?.query) {
+          console.log("📨 [GraphQL Request]", req.body.query.slice(0, 300));
+          if (req.body.variables) {
+            console.log("📨 [Variables]", JSON.stringify(req.body.variables));
+          }
+        }
+        return resolveContextFromAuthHeader(req.headers.authorization || "");
+      },
+    }),
+  );
+
+  httpServer.listen(PORT, "0.0.0.0", () => {
+    console.log(
+      `🚀 API http://0.0.0.0:${PORT}/graphql (доступен в LAN для Expo)`,
+    );
+    console.log(`🔌 WS    ws://0.0.0.0:${PORT}/graphql`);
+    console.log(`❤️  Health http://0.0.0.0:${PORT}/health`);
+  });
+}
+
+start().catch((err) => {
+  console.error("❌ Fatal startup error:");
+  console.error(err);
+  process.exit(1);
+});
+</file>
+
+<file path="dastbadast-multivendor-client/app/(app)/restaurant/[id].tsx">
+import { useState, useMemo } from "react";
+import {
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+  TextInput, 
+} from "react-native";
+import { useQuery } from "@apollo/client/react";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
+import { GET_RESTAURANT, GET_CONFIGURATION } from "../../../lib/api/queries";
+import { useCart } from "../../../lib/cart-context";
+import { EmptyState } from "../../../components/EmptyState";
+import { CartBar } from "../../../components/CartBar";
+import { coverFor } from "../../../components/FoodCard";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+export default function RestaurantPage() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
+  const { add, items } = useCart();
+
+  // ⭐ useQuery<any> — фикс
+  const { data: cfg } = useQuery<any>(GET_CONFIGURATION);
+  const { data, loading, error } = useQuery<any>(GET_RESTAURANT, {
+    variables: { id: id || "" },
+    skip: !id,
+  });
+
+  const [search, setSearch] = useState("");
+  const sym = cfg?.configuration?.currencySymbol ?? "сом.";
+
+  const r = data?.restaurant;
+  const categories = r?.categories ?? [];
+  const [activeCat, setActiveCat] = useState<string>("");
+
+  const currentCat =
+    categories.find((c: any) => c.id === activeCat) || categories[0];
+
+  const filteredFoods = useMemo(() => {
+    if (!currentCat) return [];
+    const q = search.trim().toLowerCase();
+    const list = currentCat.foods ?? [];
+    if (!q) return list;
+    return list.filter(
+      (f: any) =>
+        f.title.toLowerCase().includes(q) ||
+        (f.description || "").toLowerCase().includes(q),
+    );
+  }, [currentCat, search]);
+
+  if (loading) {
+    return (
+      <View className="flex-1 items-center justify-center bg-soft-bg">
+        <ActivityIndicator color="#F26A4A" size="large" />
+      </View>
+    );
+  }
+
+  if (error || !r) {
+    return (
+      <View className="flex-1 bg-soft-bg">
+        <EmptyState
+          emoji="😕"
+          title="Ресторан не найден"
+          subtitle="Попробуйте вернуться на главную"
+        />
+        <Pressable
+          onPress={() => router.back()}
+          className="mx-5 mt-2 h-12 bg-soft-surface border border-border rounded-2xl items-center justify-center"
+        >
+          <Text className="text-text font-extrabold">Назад</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  return (
+    <SafeAreaView className="flex-1 bg-soft-bg">
+      <ScrollView
+        contentContainerStyle={{ paddingBottom: 100 }}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Header bar */}
+        <View className="flex-row items-center justify-between px-5 pt-4 pb-2">
+          <Pressable
+            onPress={() => router.back()}
+            className="w-10 h-10 rounded-full bg-soft-surface border border-border items-center justify-center active:opacity-80"
+          >
+            <Ionicons name="chevron-back" size={20} color="#1F1B16" />
+          </Pressable>
+          <Text
+            className="text-base font-extrabold text-text flex-1 text-center"
+            numberOfLines={1}
+          >
+            {r.name}
+          </Text>
+          <View className="w-10 h-10" />
+        </View>
+
+        <View className="px-5 mb-3">
+          <Text className="text-2xl font-extrabold text-text tracking-tight">
+            {r.name}
+          </Text>
+          {r.address && (
+            <Text className="text-sm text-text-soft mt-1">{r.address}</Text>
+          )}
+          <View className="flex-row gap-2 mt-2 flex-wrap">
+            <View className="bg-soft-surface-2 border border-border rounded-full px-3 py-1">
+              <Text className="text-2xs font-bold text-text-soft">
+                Мин. заказ · {r.minimumOrder} {sym}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Search */}
+        <View className="flex-row items-center bg-soft-surface border border-border rounded-2xl px-4 mx-5 py-2 mb-3 shadow-soft-sm">
+          <Ionicons name="search-outline" size={16} color="#9A9388" />
+          <TextInput
+            className="flex-1 ml-2 text-sm text-text"
+            placeholder="Поиск блюда..."
+            placeholderTextColor="#9A9388"
+            value={search}
+            onChangeText={setSearch}
+          />
+        </View>
+
+        {/* Categories chips */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{
+            paddingHorizontal: 20,
+            gap: 10,
+            paddingBottom: 8,
+          }}
+        >
+          {categories.map((c: any) => (
+            <Pressable
+              key={c.id}
+              onPress={() => setActiveCat(c.id)}
+              className={`px-4 py-3 rounded-2xl border min-w-[88px] items-center ${
+                currentCat?.id === c.id
+                  ? "bg-accent-soft border-accent"
+                  : "bg-soft-surface border-border"
+              }`}
+            >
+              <Text className="text-2xl mb-1">{categoryEmoji(c.title)}</Text>
+              <Text
+                className={`text-xs font-extrabold text-center ${
+                  currentCat?.id === c.id ? "text-accent" : "text-text"
+                }`}
+              >
+                {c.title}
+              </Text>
+              <Text className="text-2xs text-text-muted mt-0.5">
+                {c.foods?.length ?? 0} шт.
+              </Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+
+        {/* Foods list */}
+        <View className="px-5 mt-3">
+          <Text className="text-lg font-extrabold text-text mb-2.5">
+            {currentCat?.title || "Меню"}
+          </Text>
+          {filteredFoods.length === 0 ? (
+            <Text className="text-text-soft text-sm py-4">
+              Ничего не найдено
+            </Text>
+          ) : (
+            filteredFoods.map((f: any) => {
+              const inCart = items.find((i) => i.foodId === f.id);
+              return (
+                <View
+                  key={f.id}
+                  className="bg-soft-surface border border-border rounded-2xl p-3 flex-row gap-3 mb-3 shadow-soft-sm"
+                >
+                  <View className="w-20 h-20 rounded-2xl bg-soft-surface-2 overflow-hidden">
+                    <View className="w-full h-full items-center justify-center">
+                      <Text className="text-3xl">🍽</Text>
+                    </View>
+                  </View>
+                  <View className="flex-1 min-w-0">
+                    <Text
+                      className="text-sm font-extrabold text-text"
+                      numberOfLines={1}
+                    >
+                      {f.title}
+                    </Text>
+                    {f.description && (
+                      <Text
+                        className="text-xs text-text-soft mt-0.5"
+                        numberOfLines={2}
+                      >
+                        {f.description}
+                      </Text>
+                    )}
+                    <View className="flex-row items-center justify-between mt-1.5">
+                      <View>
+                        <Text className="text-sm font-extrabold text-accent">
+                          {f.price} {sym}
+                        </Text>
+                        {typeof f.averageRating === "number" &&
+                          f.averageRating > 0 && (
+                            <View className="flex-row items-center mt-0.5">
+                              <Ionicons name="star" size={10} color="#F5A623" />
+                              <Text className="text-2xs text-text-muted ml-0.5">
+                                {f.averageRating.toFixed(1)} ·{" "}
+                                {f.reviewCount ?? 0} отз.
+                              </Text>
+                            </View>
+                          )}
+                      </View>
+                      {inCart ? (
+                        <View className="flex-row items-center bg-accent-soft border border-accent rounded-full px-2.5 py-1">
+                          <Pressable
+                            onPress={() =>
+                              add({
+                                foodId: f.id,
+                                title: f.title,
+                                price: f.price,
+                                image: coverFor(f.title, f.image),
+                                description: f.description,
+                                quantity: -1,
+                                restaurantId: r.id,
+                                restaurantName: r.name,
+                              })
+                            }
+                            className="w-6 h-6 items-center justify-center"
+                          >
+                            <Ionicons name="remove" size={16} color="#DC5635" />
+                          </Pressable>
+                          <Text className="font-extrabold text-sm text-accent mx-2">
+                            {inCart.quantity}
+                          </Text>
+                          <Pressable
+                            onPress={() =>
+                              add({
+                                foodId: f.id,
+                                title: f.title,
+                                price: f.price,
+                                image: coverFor(f.title, f.image),
+                                description: f.description,
+                                quantity: 1,
+                                restaurantId: r.id,
+                                restaurantName: r.name,
+                              })
+                            }
+                            className="w-6 h-6 items-center justify-center"
+                          >
+                            <Ionicons name="add" size={16} color="#DC5635" />
+                          </Pressable>
+                        </View>
+                      ) : (
+                        <Pressable
+                          onPress={() =>
+                            add({
+                              foodId: f.id,
+                              title: f.title,
+                              price: f.price,
+                              image: coverFor(f.title, f.image),
+                              description: f.description,
+                              quantity: 1,
+                              restaurantId: r.id,
+                              restaurantName: r.name,
+                            })
+                          }
+                          className="bg-accent w-9 h-9 rounded-full items-center justify-center shadow-soft-sm active:scale-95"
+                        >
+                          <Ionicons name="add" size={20} color="white" />
+                        </Pressable>
+                      )}
+                    </View>
+                  </View>
+                </View>
+              );
+            })
+          )}
+        </View>
+      </ScrollView>
+
+      <CartBar symbol={sym} />
+    </SafeAreaView>
+  );
+}
+
+function categoryEmoji(title: string): string {
+  const t = title.toLowerCase();
+  if (t.includes("бургер") || t.includes("burger")) return "🍔";
+  if (
+    t.includes("напит") ||
+    t.includes("drink") ||
+    t.includes("чай") ||
+    t.includes("кофе")
+  )
+    return "🥤";
+  if (t.includes("десерт") || t.includes("слад")) return "🧁";
+  if (t.includes("суп") || t.includes("лапш") || t.includes("лагман"))
+    return "🍜";
+  if (t.includes("салат")) return "🥗";
+  if (t.includes("пицц")) return "🍕";
+  if (t.includes("основ") || t.includes("горяч")) return "🍽️";
+  if (t.includes("шашлык") || t.includes("мяс")) return "🥩";
+  return "🍴";
+}
+</file>
+
 <file path="README.md">
 ## Как пользоваться
 
@@ -28130,6 +28140,44 @@ Sprint 7 для Dastbadast (только если есть API docs от бан�
 ---
 
 *Файл создан для репозитория food-delivery-multivendor / Dastbadast.*
+# Dastbadast
+</file>
+
+<file path="dastbadast-multivendor-api/package.json">
+{
+  "name": "dastbadast-multivendor-api",
+  "version": "1.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js",
+    "seed": "node scripts/seed.js"
+  },
+  "dependencies": {
+    "@apollo/server": "^5.5.1",
+    "@as-integrations/express4": "^1.0.0",
+    "@graphql-tools/schema": "^10.0.4",
+    "bcryptjs": "^2.4.3",
+    "body-parser": "^1.20.5",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^8.5.2",
+    "graphql": "^16.9.0",
+    "graphql-subscriptions": "^3.0.0",
+    "graphql-ws": "^5.16.0",
+    "jsonwebtoken": "^9.0.2",
+    "lucide-react": "^1.17.0",
+    "mongoose": "^8.6.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}
 </file>
 
 </files>

@@ -44,6 +44,13 @@ export const typeDefs = /* GraphQL */ `
     addresses: [Address!]
   }
 
+  # ⭐ НОВОЕ: входные данные для обновления профиля клиента
+  input UpdateUserInput {
+    name: String
+    email: String
+    phone: String
+  }
+
   # Расширенный тип для админ-карточки пользователя
   type AdminUser {
     id: ID!
@@ -565,6 +572,8 @@ export const typeDefs = /* GraphQL */ `
     createZone(input: CreateZoneInput!): Zone!
     updateZone(id: ID!, input: UpdateZoneInput!): Zone!
     deleteZone(id: ID!): Boolean!
+    # ⭐ НОВОЕ: обновление профиля клиента (имя / email / телефон)
+    updateUser(input: UpdateUserInput!): User!
   }
 
   type Subscription {

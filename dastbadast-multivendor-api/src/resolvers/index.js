@@ -15,6 +15,7 @@ import {
   adminUsers,
   adminUserDetail,
   toggleUserActive,
+  updateUser,
 } from "./user.js";
 import {
   orders,
@@ -155,6 +156,7 @@ export const resolvers = {
     updateZone,
     deleteZone,
     updateConfiguration,
+    updateUser,
   },
   Subscription: {
     orderStatusChanged,

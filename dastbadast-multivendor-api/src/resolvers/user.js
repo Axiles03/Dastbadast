@@ -1,21 +1,23 @@
-import bcrypt from 'bcryptjs';
-import { GraphQLError } from 'graphql';
-import mongoose from 'mongoose';
-import { User } from '../models/User.js';
-import { Zone } from '../models/Zone.js';
-import { Order } from '../models/Order.js';
-import { signToken } from '../middleware/auth.js';
-import { pointInPolygon } from '../utils/zone.js';
-import { requireRole } from '../middleware/rbac.js';
+import bcrypt from "bcryptjs";
+import { GraphQLError } from "graphql";
+import mongoose from "mongoose";
+import { User } from "../models/User.js";
+import { Zone } from "../models/Zone.js";
+import { Order } from "../models/Order.js";
+import { signToken } from "../middleware/auth.js";
+import { pointInPolygon } from "../utils/zone.js";
+import { requireRole } from "../middleware/rbac.js";
 
 function requireUser(ctx) {
   if (!ctx.user) {
-    throw new GraphQLError('Not authenticated', {
-      extensions: { code: 'UNAUTHENTICATED' },
+    throw new GraphQLError("Not authenticated", {
+      extensions: { code: "UNAUTHENTICATED" },
     });
   }
   return ctx.user;
 }
+
+const TJ_PHONE_REGEX = /^\+992\d{9}$/;
 
 async function findZoneForPoint(lng, lat) {
   const zone = await Zone.findOne({ isActive: true });
@@ -44,14 +46,19 @@ export const selectedAddress = async (_p, _a, ctx) => {
 
 export const createUser = async (_p, { input }) => {
   if (!input.email && !input.phone) {
-    throw new GraphQLError('Нужен email или телефон', { extensions: { code: 'BAD_USER_INPUT' } });
+    throw new GraphQLError("Нужен email или телефон", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
   }
   const passwordHash = await bcrypt.hash(input.password, 10);
   const or = [];
   if (input.email) or.push({ email: input.email.toLowerCase() });
   if (input.phone) or.push({ phone: input.phone });
   const exists = await User.findOne({ $or: or });
-  if (exists) throw new GraphQLError('Пользователь уже существует', { extensions: { code: 'CONFLICT' } });
+  if (exists)
+    throw new GraphQLError("Пользователь уже существует", {
+      extensions: { code: "CONFLICT" },
+    });
 
   const user = await User.create({
     name: input.name,
@@ -65,13 +72,23 @@ export const createUser = async (_p, { input }) => {
 
 export const login = async (_p, { input }) => {
   if (!input.email && !input.phone) {
-    throw new GraphQLError('Нужен email или телефон', { extensions: { code: 'BAD_USER_INPUT' } });
+    throw new GraphQLError("Нужен email или телефон", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
   }
-  const query = input.email ? { email: input.email.toLowerCase() } : { phone: input.phone };
+  const query = input.email
+    ? { email: input.email.toLowerCase() }
+    : { phone: input.phone };
   const user = await User.findOne(query);
-  if (!user) throw new GraphQLError('Неверные данные', { extensions: { code: 'UNAUTHENTICATED' } });
+  if (!user)
+    throw new GraphQLError("Неверные данные", {
+      extensions: { code: "UNAUTHENTICATED" },
+    });
   const ok = await bcrypt.compare(input.password, user.passwordHash);
-  if (!ok) throw new GraphQLError('Неверные данные', { extensions: { code: 'UNAUTHENTICATED' } });
+  if (!ok)
+    throw new GraphQLError("Неверные данные", {
+      extensions: { code: "UNAUTHENTICATED" },
+    });
   const token = signToken(user);
   return { token, user };
 };
@@ -79,23 +96,30 @@ export const login = async (_p, { input }) => {
 async function validatePoint(location) {
   const coords = location?.coordinates;
   if (!Array.isArray(coords) || coords.length !== 2) {
-    throw new GraphQLError('Некорректные координаты', { extensions: { code: 'BAD_USER_INPUT' } });
+    throw new GraphQLError("Некорректные координаты", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
   }
   const [lng, lat] = coords.map(Number);
   if (Number.isNaN(lng) || Number.isNaN(lat)) {
-    throw new GraphQLError('Некорректные координаты', { extensions: { code: 'BAD_USER_INPUT' } });
+    throw new GraphQLError("Некорректные координаты", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
   }
   const zone = await Zone.findOne({ isActive: true });
   if (!zone) {
-    throw new GraphQLError('Зона доставки не настроена. Запустите npm run seed на API.', {
-      extensions: { code: 'ZONE_NOT_CONFIGURED' },
-    });
+    throw new GraphQLError(
+      "Зона доставки не настроена. Запустите npm run seed на API.",
+      {
+        extensions: { code: "ZONE_NOT_CONFIGURED" },
+      },
+    );
   }
   const poly = zone.location?.coordinates?.[0];
   if (!poly || !pointInPolygon([lng, lat], poly)) {
     throw new GraphQLError(
-      'Адрес вне зоны доставки. Выберите точку внутри оранжевой области на карте (центр Душанбе).',
-      { extensions: { code: 'OUT_OF_ZONE' } }
+      "Адрес вне зоны доставки. Выберите точку внутри оранжевой области на карте (центр Душанбе).",
+      { extensions: { code: "OUT_OF_ZONE" } },
     );
   }
   return { lng, lat };
@@ -110,11 +134,11 @@ export const createAddress = async (_p, { input }, ctx) => {
     user.addresses.forEach((a) => (a.isSelected = false));
   }
   user.addresses.push({
-    label: input.label || 'Дом',
+    label: input.label || "Дом",
     address: input.address,
-    city: input.city || 'Душанбе',
-    details: input.details || '',
-    location: { type: 'Point', coordinates: [lng, lat] },
+    city: input.city || "Душанбе",
+    details: input.details || "",
+    location: { type: "Point", coordinates: [lng, lat] },
     isSelected: makeSelected,
   });
   await user.save();
@@ -126,12 +150,12 @@ export const editAddress = async (_p, { id, input }, ctx) => {
   const { lng, lat } = await validatePoint(input.location);
   const user = await User.findById(u._id);
   const addr = user.addresses.id(id);
-  if (!addr) throw new GraphQLError('Адрес не найден');
+  if (!addr) throw new GraphQLError("Адрес не найден");
   addr.label = input.label || addr.label;
   addr.address = input.address;
   addr.city = input.city || addr.city;
   addr.details = input.details ?? addr.details;
-  addr.location = { type: 'Point', coordinates: [lng, lat] };
+  addr.location = { type: "Point", coordinates: [lng, lat] };
   await user.save();
   return addr;
 };
@@ -165,21 +189,21 @@ export const selectAddress = async (_p, { id }, ctx) => {
 // ==================== ADMIN: USERS LIST ====================
 
 export const adminUsers = async (_p, { filter }, ctx) => {
-  requireRole(['SUPER_ADMIN', 'SUPPORT'])(ctx);
+  requireRole(["SUPER_ADMIN", "SUPPORT"])(ctx);
 
-  const q = filter?.search?.trim() || '';
+  const q = filter?.search?.trim() || "";
   const limit = Math.min(filter?.limit || 50, 200);
   const offset = filter?.offset || 0;
 
   const mongoFilter = {};
   if (q) {
-    const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     mongoFilter.$or = [{ name: re }, { email: re }, { phone: re }];
   }
 
   const total = await User.countDocuments(mongoFilter);
   const users = await User.find(mongoFilter)
-    .select('name email phone isActive createdAt addresses')
+    .select("name email phone isActive createdAt addresses")
     .sort({ createdAt: -1 })
     .skip(offset)
     .limit(limit);
@@ -189,10 +213,10 @@ export const adminUsers = async (_p, { filter }, ctx) => {
     { $match: { userId: { $in: userIds } } },
     {
       $group: {
-        _id: '$userId',
+        _id: "$userId",
         totalOrders: { $sum: 1 },
-        totalSpent: { $sum: '$amounts.total' },
-        lastOrderAt: { $max: '$createdAt' },
+        totalSpent: { $sum: "$amounts.total" },
+        lastOrderAt: { $max: "$createdAt" },
       },
     },
   ]);
@@ -219,21 +243,25 @@ export const adminUsers = async (_p, { filter }, ctx) => {
 };
 
 export const adminUserDetail = async (_p, { id }, ctx) => {
-  requireRole(['SUPER_ADMIN', 'SUPPORT'])(ctx);
+  requireRole(["SUPER_ADMIN", "SUPPORT"])(ctx);
 
   if (!mongoose.isValidObjectId(id)) {
-    throw new GraphQLError('Некорректный id', { extensions: { code: 'BAD_USER_INPUT' } });
+    throw new GraphQLError("Некорректный id", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
   }
 
   const user = await User.findById(id);
   if (!user) {
-    throw new GraphQLError('Пользователь не найден', { extensions: { code: 'NOT_FOUND' } });
+    throw new GraphQLError("Пользователь не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
   }
 
   const orders = await Order.find({ userId: user._id })
     .sort({ createdAt: -1 })
     .limit(20)
-    .populate('restaurantId', 'name')
+    .populate("restaurantId", "name")
     .lean();
 
   return {
@@ -258,22 +286,26 @@ export const adminUserDetail = async (_p, { id }, ctx) => {
       orderId: o.orderId,
       orderStatus: o.orderStatus,
       total: o.amounts?.total || 0,
-      restaurantName: o.restaurantId?.name || '—',
+      restaurantName: o.restaurantId?.name || "—",
       createdAt: o.createdAt,
     })),
   };
 };
 
 export const toggleUserActive = async (_p, { id, isActive }, ctx) => {
-  requireRole(['SUPER_ADMIN', 'SUPPORT'])(ctx);
+  requireRole(["SUPER_ADMIN", "SUPPORT"])(ctx);
 
   if (!mongoose.isValidObjectId(id)) {
-    throw new GraphQLError('Некорректный id', { extensions: { code: 'BAD_USER_INPUT' } });
+    throw new GraphQLError("Некорректный id", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
   }
 
   const user = await User.findById(id);
   if (!user) {
-    throw new GraphQLError('Пользователь не найден', { extensions: { code: 'NOT_FOUND' } });
+    throw new GraphQLError("Пользователь не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
   }
 
   user.isActive = !!isActive;
@@ -283,4 +315,63 @@ export const toggleUserActive = async (_p, { id, isActive }, ctx) => {
     id: user._id.toString(),
     isActive: user.isActive,
   };
+};
+
+export const updateUser = async (_p, { input }, ctx) => {
+  const current = requireUser(ctx);
+
+  // 1) Валидация телефона, если передан
+  if (input.phone !== undefined && input.phone !== null && input.phone !== "") {
+    const cleaned = String(input.phone).replace(/[\s\-()]/g, "");
+    if (!TJ_PHONE_REGEX.test(cleaned)) {
+      throw new GraphQLError(
+        "Телефон должен быть в формате +992 и ровно 9 цифр (например +992901234567)",
+        { extensions: { code: "BAD_USER_INPUT" } },
+      );
+    }
+    input.phone = cleaned;
+  }
+
+  const user = await User.findById(current._id);
+  if (!user) {
+    throw new GraphQLError("Пользователь не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
+  }
+
+  // 2) Применяем изменения
+  if (input.name !== undefined) {
+    const name = String(input.name).trim();
+    if (name.length < 2) {
+      throw new GraphQLError("Имя должно содержать минимум 2 символа", {
+        extensions: { code: "BAD_USER_INPUT" },
+      });
+    }
+    user.name = name;
+  }
+
+  if (input.email !== undefined) {
+    const email = String(input.email).trim().toLowerCase();
+    if (email) {
+      // Проверяем уникальность email, если он сменился
+      if (email !== (user.email || "").toLowerCase()) {
+        const exists = await User.findOne({ email });
+        if (exists && exists._id.toString() !== user._id.toString()) {
+          throw new GraphQLError("Этот email уже используется", {
+            extensions: { code: "CONFLICT" },
+          });
+        }
+        user.email = email;
+      }
+    } else {
+      user.email = undefined;
+    }
+  }
+
+  if (input.phone !== undefined) {
+    user.phone = input.phone || undefined;
+  }
+
+  await user.save();
+  return user;
 };
