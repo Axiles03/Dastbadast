@@ -12,6 +12,21 @@ export const RIDER_LOGIN = gql`
     }
   }
 `;
+export const COURIER_SEARCH_NOTIFY = gql`
+  subscription CourierSearchNotify {
+    courierSearchNotify {
+      orderId
+      orderIdStr
+      restaurantName
+      restaurantLocation
+      riderIds
+      radiusKm
+      escalation
+      fastAcceptBonus
+      createdAt
+    }
+  }
+`;
 
 export const AVAILABLE_ORDERS = gql`
   query AvailableOrders {
@@ -37,6 +52,14 @@ export const AVAILABLE_ORDERS = gql`
       }
       amounts {
         total
+      }
+      statusTimestamps {
+        pendingAt
+        acceptedAt
+        courierSearchTimestamps {
+          initialPushedAt
+          escalationPushedAt
+        }
       }
     }
   }

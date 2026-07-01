@@ -8,6 +8,7 @@ import { GET_ADDRESSES } from "@/lib/queries";
 import { useAuth } from "@/lib/auth-context";
 import { useCart } from "@/lib/cart-context";
 import { useShell } from "@/lib/shell-context";
+import { useHasMounted } from "@/lib/hooks/useHasMounted"; // ⭐ NEW
 
 export function TopHeader({
   title,
@@ -18,15 +19,18 @@ export function TopHeader({
 }) {
   const { setCartOpen, setFiltersOpen, mobileMenuOpen, setMobileMenuOpen } =
     useShell();
-  const { user, mounted } = useAuth();
+  const { user } = useAuth();
   const { items } = useCart();
-  const count = items.reduce((s, i) => s + i.quantity, 0);
+  const mounted = useHasMounted(); // ⭐ гейт всего клиентского state
+
   const [openAddr, setOpenAddr] = useState(false);
 
-  // До гидратации skip-аем запрос, чтобы SSR и клиент рендерили одинаково
+  // ⭐ БЕЗОПАСНО: skip на сервере и до гидратации → нет расхождения HTML
   const { data: addrData } = useQuery(GET_ADDRESSES, {
     skip: !mounted || !user,
   });
+
+  const count = items.reduce((s, i) => s + i.quantity, 0);
   const selected = addrData?.selectedAddress;
   const addrLabel = selected
     ? `${selected.label} · ${selected.address?.split(",")[0] ?? ""}`
@@ -37,7 +41,6 @@ export function TopHeader({
       <div className="px-5 sm:px-8 py-4 flex items-center justify-between gap-3">
         {/* === ЛЕВАЯ ЧАСТЬ: бургер (мобилка) + заголовок === */}
         <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
-          {/* ✅ БУРГЕР-МЕНЮ — только на мобильных */}
           <button
             type="button"
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -66,52 +69,60 @@ export function TopHeader({
         {/* === ПРАВАЯ ЧАСТЬ: адрес + корзина === */}
         <div className="flex items-center gap-2 sm:gap-4">
           <div className="relative">
-            <button
-              type="button"
-              onClick={() => setOpenAddr((v) => !v)}
-              className="flex items-center gap-1.5 text-sm font-semibold text-soft-text-soft hover:text-soft-text px-2.5 sm:px-3 py-2 rounded-full hover:bg-soft-surface transition-colors"
-            >
-              <MapPin className="w-4 h-4 text-soft-accent" />
-              <span className="hidden sm:inline max-w-[160px] truncate">
-                {addrLabel}
-              </span>
-              <ChevronDown className="w-3.5 h-3.5" />
-            </button>
-
-            {openAddr && (
+            {/* ⭐ Skeleton на сервере/до гидратации, реальный контент — после */}
+            {mounted ? (
               <>
-                <div
-                  className="fixed inset-0 z-40"
-                  onClick={() => setOpenAddr(false)}
-                />
-                <div className="absolute right-0 mt-2 w-72 bg-soft-surface rounded-2xl border border-soft-border shadow-soft-lg p-2 z-50">
-                  {addrData?.addresses?.length ? (
-                    addrData.addresses.map((a: any) => (
-                      <button
-                        key={a.id}
-                        type="button"
-                        onClick={() => setOpenAddr(false)}
-                        className="w-full text-left p-3 rounded-xl hover:bg-soft-surface-2"
-                      >
-                        <div className="text-sm font-bold text-soft-text">
-                          {a.label}
-                        </div>
-                        <div className="text-xs text-soft-text-soft truncate">
-                          {a.address}
-                        </div>
-                      </button>
-                    ))
-                  ) : (
-                    <Link
-                      href="/address"
+                <button
+                  type="button"
+                  onClick={() => setOpenAddr((v) => !v)}
+                  className="flex items-center gap-1.5 text-sm font-semibold text-soft-text-soft hover:text-soft-text px-2.5 sm:px-3 py-2 rounded-full hover:bg-soft-surface transition-colors"
+                >
+                  <MapPin className="w-4 h-4 text-soft-accent" />
+                  <span className="hidden sm:inline max-w-[160px] truncate">
+                    {addrLabel}
+                  </span>
+                  <ChevronDown className="w-3.5 h-3.5" />
+                </button>
+
+                {openAddr && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40"
                       onClick={() => setOpenAddr(false)}
-                      className="block p-3 rounded-xl hover:bg-soft-surface-2 text-sm text-soft-accent font-semibold"
-                    >
-                      + Добавить адрес доставки
-                    </Link>
-                  )}
-                </div>
+                    />
+                    <div className="absolute right-0 mt-2 w-72 bg-soft-surface rounded-2xl border border-soft-border shadow-soft-lg p-2 z-50">
+                      {addrData?.addresses?.length ? (
+                        addrData.addresses.map((a: any) => (
+                          <button
+                            key={a.id}
+                            type="button"
+                            onClick={() => setOpenAddr(false)}
+                            className="w-full text-left p-3 rounded-xl hover:bg-soft-surface-2"
+                          >
+                            <div className="text-sm font-bold text-soft-text">
+                              {a.label}
+                            </div>
+                            <div className="text-xs text-soft-text-soft truncate">
+                              {a.address}
+                            </div>
+                          </button>
+                        ))
+                      ) : (
+                        <Link
+                          href="/address"
+                          onClick={() => setOpenAddr(false)}
+                          className="block p-3 rounded-xl hover:bg-soft-surface-2 text-sm text-soft-accent font-semibold"
+                        >
+                          + Добавить адрес доставки
+                        </Link>
+                      )}
+                    </div>
+                  </>
+                )}
               </>
+            ) : (
+              /* ⭐ Стейбл-плейсхолдер: одинаковый на SSR и при первом клиентском рендере */
+              <div className="hidden sm:flex items-center gap-1.5 px-3 py-2 h-[36px] w-[140px] bg-soft-surface-2 rounded-full animate-pulse" />
             )}
           </div>
 
@@ -124,7 +135,8 @@ export function TopHeader({
           >
             <ShoppingBag className="w-4 h-4" />
             <span className="hidden sm:inline">Моя корзина</span>
-            {count > 0 && (
+            {/* ⭐ Бейдж count рендерим ТОЛЬКО после mounted (и только если > 0) */}
+            {mounted && count > 0 && (
               <span className="bg-soft-accent text-white text-[10px] font-extrabold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1.5">
                 {count}
               </span>

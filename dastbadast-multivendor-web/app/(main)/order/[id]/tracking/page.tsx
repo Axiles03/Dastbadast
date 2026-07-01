@@ -1,3 +1,4 @@
+// dastbadast-multivendor-web/app/(main)/order/[id]/tracking/page.tsx
 "use client";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useQuery, useSubscription, useMutation } from "@apollo/client/react";
@@ -97,7 +98,13 @@ function TrackingInner() {
     CONFIRM_ORDER_RECEIVED,
   );
 
-  const o = data?.order;
+  // ⭐⭐⭐ FIX: безопасные дефолты для всех вложенных полей
+  const o = data?.order ?? null;
+
+  // ⭐⭐⭐ FIX: защита от undefined через optional chaining + nullish coalescing
+  const isSearchingRider =
+    !o?.riderId && // ⬅️ было: !o.riderId
+    (o?.orderStatus === "PENDING" || o?.orderStatus === "ACCEPTED");
 
   useEffect(() => {
     if (!o || o.orderStatus !== "AWAITING_CONFIRMATION") return;
@@ -116,6 +123,7 @@ function TrackingInner() {
     return () => clearInterval(interval);
   }, [o?.id, o?.orderStatus, refetch]);
 
+  // ⭐⭐⭐ FIX: riderId безопасно извлекается
   const riderId: string | null = o?.riderId ?? null;
   const hasRider = !!riderId && riderId.length === 24;
 
@@ -220,8 +228,8 @@ function TrackingInner() {
 
   useEffect(() => {
     if (!riderPos || !o) return;
-    const destLat = o.deliveryAddress?.location?.coordinates?.[1];
-    const destLng = o.deliveryAddress?.location?.coordinates?.[0];
+    const destLat = o?.deliveryAddress?.location?.coordinates?.[1];
+    const destLng = o?.deliveryAddress?.location?.coordinates?.[0];
     if (typeof destLat === "number" && typeof destLng === "number") {
       const km = haversineKm(riderPos.lat, riderPos.lng, destLat, destLng);
       setEtaMin(Math.max(1, Math.round((km / 25) * 60)));
@@ -233,7 +241,7 @@ function TrackingInner() {
       setTimeLeftMs(null);
       return;
     }
-    const deliveredAt = o.statusTimestamps?.deliveredAt;
+    const deliveredAt = o?.statusTimestamps?.deliveredAt;
     if (!deliveredAt) {
       setTimeLeftMs(null);
       return;
@@ -294,6 +302,7 @@ function TrackingInner() {
     );
   }
 
+  // ⭐⭐⭐ FIX: ранний возврат, если данных нет
   if (!o) {
     return (
       <div className="bg-soft-surface border border-soft-border rounded-2xl p-6 text-center space-y-4">
@@ -308,6 +317,7 @@ function TrackingInner() {
     );
   }
 
+  // ⭐ С этого момента TypeScript точно знает, что o не null
   const sym = cfg?.configuration?.currencySymbol ?? "сом.";
   const chatEnabled = [
     "ASSIGNED",
@@ -324,7 +334,28 @@ function TrackingInner() {
 
   return (
     <>
-      <OrderStatusStage status={o.orderStatus as any} />
+      <OrderStatusStage
+        status={o.orderStatus as any}
+        acceptedAt={o?.statusTimestamps?.acceptedAt ?? null}
+        prepTime={o?.statusTimestamps?.prepTime ?? null}
+      />
+
+      {isSearchingRider && (
+        <div className="mt-6 bg-soft-warning-soft text-soft-warning-dark border border-soft-warning/30 rounded-2xl p-4 flex items-center gap-3 shadow-soft-sm animate-fade-in">
+          <div className="text-3xl animate-pulse">🛵</div>
+          <div className="flex-1">
+            <p className="font-extrabold text-base">Ищем ближайшего курьера</p>
+            <p className="text-xs text-soft-warning-dark/80 mt-0.5">
+              Отправили заявку{" "}
+              {o?.statusTimestamps?.courierSearchTimestamps?.initialPushedAt
+                ? `${Math.max(1, Math.round((Date.now() - new Date(o.statusTimestamps.courierSearchTimestamps.initialPushedAt).getTime()) / 1000))} сек назад`
+                : "только что"}
+              {o?.statusTimestamps?.courierSearchTimestamps
+                ?.escalationPushedAt && " · ⚡ эскалация отправлена"}
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="mt-6 bg-soft-surface border border-soft-border rounded-2xl p-5 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-soft-sm">
         <p className="text-sm text-soft-text-soft text-center sm:text-left">
@@ -356,13 +387,13 @@ function TrackingInner() {
           >
             <OrderTrackingMap
               deliveryLat={
-                o.deliveryAddress?.location?.coordinates?.[1] ?? 38.574
+                o?.deliveryAddress?.location?.coordinates?.[1] ?? 38.574
               }
               deliveryLng={
-                o.deliveryAddress?.location?.coordinates?.[0] ?? 68.783
+                o?.deliveryAddress?.location?.coordinates?.[0] ?? 68.783
               }
-              pickupLat={o.pickupAddress?.location?.coordinates?.[1] ?? null}
-              pickupLng={o.pickupAddress?.location?.coordinates?.[0] ?? null}
+              pickupLat={o?.pickupAddress?.location?.coordinates?.[1] ?? null}
+              pickupLng={o?.pickupAddress?.location?.coordinates?.[0] ?? null}
               riderLat={riderPos?.lat ?? null}
               riderLng={riderPos?.lng ?? null}
             />

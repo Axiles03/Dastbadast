@@ -89,7 +89,6 @@ export const CREATE_ADDRESS = gql`
       address
       city
       isSelected
-      location
     }
   }
 `;
@@ -118,6 +117,19 @@ export const GET_RESTAURANTS = gql`
       image
       address
       minimumOrder
+    }
+  }
+`;
+
+// ⭐ ДОБАВЛЕНО: лёгкая проверка ресторана для корзины
+export const GET_RESTAURANT_CHECK = gql`
+  query GetRestaurantCheck($id: ID!) {
+    restaurant(id: $id) {
+      id
+      name
+      tax
+      minimumOrder
+      isAvailable
     }
   }
 `;
@@ -151,18 +163,6 @@ export const GET_RESTAURANT = gql`
           }
         }
       }
-    }
-  }
-`;
-
-export const GET_RESTAURANT_CHECK = gql`
-  query GetRestaurantCheck($id: ID!) {
-    restaurant(id: $id) {
-      id
-      name
-      tax
-      minimumOrder
-      isAvailable
     }
   }
 `;
@@ -225,6 +225,7 @@ export const PLACE_ORDER = gql`
   }
 `;
 
+// ⭐⭐⭐ ИСПРАВЛЕНО: добавлен prepTime в selection set
 export const GET_ORDER = gql`
   query GetOrder($id: ID!) {
     order(id: $id) {
@@ -254,12 +255,18 @@ export const GET_ORDER = gql`
         city
         location
       }
+      # ⭐⭐⭐ ВОТ ОН — КЛЮЧЕВОЙ ФИКС: prepTime
       statusTimestamps {
         deliveredAt
         pickedAt
         assignedAt
         acceptedAt
         pendingAt
+        prepTime
+        courierSearchTimestamps {
+          initialPushedAt
+          escalationPushedAt
+        }
       }
       createdAt
     }

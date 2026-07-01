@@ -1,4 +1,7 @@
+// dastbadast-multivendor-store/components/SegmentedTabs.tsx
 import { Text, TouchableOpacity, View } from "react-native";
+// ⭐ ИМПОРТ ТОЛЬКО ИЗ react-native — никаких @react-navigation/* проксирований
+
 import { cn } from "../lib/cn";
 
 type Tab<T extends string> = {

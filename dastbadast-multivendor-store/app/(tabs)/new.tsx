@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useMemo } from "react";
+import { useEffect, useMemo, useCallback, useState } from "react";
 import {
   View,
   Text,
@@ -6,7 +6,8 @@ import {
   Pressable,
   ActivityIndicator,
   Alert,
-  TouchableOpacity
+  Modal,
+  TouchableOpacity,
 } from "react-native";
 import { useQuery, useMutation, useSubscription } from "@apollo/client/react";
 import {
@@ -28,7 +29,10 @@ import { EmptyState } from "../../components/EmptyState";
 import { cn } from "../../lib/cn";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-const PREP_TIME = 20;
+// Предустановленные опции времени приготовления (мин).
+// Шаг 5, диапазон 20..60.
+const PREP_TIME_OPTIONS = [20, 25, 30, 35, 40, 45, 50, 55, 60];
+const DEFAULT_PREP_TIME = 40;
 
 export default function NewOrders() {
   const { restaurant } = useAuth();
@@ -50,9 +54,9 @@ export default function NewOrders() {
     onData: ({ data: subData, client }: any) => {
       const order = subData?.data?.subscribePlaceOrder;
       if (!order) return;
-      Haptics.notificationAsync(
-        Haptics.NotificationFeedbackType.Success
-      ).catch(() => {});
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
+        () => {},
+      );
       Toast.show({
         type: "success",
         text1: "🔔 Новый заказ!",
@@ -70,32 +74,48 @@ export default function NewOrders() {
   const [acceptOrder, { loading: acLoading }] = useMutation(ACCEPT_ORDER);
   const [cancelOrder, { loading: cancelLoading }] = useMutation(CANCEL_ORDER);
 
+  // ⭐ Модалка выбора времени приготовления
+  const [prepModal, setPrepModal] = useState<{
+    orderId: string;
+    order: any;
+  } | null>(null);
+  const [prepTime, setPrepTime] = useState<number>(DEFAULT_PREP_TIME);
+
+  // Просто открывает модалку — без Alert
   const onAccept = useCallback(
     (orderId: string) => {
-      Alert.alert("Принять заказ?", `Время приготовления: ${PREP_TIME} минут`, [
-        { text: "Отмена", style: "cancel" },
-        {
-          text: "Принять",
-          onPress: async () => {
-            try {
-              await acceptOrder({
-                variables: { input: { orderId, prepTime: PREP_TIME } },
-              });
-              Toast.show({
-                type: "success",
-                text1: "✅ Заказ принят",
-                text2: "Курьер сам заберёт из списка",
-              });
-              refetch();
-            } catch (e: any) {
-              Alert.alert("Ошибка", e?.message ?? "Не удалось принять");
-            }
-          },
-        },
-      ]);
+      const order = (data?.restaurantOrders ?? []).find(
+        (o: any) => o.id === orderId,
+      );
+      if (!order) {
+        Alert.alert("Ошибка", "Заказ не найден в списке");
+        return;
+      }
+      setPrepTime(DEFAULT_PREP_TIME);
+      setPrepModal({ orderId, order });
     },
-    [acceptOrder, refetch]
+    [data],
   );
+
+  const confirmAccept = async () => {
+    if (!prepModal) return;
+    try {
+      await acceptOrder({
+        variables: {
+          input: { orderId: prepModal.orderId, prepTime },
+        },
+      });
+      Toast.show({
+        type: "success",
+        text1: "✅ Заказ принят",
+        text2: `Время приготовления: ${prepTime} мин`,
+      });
+      setPrepModal(null);
+      refetch();
+    } catch (e: any) {
+      Alert.alert("Ошибка", e?.message ?? "Не удалось принять");
+    }
+  };
 
   const onCancel = useCallback(
     (orderId: string) => {
@@ -118,7 +138,7 @@ export default function NewOrders() {
         },
       ]);
     },
-    [cancelOrder, refetch]
+    [cancelOrder, refetch],
   );
 
   const orders = data?.restaurantOrders ?? [];
@@ -128,7 +148,7 @@ export default function NewOrders() {
     const total = orders.length;
     const totalAmount = orders.reduce(
       (s: number, o: any) => s + (o.amounts?.total ?? 0),
-      0
+      0,
     );
     return { total, totalAmount };
   }, [orders]);
@@ -143,7 +163,7 @@ export default function NewOrders() {
   }
 
   return (
-    <View className="flex-1 bg-soft-bg">
+    <SafeAreaView className="flex-1 bg-soft-bg">
       <View className="px-5 pb-2 flex-row items-end justify-between">
         <View className="flex-1">
           <Text className="text-2xl font-extrabold text-text tracking-tight">
@@ -167,7 +187,7 @@ export default function NewOrders() {
 
       {queryError && (
         <View className="mx-5 my-2 bg-red-soft border border-red/30 rounded-xl px-3 py-2">
-          <Text className="text-red-dark text-sm font-semibold">
+          <Text className="text-red text-sm font-semibold">
             ⚠️ {queryError.message}
           </Text>
         </View>
@@ -190,7 +210,7 @@ export default function NewOrders() {
         }
         renderItem={({ item }: any) => {
           const minutesAgo = Math.floor(
-            (Date.now() - new Date(item.createdAt).getTime()) / 60_000
+            (Date.now() - new Date(item.createdAt).getTime()) / 60_000,
           );
           const isUrgent = minutesAgo >= 10;
 
@@ -200,7 +220,7 @@ export default function NewOrders() {
                 "bg-soft-surface border rounded-2xl p-4 mb-3.5 shadow-soft-sm",
                 isUrgent
                   ? "bg-accent-soft border-accent border-2"
-                  : "border-border"
+                  : "border-border",
               )}
             >
               <View className="flex-row justify-between items-start mb-3">
@@ -259,7 +279,9 @@ export default function NewOrders() {
 
               {item.note && (
                 <View className="mt-2.5 bg-warning-soft rounded-xl p-2.5 border-l-[3px] border-warning">
-                  <Text className="text-sm text-text italic">💬 {item.note}</Text>
+                  <Text className="text-sm text-text italic">
+                    💬 {item.note}
+                  </Text>
                 </View>
               )}
 
@@ -269,7 +291,7 @@ export default function NewOrders() {
                   onPress={() => onAccept(item.id)}
                   className={cn(
                     "flex-1 h-12 rounded-xl items-center justify-center bg-success shadow-soft-sm",
-                    busy ? "opacity-40" : "active:opacity-80"
+                    busy ? "opacity-40" : "active:opacity-80",
                   )}
                 >
                   <Text className="text-text-inverse font-extrabold text-base tracking-wide">
@@ -281,10 +303,10 @@ export default function NewOrders() {
                   onPress={() => onCancel(item.id)}
                   className={cn(
                     "flex-1 h-12 rounded-xl items-center justify-center bg-soft-surface border border-red",
-                    busy ? "opacity-40" : "active:opacity-80"
+                    busy ? "opacity-40" : "active:opacity-80",
                   )}
                 >
-                  <Text className="text-red-dark font-extrabold text-base tracking-wide">
+                  <Text className="text-red font-extrabold text-base tracking-wide">
                     ✕ Отменить
                   </Text>
                 </TouchableOpacity>
@@ -293,6 +315,179 @@ export default function NewOrders() {
           );
         }}
       />
-    </View>
+
+      {/* ⭐ Модалка выбора времени приготовления */}
+      {prepModal && (
+        <PrepTimeModal
+          visible={!!prepModal}
+          order={prepModal.order}
+          selected={prepTime}
+          onSelect={setPrepTime}
+          onConfirm={confirmAccept}
+          onClose={() => setPrepModal(null)}
+          busy={acLoading}
+        />
+      )}
+    </SafeAreaView>
+  );
+}
+
+/* ============== Модалка выбора времени ============== */
+
+function PrepTimeModal({
+  visible,
+  order,
+  selected,
+  onSelect,
+  onConfirm,
+  onClose,
+  busy,
+}: {
+  visible: boolean;
+  order: any;
+  selected: number;
+  onSelect: (m: number) => void;
+  onConfirm: () => void;
+  onClose: () => void;
+  busy: boolean;
+}) {
+  if (!visible || !order) return null;
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
+      <View className="flex-1 bg-black/50 justify-end">
+        <Pressable className="flex-1" onPress={onClose} />
+
+        <View className="bg-soft-surface rounded-t-3xl p-5 pb-8">
+          <View className="items-center mb-3">
+            <View className="w-12 h-1 bg-border rounded-full" />
+          </View>
+
+          <Text className="text-lg font-extrabold text-text">
+            Принять заказ
+          </Text>
+
+          {/* Информация о заказе */}
+          <View className="mt-3 bg-soft-surface-2 border border-border rounded-2xl p-3.5">
+            <Text className="text-sm font-bold text-text" numberOfLines={1}>
+              Заказ #{String(order.orderId).substring(0, 8)}
+            </Text>
+            <View className="flex-row justify-between mt-1.5">
+              <Text className="text-xs text-text-muted">Сумма</Text>
+              <Text className="text-sm font-extrabold text-accent">
+                {order.amounts?.total} сом.
+              </Text>
+            </View>
+            <View className="flex-row justify-between mt-1">
+              <Text className="text-xs text-text-muted">Ожидает с</Text>
+              <Text className="text-xs font-bold text-text-soft">
+                {formatTimeAgo(order.createdAt)}
+              </Text>
+            </View>
+            {order.deliveryAddress && (
+              <View className="mt-2 pt-2 border-t border-border">
+                <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
+                  📍 Доставить
+                </Text>
+                <Text className="text-xs text-text-soft leading-5">
+                  {order.deliveryAddress.city
+                    ? `${order.deliveryAddress.city}, `
+                    : ""}
+                  {order.deliveryAddress.address}
+                </Text>
+              </View>
+            )}
+            {order.items && order.items.length > 0 && (
+              <View className="mt-2 pt-2 border-t border-border">
+                <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
+                  🍽 Состав
+                </Text>
+                {order.items.map((it: any) => (
+                  <Text key={it.foodId} className="text-xs text-text-soft">
+                    • {it.title}{" "}
+                    <Text className="text-text-muted">×{it.quantity}</Text>
+                  </Text>
+                ))}
+              </View>
+            )}
+          </View>
+
+          {/* Заголовок выбора */}
+          <Text className="text-sm font-extrabold text-text mt-5">
+            ⏱ Сколько времени на готовку?
+          </Text>
+          <Text className="text-2xs text-text-muted mt-0.5 mb-3">
+            Минимум 20 минут · Максимум 60 минут · Шаг 5 минут
+          </Text>
+
+          {/* Сетка выбора 3×3 */}
+          <View className="flex-row flex-wrap gap-2">
+            {PREP_TIME_OPTIONS.map((min) => {
+              const active = selected === min;
+              return (
+                <Pressable
+                  key={min}
+                  onPress={() => onSelect(min)}
+                  className={cn(
+                    "w-[31%] py-3.5 rounded-2xl items-center border-2",
+                    active
+                      ? "bg-accent border-accent"
+                      : "bg-soft-surface border-border",
+                  )}
+                >
+                  <Text
+                    className={cn(
+                      "text-lg font-extrabold",
+                      active ? "text-text-inverse" : "text-text",
+                    )}
+                  >
+                    {min}
+                  </Text>
+                  <Text
+                    className={cn(
+                      "text-2xs font-bold mt-0.5",
+                      active ? "text-text-inverse/80" : "text-text-muted",
+                    )}
+                  >
+                    мин
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          {/* Кнопки действий */}
+          <View className="flex-row gap-2 mt-5">
+            <Pressable
+              onPress={onClose}
+              className="flex-1 h-12 rounded-2xl items-center justify-center border border-border bg-soft-surface"
+            >
+              <Text className="text-text-soft font-bold text-base">Отмена</Text>
+            </Pressable>
+            <Pressable
+              onPress={onConfirm}
+              disabled={busy}
+              className={cn(
+                "flex-[2] h-12 rounded-2xl items-center justify-center bg-success shadow-soft-sm",
+                busy ? "opacity-40" : "active:opacity-80",
+              )}
+            >
+              {busy ? (
+                <ActivityIndicator color="white" />
+              ) : (
+                <Text className="text-text-inverse font-extrabold text-base">
+                  ✓ Принять · {selected} мин
+                </Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }

@@ -1,3 +1,4 @@
+// dastbadast-multivendor-api/src/resolvers/subscriptions.js
 import { GraphQLError } from "graphql";
 import { pubsub, TOPICS } from "../pubsub.js";
 
@@ -65,4 +66,14 @@ export const newChatMessage = {
     return pubsub.asyncIterator(TOPICS.CHAT(orderId));
   },
   resolve: (p) => p.newChatMessage,
+};
+
+// ⭐⭐⭐ НОВОЕ: уведомления автопоиска курьера
+// Курьер подписывается на этот канал и получает список заказов,
+// которые были разосланы ему при автопоиске.
+export const courierSearchNotify = {
+  subscribe: (_p, _args) => {
+    return pubsub.asyncIterator(TOPICS.COURIER_SEARCH_NOTIFY);
+  },
+  resolve: (p) => p.courierSearchNotify,
 };

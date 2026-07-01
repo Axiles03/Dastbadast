@@ -80,6 +80,7 @@ import {
   subscriptionRiderLocation,
   subscriptionRiderOrderCompleted,
   newChatMessage,
+  courierSearchNotify,
 } from "./subscriptions.js";
 import { JSONScalar, DateTimeScalar } from "../utils/scalars.js";
 
@@ -168,6 +169,7 @@ export const resolvers = {
     subscriptionRiderLocation,
     subscriptionRiderOrderCompleted,
     newChatMessage,
+    courierSearchNotify,
   },
   Restaurant: {
     id: mongoId,

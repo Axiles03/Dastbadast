@@ -1,3 +1,4 @@
+// dastbadast-multivendor-api/src/pubsub.js
 import { PubSub } from "graphql-subscriptions";
 export const pubsub = new PubSub();
 
@@ -11,4 +12,7 @@ export const TOPICS = {
   ZONE_ORDERS: (zoneId) => `ZONE_ORDERS_${zoneId || "all"}`,
   AVAILABLE_ORDERS: (zoneId) => `AVAILABLE_ORDERS_${zoneId || "all"}`,
   CHAT: (orderId) => `CHAT_${orderId}`,
+
+  // ⭐⭐⭐ НОВОЕ: уведомления автопоиска курьера
+  COURIER_SEARCH_NOTIFY: "COURIER_SEARCH_NOTIFY",
 };

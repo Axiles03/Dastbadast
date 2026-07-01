@@ -350,7 +350,7 @@ function CartInner() {
               return;
             }
             clear();
-            router.push(`/order/${orderId}/tracking`);
+            router.push(`/orders/${orderId}/waiting`);
           } catch (e: any) {
             debugError("Cart", "placeOrder failed", e.message);
             setError(e.message);

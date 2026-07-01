@@ -19,6 +19,7 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { useShell } from "@/lib/shell-context";
 import { AuthButtons } from "./AuthButtons";
+import { useHasMounted } from "@/lib/hooks/useHasMounted"; // ⭐ NEW
 
 const MENU_ITEMS = [
   { id: "menu", label: "Меню", href: "/", icon: UtensilsCrossed },
@@ -26,14 +27,8 @@ const MENU_ITEMS = [
   { id: "address", label: "Адрес", href: "/address", icon: MapPin },
 ];
 
-// ✅ NEW: реальные ссылки, активные, без «Избранного»
 const GENERAL_ITEMS = [
-  {
-    id: "help",
-    label: "Помощь",
-    href: "/help",
-    icon: HelpCircle,
-  },
+  { id: "help", label: "Помощь", href: "/help", icon: HelpCircle },
   {
     id: "privacy",
     label: "Политика конфиденциальности",
@@ -59,16 +54,15 @@ function ProfileAvatar({ name }: { name: string }) {
 export function LeftSidebar() {
   const { collapsed, setCollapsed, mobileMenuOpen, setMobileMenuOpen } =
     useShell();
-  const { user, logout, mounted } = useAuth();
+  const { user, logout } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
+  const mounted = useHasMounted(); // ⭐ NEW
 
-  // Закрываем мобильное меню при смене маршрута
   useEffect(() => {
     setMobileMenuOpen(false);
   }, [pathname, setMobileMenuOpen]);
 
-  // Закрываем по Escape
   useEffect(() => {
     if (!mobileMenuOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -83,12 +77,11 @@ export function LeftSidebar() {
     return pathname.startsWith(href);
   };
 
-  // До гидратации считаем, что пользователя нет (стабильный SSR-вывод)
+  // ⭐ user показываем ТОЛЬКО после гидратации
   const showUser = mounted && user;
 
   return (
     <>
-      {/* ✅ Backdrop только на мобильных, когда меню открыто */}
       {mobileMenuOpen && (
         <div
           className="fixed inset-0 z-40 bg-soft-dark-2/60 backdrop-blur-sm md:hidden animate-fade-in"
@@ -113,7 +106,6 @@ export function LeftSidebar() {
         aria-modal={mobileMenuOpen ? "true" : undefined}
         aria-label="Главное меню"
       >
-        {/* Логотип + кнопка закрытия (мобилка) */}
         <div className="px-5 pt-7 pb-6 flex items-center justify-between gap-2">
           <Link
             href="/"
@@ -131,7 +123,6 @@ export function LeftSidebar() {
                 </div>
               )}
             </div>
-            {/* На мобильном логотип+название ВСЕГДА показаны */}
             <div className="md:hidden">
               <div className="font-extrabold text-lg tracking-tight whitespace-nowrap">
                 <span className="text-soft-text">Dast</span>
@@ -140,7 +131,6 @@ export function LeftSidebar() {
             </div>
           </Link>
 
-          {/* Кнопка закрытия (только мобилка) */}
           <button
             type="button"
             onClick={() => setMobileMenuOpen(false)}
@@ -176,7 +166,8 @@ export function LeftSidebar() {
                 </Link>
               )}
             </div>
-          ) : showUser ? (
+          ) : mounted && showUser ? (
+            // ⭐⭐ добавлено mounted &&
             <Link
               href="/profile"
               onClick={() => setMobileMenuOpen(false)}
@@ -203,9 +194,16 @@ export function LeftSidebar() {
                   <User className="w-7 h-7" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="font-bold text-sm text-soft-text">
-                    Вы не вошли
-                  </div>
+                  {/* ⭐⭐ на SSR и до гидратации рендерим стабильную заглушку */}
+                  {mounted ? (
+                    <div className="font-bold text-sm text-soft-text">
+                      Вы не вошли
+                    </div>
+                  ) : (
+                    <div className="font-bold text-sm text-soft-text">
+                      &nbsp;
+                    </div>
+                  )}
                   <div className="text-xs text-soft-text-muted underline">
                     Войти / Регистрация
                   </div>
@@ -258,7 +256,7 @@ export function LeftSidebar() {
           </ul>
         </div>
 
-        {/* === ОБЩЕЕ (Помощь + Политика) === */}
+        {/* === ОБЩЕЕ === */}
         <div className="px-3 mt-4">
           {(!collapsed || mobileMenuOpen) && (
             <div className="text-[11px] font-extrabold text-soft-text-muted tracking-widest px-3 mb-2">
@@ -326,7 +324,7 @@ export function LeftSidebar() {
           </div>
         )}
 
-        {/* === Кнопка сворачивания (только desktop) === */}
+        {/* === Кнопка сворачивания === */}
         <button
           type="button"
           onClick={() => setCollapsed(!collapsed)}

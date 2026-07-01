@@ -5,8 +5,8 @@ import { AuthProvider } from "../lib/auth-context";
 
 export default function RootLayout() {
   return (
-    <ApolloProviderClient>
-      <AuthProvider>
+    <ApolloProviderClient children={undefined}>
+      <AuthProvider children={undefined}>
         <Stack screenOptions={{ headerShown: false }} />
       </AuthProvider>
     </ApolloProviderClient>

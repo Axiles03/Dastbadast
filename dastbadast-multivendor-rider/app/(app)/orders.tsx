@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Switch,
   Alert,
+  Vibration,
 } from "react-native";
 import {
   useQuery,
@@ -23,12 +24,14 @@ import {
   SUB_ASSIGNED,
   SUB_AVAILABLE,
   SUB_RIDER_ORDER_COMPLETED,
+  COURIER_SEARCH_NOTIFY,
 } from "../../lib/api/queries";
 import { useAuth } from "../../lib/auth-context";
 import Toast from "react-native-toast-message";
 import { useRouter, useFocusEffect } from "expo-router";
 import { startGpsLoop, stopGpsLoop } from "../../lib/gps";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { cn } from "../../lib/cn"; // ⭐ ИМПОРТ РЕАЛЬНОЙ cn (НЕ локальной заглушки)
 
 function AddressBlock({
   label,
@@ -62,6 +65,12 @@ export default function OrdersScreen() {
   const [available, setAvailable] = useState(true);
   const [tab, setTab] = useState<"pool" | "mine">("pool");
 
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const i = setInterval(() => setNow(Date.now()), 10_000);
+    return () => clearInterval(i);
+  }, []);
+
   // GPS lifecycle
   useEffect(() => {
     if (!token || !rider) return;
@@ -86,6 +95,30 @@ export default function OrdersScreen() {
     variables: { status: null },
     pollInterval: 8_000,
     skip: !token,
+  }) as any;
+
+  // Если мы среди targetRiders, обновляем список
+  useSubscription(COURIER_SEARCH_NOTIFY, {
+    onData: ({ data: subData }: any) => {
+      const ev = subData?.courierSearchNotify;
+      if (!ev) return;
+      if (!rider?.id) return;
+      if (ev.riderIds?.includes(String(rider.id))) {
+        Toast.show({
+          type: "info",
+          text1: ev.escalation
+            ? "⚡ Срочно: эскалация поиска"
+            : "🔔 Новый заказ рядом",
+          text2: ev.restaurantName,
+          visibilityTime: 3000,
+        });
+        // Вибрация
+        try {
+          Vibration.vibrate(ev.escalation ? [0, 200, 100, 200] : 100);
+        } catch {}
+        refetchPool();
+      }
+    },
   });
 
   // Refetch только один раз при mount, дальше работают подписки
@@ -135,24 +168,27 @@ export default function OrdersScreen() {
     },
   });
 
+  // ⭐ Вычислить urgency для заказа
+  const getUrgency = (order: any): "normal" | "warning" | "urgent" | null => {
+    if (!order) return null;
+    if (order.orderStatus !== "PENDING" && order.orderStatus !== "ACCEPTED") {
+      return null;
+    }
+    const pendingAt = order.statusTimestamps?.pendingAt;
+    if (!pendingAt) return null;
+    const ageMs = now - new Date(pendingAt).getTime();
+    const escalated =
+      !!order.statusTimestamps?.courierSearchTimestamps?.escalationPushedAt;
+    if (ageMs > 90 * 1000 || escalated) return "urgent";
+    if (ageMs > 45 * 1000) return "warning";
+    return "normal";
+  };
+
   const [claimOrder, { loading: claiming }] = useMutation(CLAIM_ORDER);
   const [updateStatus, { loading: updating }] = useMutation(UPDATE_STATUS);
   const [toggleRider] = useMutation(TOGGLE);
 
-  const onAvailableChange = useCallback(
-    async (v: boolean) => {
-      setAvailable(v);
-      try {
-        await toggleRider({ variables: { available: v } });
-        if (v) refetchPool();
-      } catch (e: any) {
-        Alert.alert("Ошибка", e?.message ?? "");
-        setAvailable(!v);
-      }
-    },
-    [toggleRider, refetchPool],
-  );
-
+  // ⭐ РЕАЛЬНАЯ реализация (была заглушка)
   const onClaim = useCallback(
     async (orderId: string) => {
       try {
@@ -167,6 +203,120 @@ export default function OrdersScreen() {
       }
     },
     [claimOrder, refetchMine, refetchPool],
+  );
+
+  // ⭐⭐⭐ FIX Bug #3: renderPoolItem — убрана заглушка cn()
+  const renderPoolItem = useCallback(
+    ({ item }: any) => {
+      const urgency = getUrgency(item);
+
+      return (
+        <View
+          className={cn(
+            "bg-soft-surface border rounded-2xl p-4 mb-3 shadow-soft-sm",
+            urgency === "urgent"
+              ? "border-red border-2 bg-red-soft"
+              : urgency === "warning"
+                ? "border-warning border-2"
+                : "border-border",
+          )}
+        >
+          <View className="flex-row justify-between items-center border-b border-border pb-2">
+            <Text className="text-base font-extrabold text-text">
+              📦 #{item.orderId.substring(0, 8)}
+            </Text>
+            <View className="flex-row gap-1">
+              {urgency === "urgent" && (
+                <View className="bg-red rounded-full px-2 py-0.5">
+                  <Text className="text-text-inverse text-2xs font-extrabold">
+                    ⚡ Срочно
+                  </Text>
+                </View>
+              )}
+              {urgency === "warning" && (
+                <View className="bg-warning-soft rounded-full px-2 py-0.5">
+                  <Text className="text-warning-dark text-2xs font-extrabold">
+                    ⏳ Ждём
+                  </Text>
+                </View>
+              )}
+              <Text className="text-xs font-bold text-accent-dark bg-accent-soft px-2.5 py-1 rounded-lg">
+                Ждёт курьера
+              </Text>
+            </View>
+          </View>
+
+          <AddressBlock
+            label="Откуда"
+            name={item.pickupAddress?.name}
+            address={item.pickupAddress?.address}
+          />
+          <AddressBlock
+            label="Куда"
+            city={item.deliveryAddress?.city}
+            address={item.deliveryAddress?.address}
+          />
+
+          {item.note ? (
+            <View className="bg-soft-surface-2 p-2.5 rounded-xl mt-3 border border-border/40">
+              <Text className="text-xs italic text-text-soft">
+                💬 {item.note}
+              </Text>
+            </View>
+          ) : null}
+
+          <View className="mt-3 pt-2 border-t border-border/30 space-y-0.5">
+            {item.items.map((i: any) => (
+              <Text
+                key={i.foodId}
+                className="text-xs text-text-soft font-medium"
+              >
+                • {i.title}{" "}
+                <Text className="text-text font-bold">×{i.quantity}</Text>
+              </Text>
+            ))}
+          </View>
+
+          <View className="flex-row items-center justify-between mt-4 pt-2 border-t border-border">
+            <Text className="text-lg font-black text-success">
+              {item.amounts?.total} сом.
+            </Text>
+            <Pressable
+              disabled={claiming || !available}
+              onPress={() => onClaim(item.id)}
+              className={cn(
+                "px-6 h-11 rounded-xl items-center justify-center active:scale-[0.98]",
+                available ? "bg-accent" : "bg-border opacity-40",
+              )}
+            >
+              <Text className="text-text-inverse font-bold text-sm">
+                {claiming
+                  ? "..."
+                  : urgency === "urgent"
+                    ? "⚡ Взять срочно"
+                    : "Взять заказ"}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      );
+    },
+    [claiming, available, now, onClaim],
+  );
+
+  // ⭐ РЕАЛЬНАЯ реализация toggle (была заглушка в исходнике, теперь без throw)
+  const onAvailableChange = useCallback(
+    async (v: boolean) => {
+      setAvailable(v);
+      try {
+        await toggleRider({ variables: { available: v } });
+        if (v) refetchPool();
+      } catch (e: any) {
+        Alert.alert("Ошибка", e?.message ?? "");
+        setAvailable(!v);
+      }
+    },
+    [toggleRider, refetchPool],
   );
 
   const setStatus = useCallback(
@@ -195,93 +345,34 @@ export default function OrdersScreen() {
 
   const loading = tab === "pool" ? poolLoading : myLoading;
 
-  const renderPoolItem = useCallback(
-    ({ item }: any) => (
-      <View className="bg-soft-surface border border-border rounded-2xl p-4 mb-3 shadow-soft-sm">
-        <View className="flex-row justify-between items-center border-b border-border pb-2">
-          <Text className="text-base font-extrabold text-text">
-            📦 #{item.orderId.substring(0, 8)}
-          </Text>
-          <Text className="text-xs font-bold text-accent-dark bg-accent-soft px-2.5 py-1 rounded-lg">
-            Ждёт курьера
-          </Text>
-        </View>
-
-        <AddressBlock
-          label="Откуда (Ресторан)"
-          name={item.pickupAddress?.name}
-          address={item.pickupAddress?.address}
-        />
-        <AddressBlock
-          label="Куда (Клиент)"
-          city={item.deliveryAddress?.city}
-          address={item.deliveryAddress?.address}
-        />
-
-        {item.note ? (
-          <View className="bg-soft-surface-2 p-2.5 rounded-xl mt-3 border border-border/40">
-            <Text className="text-xs italic text-text-soft">
-              💬 {item.note}
-            </Text>
-          </View>
-        ) : null}
-
-        <View className="mt-3 pt-2 border-t border-border/30 space-y-0.5">
-          {item.items.map((i: any) => (
-            <Text key={i.foodId} className="text-xs text-text-soft font-medium">
-              • {i.title}{" "}
-              <Text className="text-text font-bold">×{i.quantity}</Text>
-            </Text>
-          ))}
-        </View>
-
-        <View className="flex-row items-center justify-between mt-4 pt-2 border-t border-border">
-          <Text className="text-lg font-black text-success">
-            {item.amounts?.total} сом.
-          </Text>
-          <Pressable
-            disabled={claiming || !available}
-            onPress={() => onClaim(item.id)}
-            className={`px-6 h-11 rounded-xl items-center justify-center active:scale-[0.98] ${
-              available ? "bg-accent" : "bg-border opacity-40"
-            }`}
-          >
-            <Text className="text-text-inverse font-bold text-sm">
-              {claiming ? "..." : "Взять заказ"}
-            </Text>
-          </Pressable>
-        </View>
-      </View>
-    ),
-    [claiming, available, onClaim],
-  );
-
   const renderMyItem = useCallback(
     ({ item }: any) => {
       const isAwaiting = item.orderStatus === "AWAITING_CONFIRMATION";
       const isDelivering = item.orderStatus === "PICKED";
       return (
         <View
-          className={`bg-soft-surface border rounded-2xl p-4 mb-3 shadow-soft-sm ${
+          className={cn(
+            "bg-soft-surface border rounded-2xl p-4 mb-3 shadow-soft-sm",
             isAwaiting
               ? "border-warning"
               : isDelivering
                 ? "border-info"
-                : "border-border"
-          }`}
+                : "border-border",
+          )}
         >
           <View className="flex-row justify-between items-center border-b border-border pb-2">
             <Text className="text-base font-extrabold text-text">
               📦 #{item.orderId.substring(0, 8)}
             </Text>
             <Text
-              className={`text-xs font-bold px-2.5 py-1 rounded-lg border ${
+              className={cn(
+                "text-xs font-bold px-2.5 py-1 rounded-lg border",
                 isDelivering
                   ? "bg-info-soft text-info-dark border-info/30"
                   : isAwaiting
                     ? "bg-warning-soft text-warning-dark border-warning/30"
-                    : "bg-soft-surface-2 text-text-soft border-border"
-              }`}
+                    : "bg-soft-surface-2 text-text-soft border-border",
+              )}
             >
               {isDelivering
                 ? "🛵 Доставляется"
@@ -389,9 +480,10 @@ export default function OrdersScreen() {
       <View className="bg-soft-surface border-b border-border px-4 py-3 flex-row justify-between items-center shadow-soft-sm">
         <View className="flex-row items-center gap-2">
           <View
-            className={`w-2.5 h-2.5 rounded-full ${
-              available ? "bg-success" : "bg-accent"
-            }`}
+            className={cn(
+              "w-2.5 h-2.5 rounded-full",
+              available ? "bg-success" : "bg-accent",
+            )}
           />
           <Text className="text-xl font-black text-text tracking-wide">
             Курьер
@@ -428,28 +520,32 @@ export default function OrdersScreen() {
       <View className="flex-row bg-soft-surface border-b border-border">
         <Pressable
           onPress={() => setTab("pool")}
-          className={`flex-1 py-3.5 items-center border-b-2 ${
-            tab === "pool" ? "border-accent" : "border-transparent"
-          }`}
+          className={cn(
+            "flex-1 py-3.5 items-center border-b-2",
+            tab === "pool" ? "border-accent" : "border-transparent",
+          )}
         >
           <Text
-            className={`text-sm font-bold ${
-              tab === "pool" ? "text-accent" : "text-text-soft"
-            }`}
+            className={cn(
+              "text-sm font-bold",
+              tab === "pool" ? "text-accent" : "text-text-soft",
+            )}
           >
             Доступные ({pool.length})
           </Text>
         </Pressable>
         <Pressable
           onPress={() => setTab("mine")}
-          className={`flex-1 py-3.5 items-center border-b-2 ${
-            tab === "mine" ? "border-accent" : "border-transparent"
-          }`}
+          className={cn(
+            "flex-1 py-3.5 items-center border-b-2",
+            tab === "mine" ? "border-accent" : "border-transparent",
+          )}
         >
           <Text
-            className={`text-sm font-bold ${
-              tab === "mine" ? "text-accent" : "text-text-soft"
-            }`}
+            className={cn(
+              "text-sm font-bold",
+              tab === "mine" ? "text-accent" : "text-text-soft",
+            )}
           >
             Мои заказы ({myOrders.length})
           </Text>

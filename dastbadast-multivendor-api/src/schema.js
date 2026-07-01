@@ -318,7 +318,13 @@ export const typeDefs = /* GraphQL */ `
     deliveredAt: String
     cancelledAt: String
     prepTime: Int
+    courierSearchTimestamps: CourierSearchTimestamps
   }
+  type CourierSearchTimestamps {
+    initialPushedAt: String
+    escalationPushedAt: String
+  }
+
   type Order {
     id: ID!
     orderId: String!
@@ -502,6 +508,18 @@ export const typeDefs = /* GraphQL */ `
     topRiders: [TopRider!]!
   }
 
+  type CourierSearchEvent {
+    orderId: ID!
+    orderIdStr: String!
+    restaurantName: String!
+    restaurantLocation: JSON
+    riderIds: [String!]!
+    radiusKm: Float!
+    escalation: Boolean!
+    fastAcceptBonus: Float!
+    createdAt: String!
+  }
+
   type Query {
     configuration: Configuration
     deliveryZone: DeliveryZone
@@ -586,5 +604,6 @@ export const typeDefs = /* GraphQL */ `
     subscriptionRiderLocation(riderId: ID!): RiderLocationUpdate!
     subscriptionRiderOrderCompleted(riderId: ID!): Order!
     newChatMessage(orderId: ID!): ChatMessage!
+    courierSearchNotify: CourierSearchEvent!
   }
 `;

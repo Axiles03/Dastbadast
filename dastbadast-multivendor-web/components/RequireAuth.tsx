@@ -5,6 +5,7 @@ import { useAuth } from "@/lib/auth-context";
 import { LogIn, UserPlus } from "lucide-react";
 import { useState } from "react";
 import { AuthModal } from "./AuthModal";
+import { useHasMounted } from "@/lib/hooks/useHasMounted"; // для SSR
 
 /**
  * Защита страниц, требующих авторизации.
@@ -12,11 +13,12 @@ import { AuthModal } from "./AuthModal";
  * а после mounted=true показывает либо children, либо гостевой CTA.
  */
 export function RequireAuth({ children }: { children: ReactNode }) {
-  const { user, loading, mounted } = useAuth();
+  const { user, loading, mounted: authMounted } = useAuth();
+  const mounted = useHasMounted();
   const [authMode, setAuthMode] = useState<"login" | "register" | null>(null);
 
   // ⬇️ До гидратации — нейтральный стабильный вывод
-  if (!mounted) {
+  if (!mounted || !authMounted) {
     return (
       <div className="space-y-3 animate-pulse">
         <div className="h-8 w-48 bg-soft-surface rounded-lg" />

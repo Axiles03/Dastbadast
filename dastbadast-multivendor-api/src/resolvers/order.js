@@ -9,6 +9,8 @@ import { pubsub, TOPICS } from "../pubsub.js";
 import { signToken, signRestaurantToken } from "../middleware/auth.js";
 import { Rider } from "../models/Rider.js";
 import { Order } from "../models/Order.js";
+import { expireIfPending } from "../lib/order-timeouts.js";
+import { startCourierSearchEscalation1 } from "./order-search.js";
 
 async function assertAddressInZone(addr) {
   const coords = addr?.location?.coordinates;
@@ -77,7 +79,14 @@ async function autoConfirmIfExpired(order) {
 
 export const orders = async (_p, _a, ctx) => {
   const u = requireUser(ctx);
-  return Order.find({ userId: u._id }).sort({ createdAt: -1 });
+  const list = await Order.find({ userId: u._id }).sort({ createdAt: -1 });
+
+  // ⭐ Lazy expire check для каждого PENDING-заказа
+  const checked = [];
+  for (const o of list) {
+    checked.push(await expireIfPending(o));
+  }
+  return checked;
 };
 
 export const order = async (_p, { id }, ctx) => {
@@ -95,7 +104,9 @@ export const order = async (_p, { id }, ctx) => {
   if (o.userId.toString() !== u._id.toString()) {
     throw new GraphQLError("Forbidden", { extensions: { code: "FORBIDDEN" } });
   }
-  return o;
+
+  // ⭐ Lazy expire check
+  return await expireIfPending(o);
 };
 
 export const placeOrder = async (_p, { input }, ctx) => {
@@ -207,6 +218,11 @@ export const placeOrder = async (_p, { input }, ctx) => {
   pubsub.publish(TOPICS.ORDER_STATUS_CHANGED(user._id.toString()), {
     orderStatusChanged: created,
   });
+
+  startCourierSearchEscalation1(created._id).catch((e) =>
+    console.error("[placeOrder] courier search error:", e?.message),
+  );
+
   return created;
 };
 

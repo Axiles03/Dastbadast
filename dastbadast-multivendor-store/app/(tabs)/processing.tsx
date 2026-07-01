@@ -1,10 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
-import {
-  View,
-  Text,
-  FlatList,
-  ActivityIndicator,
-} from "react-native";
+import { View, Text, FlatList, ActivityIndicator } from "react-native";
 import { useQuery } from "@apollo/client/react";
 import { RESTAURANT_ORDERS } from "../../lib/api/graphql/queries";
 import { useAuth } from "../../lib/auth-context";
@@ -12,6 +7,7 @@ import { SegmentedTabs } from "../../components/SegmentedTabs";
 import { EmptyState } from "../../components/EmptyState";
 import { StatusPill } from "../../components/StatusPill";
 import { cn } from "../../lib/cn";
+import { usePrepRemainingMs, formatPrepRemaining } from "../../lib/prep-timer";
 import {
   formatDateTime,
   formatOrdersCount,
@@ -34,18 +30,24 @@ export default function Processing() {
     skip: !restaurant?.id,
   }) as any;
 
-  const { data: histAll, loading: histLoading, refetch: refetchHist } =
-    useQuery(RESTAURANT_ORDERS, {
-      variables: { status: "DELIVERED" },
-      pollInterval: 30_000,
-      skip: !restaurant?.id || tab !== "history",
-    }) as any;
+  const {
+    data: histAll,
+    loading: histLoading,
+    refetch: refetchHist,
+  } = useQuery(RESTAURANT_ORDERS, {
+    variables: { status: "DELIVERED" },
+    pollInterval: 30_000,
+    skip: !restaurant?.id || tab !== "history",
+  }) as any;
 
-  const { data: cancAll, loading: cancLoading, refetch: refetchCanc } =
-    useQuery(RESTAURANT_ORDERS, {
-      variables: { status: "CANCELLED" },
-      skip: !restaurant?.id || tab !== "history",
-    }) as any;
+  const {
+    data: cancAll,
+    loading: cancLoading,
+    refetch: refetchCanc,
+  } = useQuery(RESTAURANT_ORDERS, {
+    variables: { status: "CANCELLED" },
+    skip: !restaurant?.id || tab !== "history",
+  }) as any;
 
   useEffect(() => {
     if (restaurant?.id) refetch();
@@ -68,27 +70,89 @@ export default function Processing() {
         new Date(
           b.statusTimestamps?.deliveredAt ||
             b.statusTimestamps?.cancelledAt ||
-            b.createdAt
+            b.createdAt,
         ).getTime() -
         new Date(
           a.statusTimestamps?.deliveredAt ||
             a.statusTimestamps?.cancelledAt ||
-            a.createdAt
-        ).getTime()
+            a.createdAt,
+        ).getTime(),
     );
   }, [histOrders, cancOrders]);
 
   const tabs = [
-    { value: "cooking" as const, label: "Готовятся", count: orders.length, icon: "👨‍🍳" },
-    { value: "history" as const, label: "История", count: history.length, icon: "📦" },
+    {
+      value: "cooking" as const,
+      label: "Готовятся",
+      count: orders.length,
+      icon: "👨‍🍳",
+    },
+    {
+      value: "history" as const,
+      label: "История",
+      count: history.length,
+      icon: "📦",
+    },
   ];
 
-  const isLoading =
-    tab === "cooking" ? loading : histLoading || cancLoading;
+  function PrepCountdown({
+    acceptedAt,
+    prepTime,
+  }: {
+    acceptedAt?: string | null;
+    prepTime?: number | null;
+  }) {
+    const { remainingMs, isLate, elapsedMs, totalMs } = usePrepRemainingMs(
+      acceptedAt,
+      prepTime,
+    );
+
+    if (!acceptedAt || !prepTime) return null;
+
+    // Прогресс-бар (0–100%)
+    const pct = totalMs > 0 ? Math.min(100, (elapsedMs / totalMs) * 100) : 0;
+
+    return (
+      <View className="mt-2">
+        <View className="flex-row items-center justify-between mb-1.5">
+          {isLate ? (
+            <View className="flex-row items-center">
+              <Text className="text-xs font-bold text-red">
+                ⚠️ Задержка {Math.floor((elapsedMs - totalMs) / 60000)} мин
+              </Text>
+            </View>
+          ) : (
+            <Text className="text-xs font-bold text-text-soft">
+              ⏱ Осталось готовить
+            </Text>
+          )}
+          <Text
+            className={cn(
+              "text-base font-extrabold font-mono tabular-nums",
+              isLate ? "text-red" : "text-accent",
+            )}
+          >
+            {formatPrepRemaining(remainingMs)}
+          </Text>
+        </View>
+        <View className="w-full h-1.5 bg-soft-surface-2 rounded-full overflow-hidden">
+          <View
+            className={cn(
+              "h-full rounded-full transition-all",
+              isLate ? "bg-red" : pct > 80 ? "bg-warning" : "bg-success",
+            )}
+            style={{ width: `${Math.min(100, pct)}%` }}
+          />
+        </View>
+      </View>
+    );
+  }
+
+  const isLoading = tab === "cooking" ? loading : histLoading || cancLoading;
 
   const renderCookingItem = ({ item }: any) => {
     const elapsed = Math.floor(
-      (Date.now() - new Date(item.createdAt).getTime()) / 60_000
+      (Date.now() - new Date(item.createdAt).getTime()) / 60_000,
     );
     const isLate = elapsed > PREP_TIME + 5;
 
@@ -96,7 +160,7 @@ export default function Processing() {
       <View
         className={cn(
           "bg-soft-surface border rounded-2xl p-4 mb-3.5 shadow-soft-sm",
-          isLate ? "border-warning border-2" : "border-border"
+          isLate ? "border-warning border-2" : "border-border",
         )}
       >
         <View className="flex-row justify-between items-start mb-3">
@@ -128,24 +192,24 @@ export default function Processing() {
             📍 Доставить
           </Text>
           <Text className="text-sm text-text font-semibold leading-5">
-            {item.deliveryAddress?.city
-              ? `${item.deliveryAddress.city}, `
-              : ""}
+            {item.deliveryAddress?.city ? `${item.deliveryAddress.city}, ` : ""}
             {item.deliveryAddress?.address}
           </Text>
         </View>
 
         <View className="pt-2.5 border-t border-border">
           {item.items?.map((it: any) => (
-            <Text
-              key={it.foodId}
-              className="text-sm text-text-soft leading-6"
-            >
+            <Text key={it.foodId} className="text-sm text-text-soft leading-6">
               • {it.title}{" "}
               <Text className="text-accent font-extrabold">×{it.quantity}</Text>
             </Text>
           ))}
         </View>
+
+        <PrepCountdown
+          acceptedAt={item.statusTimestamps?.acceptedAt}
+          prepTime={item.statusTimestamps?.prepTime}
+        />
 
         <View className="mt-3 pt-3 border-t border-border">
           <Text className="text-xs text-text-muted italic leading-4">
@@ -172,7 +236,7 @@ export default function Processing() {
       <View
         className={cn(
           "bg-soft-surface border rounded-2xl p-4 mb-3 shadow-soft-sm",
-          isDelivered ? "border-border" : "border-red/30 bg-red-soft/30"
+          isDelivered ? "border-border" : "border-red/30 bg-red-soft/30",
         )}
       >
         <View className="flex-row justify-between items-start mb-2.5">
@@ -192,7 +256,7 @@ export default function Processing() {
           <Text
             className={cn(
               "text-base font-extrabold tracking-tight",
-              isDelivered ? "text-text" : "text-text-muted line-through"
+              isDelivered ? "text-text" : "text-text-muted line-through",
             )}
           >
             {item.amounts?.total} сом.
@@ -203,13 +267,8 @@ export default function Processing() {
           <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
             📍 Доставлено
           </Text>
-          <Text
-            className="text-sm text-text-soft leading-5"
-            numberOfLines={2}
-          >
-            {item.deliveryAddress?.city
-              ? `${item.deliveryAddress.city}, `
-              : ""}
+          <Text className="text-sm text-text-soft leading-5" numberOfLines={2}>
+            {item.deliveryAddress?.city ? `${item.deliveryAddress.city}, ` : ""}
             {item.deliveryAddress?.address}
           </Text>
         </View>
@@ -293,10 +352,7 @@ export default function Processing() {
             <Text className="text-2xl font-black text-success mt-0.5">
               {history
                 .filter((o: any) => o.orderStatus === "DELIVERED")
-                .reduce(
-                  (s: number, o: any) => s + (o.amounts?.total ?? 0),
-                  0
-                )
+                .reduce((s: number, o: any) => s + (o.amounts?.total ?? 0), 0)
                 .toLocaleString("ru")}{" "}
               сом.
             </Text>
@@ -314,9 +370,7 @@ export default function Processing() {
               Отменено
             </Text>
             <Text className="text-xl font-extrabold text-red mt-0.5">
-              {
-                history.filter((o: any) => o.orderStatus === "CANCELLED").length
-              }
+              {history.filter((o: any) => o.orderStatus === "CANCELLED").length}
             </Text>
           </View>
         </View>

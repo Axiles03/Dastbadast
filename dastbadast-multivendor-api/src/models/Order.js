@@ -1,3 +1,4 @@
+// dastbadast-multivendor-api/src/models/Order.js
 import mongoose from "mongoose";
 
 const OrderItemSchema = new mongoose.Schema(
@@ -46,7 +47,7 @@ const OrderSchema = new mongoose.Schema(
         "PICKED",
         "DELIVERED",
         "CANCELLED",
-        "AWAITING_CONFIRMATION"
+        "AWAITING_CONFIRMATION",
       ],
       default: "PENDING",
       index: true,
@@ -87,15 +88,23 @@ const OrderSchema = new mongoose.Schema(
       deliveredAt: Date,
       cancelledAt: Date,
       prepTime: { type: Number, default: null }, // minutes
+
+      // ⭐⭐⭐ НОВОЕ: для автопоиска курьера
+      courierSearchTimestamps: {
+        initialPushedAt: { type: Date, default: null },
+        escalationPushedAt: { type: Date, default: null },
+      },
     },
 
-    // Новые поля в схеме:
+    // ⭐⭐⭐ НОВОЕ: бонус курьеру за быстрый приём
+    fastAcceptBonus: { type: Number, default: 0 },
+
     paymentStatus: {
       type: String,
       enum: ["NOT_REQUIRED", "AWAITING_PAYMENT", "PAID", "FAILED"],
       default: "NOT_REQUIRED",
     },
-    providerRef: { type: String, default: null }, // ID платежа у провайдера
+    providerRef: { type: String, default: null },
     paidAt: { type: Date, default: null },
 
     cancelReason: { type: String, default: "" },
@@ -115,5 +124,15 @@ const OrderSchema = new mongoose.Schema(
 
 OrderSchema.index({ userId: 1, createdAt: -1 });
 OrderSchema.index({ restaurantId: 1, orderStatus: 1, createdAt: -1 });
+// ⭐⭐⭐ НОВЫЙ ИНДЕКС: для быстрого поиска PENDING/ACCEPTED заказов без курьера
+OrderSchema.index(
+  { orderStatus: 1, riderId: 1, "statusTimestamps.pendingAt": 1 },
+  {
+    partialFilterExpression: {
+      riderId: null,
+      orderStatus: { $in: ["PENDING", "ACCEPTED"] },
+    },
+  },
+);
 
 export const Order = mongoose.model("Order", OrderSchema);

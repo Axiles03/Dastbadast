@@ -50,6 +50,11 @@ export const RESTAURANT_ORDERS = gql`
         pickedAt
         deliveredAt
         cancelledAt
+        prepTime
+        courierSearchTimestamps {
+          initialPushedAt
+          escalationPushedAt
+        }
       }
     }
   }

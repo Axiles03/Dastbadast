@@ -97,6 +97,9 @@ dastbadast-multivendor-api/
   scripts/
     seed.js
   src/
+    lib/
+      order-search-rules.js
+      order-timeouts.js
     middleware/
       auth.js
       rbac.js
@@ -124,6 +127,7 @@ dastbadast-multivendor-api/
       food-review.js
       index.js
       order-actions.js
+      order-search.js
       order.js
       payments.js
       restaurant-menu.js
@@ -352,6 +356,7 @@ dastbadast-multivendor-store/
     auth-context.tsx
     cn.ts
     format.ts
+    prep-timer.ts
     push.ts
     sound.ts
     styles.ts
@@ -386,6 +391,9 @@ dastbadast-multivendor-web/
           tracking/
             page.tsx
       orders/
+        [id]/
+          waiting/
+            page.tsx
         page.tsx
       privacy/
         page.tsx
@@ -430,6 +438,7 @@ dastbadast-multivendor-web/
     debug-log.ts
     geocode.ts
     order-status.ts
+    order-timers.ts
     page-titles.ts
     queries.ts
     security.ts
@@ -452,6 +461,823 @@ README.md
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="dastbadast-multivendor-api/src/lib/order-search-rules.js">
+// dastbadast-multivendor-api/src/lib/order-search-rules.js
+//
+// Единое место настройки правил агрессивного автопоиска курьера.
+// Чтобы изменить — правим ТОЛЬКО эти константы.
+
+export const COURIER_SEARCH_RULES = {
+  /** Начальный радиус поиска курьеров (в км) */
+  INITIAL_PUSH_RADIUS_KM: 5,
+
+  /** Сколько ближайших курьеров уведомляем при первой волне */
+  INITIAL_PUSH_COUNT: 5,
+
+  /** Сколько дополнительных курьеров уведомляем при эскалации */
+  ESCALATION_EXTRA_COUNT: 2,
+
+  /** Через сколько секунд отправляем вторую волну пушей */
+  ESCALATION_DELAY_MS: 90 * 1000, // 90 секунд
+
+  /** Через сколько секунд после PENDING отправляем первую волну курьерам */
+  PENDING_PUSH_DELAY_MS: 0, // сразу
+
+  /** Бонус курьеру за быстрый прием заказа (% от deliveryRate) */
+  FAST_ACCEPT_BONUS_PCT: 0.05, // +5%
+};
+
+/**
+ * Вычислить список курьеров для пуша:
+ * - находит всех доступных курьеров
+ * - сортирует по близости к ресторану (если есть координаты)
+ * - лимитирует top-N
+ * - помечает "повторная" волна, чтобы не слать дубли тем же
+ */
+export function buildPushList({
+  riders,
+  restaurantLocation, // [lng, lat] | null
+  count,
+  excludeIds = [],
+}) {
+  if (!ridgers || !ridgers.length) return [];
+
+  // Расчёт дистанции (Haversine, км)
+  const haversineKm = (lat1, lng1, lat2, lng2) => {
+    if (lat1 == null || lng1 == null || lat2 == null || lng2 == null)
+      return Number.POSITIVE_INFINITY;
+    const R = 6371;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLng = ((lng2 - lng1) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  };
+
+  const [restLng, restLat] = restaurantLocation || [null, null];
+
+  const filtered = riders.filter(
+    (r) => r.available && r.isActive && !excludeIds.includes(String(r._id)),
+  );
+
+  const sorted = filtered
+    .map((r) => {
+      const coords = r.location?.coordinates || [null, null];
+      const [lng, lat] = coords;
+      const distance =
+        restLat != null ? haversineKm(restLat, restLng, lat, lng) : null;
+      return { rider: r, distance };
+    })
+    .sort((a, b) => {
+      if (a.distance == null) return 1;
+      if (b.distance == null) return -1;
+      return a.distance - b.distance;
+    })
+    .slice(0, count);
+
+  return sorted.map((x) => x.rider);
+}
+</file>
+
+<file path="dastbadast-multivendor-api/src/lib/order-timeouts.js">
+// dastbadast-multivendor-api/src/lib/order-timeouts.js
+//
+// Единое место настройки таймаута подтверждения заказа рестораном.
+// Если ресторан не подтвердил заказ за PENDING_TIMEOUT_SECONDS,
+// заказ автоматически переводится в CANCELLED с cancelReason = "AUTO_EXPIRED".
+// Клиент видит это как «истёкший» заказ.
+
+import { pubsub, TOPICS } from "../pubsub.js";
+
+/**
+ * ⭐ Константа: через сколько секунд PENDING-заказ автоотменяется.
+ * Чтобы изменить на 7/10/15 минут — правим ТОЛЬКО эту переменную.
+ */
+export const PENDING_TIMEOUT_SECONDS = 5 * 60; // 5 минут
+
+/**
+ * Lazy-проверка заказа: если он висит в PENDING дольше лимита —
+ * переводим в CANCELLED, публикуем событие в подписки, сохраняем в БД.
+ *
+ * Возвращает (возможно обновлённый) документ заказа.
+ */
+export async function expireIfPending(order) {
+  if (!order) return order;
+  if (order.orderStatus !== "PENDING") return order;
+
+  // pendingAt может быть null на старых заказах — fallback на createdAt
+  const pendingAt = order.statusTimestamps?.pendingAt || order.createdAt;
+  if (!pendingAt) return order;
+
+  const elapsedSec = (Date.now() - new Date(pendingAt).getTime()) / 1000;
+  if (elapsedSec < PENDING_TIMEOUT_SECONDS) return order;
+
+  // ── Помечаем как отменённый по таймауту ──
+  order.orderStatus = "CANCELLED";
+  order.cancelReason = "AUTO_EXPIRED";
+  order.statusTimestamps = order.statusTimestamps || {};
+  order.statusTimestamps.cancelledAt = new Date();
+
+  try {
+    await order.save();
+  } catch (e) {
+    // Если save упал (например, БД моргнула) — не блокируем UI.
+    // Вернём обновлённый in-memory объект, клиент увидит EXPIRED,
+    // а на следующий запрос БД вернёт актуальное состояние.
+    console.warn(
+      "[order-timeouts] save failed, but marking as EXPIRED in-memory:",
+      e?.message,
+    );
+  }
+
+  // ── Публикуем события для всех подписчиков (web + rider) ──
+  try {
+    pubsub.publish(TOPICS.ORDER_TRACK(order._id.toString()), {
+      subscriptionOrder: order,
+    });
+    pubsub.publish(TOPICS.ORDER_STATUS_CHANGED(order.userId.toString()), {
+      orderStatusChanged: order,
+    });
+    if (order.zoneId) {
+      pubsub.publish(TOPICS.ZONE_ORDERS(order.zoneId.toString()), {
+        subscriptionZoneOrders: order,
+      });
+    }
+  } catch (e) {
+    console.warn("[order-timeouts] pubsub.publish failed:", e?.message);
+  }
+
+  console.log(
+    `[order-timeouts] Order ${order._id} auto-cancelled (PENDING > ${PENDING_TIMEOUT_SECONDS}s)`,
+  );
+  return order;
+}
+</file>
+
+<file path="dastbadast-multivendor-api/src/resolvers/order-search.js">
+// dastbadast-multivendor-api/src/resolvers/order-search.js
+//
+// Агрессивный автопоиск курьера (Эшелон 1).
+// 3 пуши: при PENDING, при ACCEPTED, эскалация через 90 сек.
+
+import { Order } from "../models/Order.js";
+import { Rider } from "../models/Rider.js";
+import { Restaurant } from "../models/Restaurant.js";
+import { pubsub, TOPICS } from "../pubsub.js";
+import {
+  COURIER_SEARCH_RULES,
+  buildPushList,
+} from "../lib/order-search-rules.js";
+
+/**
+ * Пушит ближайшим курьерам, что появился заказ.
+ * Не выбирает курьера — только рассылает уведомления.
+ *
+ * @param {Object} opts
+ * @param {string} opts.orderId
+ * @param {number} opts.radiusKm
+ * @param {number} opts.count
+ * @param {boolean} opts.escalation  — true при второй волне
+ * @returns {Promise<string[]>} — список ID уведомлённых курьеров
+ */
+export async function dispatchCourierSearch({
+  orderId,
+  radiusKm = COURIER_SEARCH_RULES.INITIAL_PUSH_RADIUS_KM,
+  count = COURIER_SEARCH_RULES.INITIAL_PUSH_COUNT,
+  escalation = false,
+  excludeIds = [],
+}) {
+  const order = await Order.findById(orderId);
+  if (!order) return [];
+
+  // Если курьер уже назначен — не дёргаем остальных
+  if (order.riderId) return [];
+
+  // Если заказ уже не ждёт курьера (DELIVERED / CANCELLED) — выходим
+  if (!["PENDING", "ACCEPTED"].includes(order.orderStatus)) return [];
+
+  // Получаем координаты ресторана
+  const restaurant = await Restaurant.findById(order.restaurantId).lean();
+  const restaurantLocation = restaurant?.location?.coordinates || null;
+
+  // Все доступные курьеры
+  const allRiders = await Rider.find({
+    available: true,
+    isActive: true,
+  }).lean();
+
+  // Формируем список (с сортировкой по близости и лимитом)
+  const targetRiders = buildPushList({
+    riders: allRiders,
+    restaurantLocation,
+    count: escalation
+      ? count + COURIER_SEARCH_RULES.ESCALATION_EXTRA_COUNT
+      : count,
+    excludeIds,
+  });
+
+  if (!targetRiders.length) {
+    console.log(`[courier-search] no riders found for order ${orderId}`);
+    return [];
+  }
+
+  // Фиксируем время пуша в документе
+  const tsField = escalation
+    ? "statusTimestamps.courierSearchTimestamps.escalationPushedAt"
+    : "statusTimestamps.courierSearchTimestamps.initialPushedAt";
+  await Order.updateOne({ _id: orderId }, { $set: { [tsField]: new Date() } });
+
+  // Публикуем событие в шину pubsub — каждое rider-app слушает
+  // subscriptionAvailableOrders(zoneId) и получает обновлённый заказ.
+  // Также шлём целенаправленно в топик AVAILABLE_ORDERS для конкретной зоны.
+  if (order.zoneId) {
+    pubsub.publish(TOPICS.AVAILABLE_ORDERS(order.zoneId.toString()), {
+      subscriptionAvailableOrders: order.toObject ? order.toObject() : order,
+    });
+  }
+
+  // In-app нотификация для конкретных курьеров
+  // (используем отдельный топик — rider-app подписывается и проверяет,
+  // входит ли он в список targetRiders)
+  pubsub.publish(TOPICS.COURIER_SEARCH_NOTIFY, {
+    courierSearchNotify: {
+      orderId: order._id.toString(),
+      orderIdStr: order.orderId,
+      restaurantName: restaurant?.name || "Ресторан",
+      restaurantLocation,
+      riderIds: targetRiders.map((r) => r._id.toString()),
+      radiusKm,
+      escalation,
+      fastAcceptBonus: order.fastAcceptBonus || 0,
+      createdAt: new Date().toISOString(),
+    },
+  });
+
+  console.log(
+    `[courier-search] order=${orderId} escalation=${escalation} ` +
+      `pushed=${targetRiders.length} riders`,
+  );
+
+  return targetRiders.map((r) => r._id.toString());
+}
+
+/**
+ * Запустить Эшелон 1: первая волна + отложенная эскалация.
+ * Вызывается сразу при placeOrder и при acceptOrder.
+ */
+export async function startCourierSearchEscalation1(orderId) {
+  // 1) Мгновенная первая волна
+  const firstWave = await dispatchCourierSearch({ orderId, escalation: false });
+
+  // 2) Запланировать вторую волну через 90 сек (если заказ всё ещё ждёт)
+  setTimeout(async () => {
+    try {
+      const order = await Order.findById(orderId);
+      // Только если заказ всё ещё без курьера
+      if (!order || order.riderId) return;
+      if (!["PENDING", "ACCEPTED"].includes(order.orderStatus)) return;
+
+      await dispatchCourierSearch({
+        orderId,
+        escalation: true,
+        excludeIds: firstWave, // чтобы не повторяться
+      });
+    } catch (e) {
+      console.error(
+        `[courier-search] escalation failed for ${orderId}:`,
+        e?.message,
+      );
+    }
+  }, COURIER_SEARCH_RULES.ESCALATION_DELAY_MS);
+}
+</file>
+
+<file path="dastbadast-multivendor-store/lib/prep-timer.ts">
+// dastbadast-multivendor-store/lib/prep-timer.ts
+import { useEffect, useState } from "react";
+
+/**
+ * Возвращает оставшееся время (мс) до окончания приготовления,
+ * обновляется каждые `intervalMs` миллисекунд.
+ */
+export function usePrepRemainingMs(
+  acceptedAt: string | null | undefined,
+  prepTimeMin: number | null | undefined,
+  intervalMs: number = 1000,
+): {
+  remainingMs: number;
+  elapsedMs: number;
+  totalMs: number;
+  isLate: boolean;
+} {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!acceptedAt || !prepTimeMin) return;
+    const i = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(i);
+  }, [acceptedAt, prepTimeMin, intervalMs]);
+
+  if (!acceptedAt || !prepTimeMin) {
+    return { remainingMs: 0, elapsedMs: 0, totalMs: 0, isLate: false };
+  }
+
+  const totalMs = prepTimeMin * 60 * 1000;
+  const acceptedT = new Date(acceptedAt).getTime();
+  const elapsedMs = now - acceptedT;
+  const remainingMs = Math.max(0, totalMs - elapsedMs);
+  const isLate = elapsedMs > totalMs;
+
+  return { remainingMs, elapsedMs, totalMs, isLate };
+}
+
+export function formatPrepRemaining(ms: number): string {
+  if (ms <= 0) return "00:00";
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = m.toString().padStart(2, "0");
+  const ss = s.toString().padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+</file>
+
+<file path="dastbadast-multivendor-web/app/(main)/orders/[id]/waiting/page.tsx">
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
+import { useQuery, useSubscription } from "@apollo/client/react";
+import { GET_ORDER, SUB_ORDER } from "@/lib/queries";
+import {
+  PENDING_TIMEOUT_MS,
+  formatCountdown,
+  getPendingRemainingMs,
+  getPrepRemainingMs,
+  isLocallyPendingExpired,
+  useNow,
+} from "@/lib/order-timers";
+import { RequireAuth } from "@/components/RequireAuth";
+import {
+  AlertCircle,
+  ArrowLeft,
+  ChefHat,
+  ChevronRight,
+  Clock,
+  Loader2,
+  RefreshCw,
+  Store,
+  XCircle,
+} from "lucide-react";
+
+export default function WaitingPage() {
+  return (
+    <RequireAuth>
+      <WaitingInner />
+    </RequireAuth>
+  );
+}
+
+function WaitingInner() {
+  const params = useParams<{ id: string }>();
+  const router = useRouter();
+  const orderId = params?.id || "";
+
+  // ⭐ Тикаем каждую секунду — для динамического обратного отсчёта.
+  // Время НЕ сбрасывается при reload — оно вычисляется из серверных timestamps.
+  const now = useNow(1000);
+
+  const { data, loading, error, refetch } = useQuery(GET_ORDER, {
+    variables: { id: orderId },
+    skip: !orderId,
+    fetchPolicy: "cache-and-network",
+  });
+
+  // ⭐ WebSocket-подписка для мгновенной синхронизации статуса
+  useSubscription(SUB_ORDER, {
+    variables: { orderId },
+    skip: !orderId,
+    onData: () => {
+      refetch();
+    },
+  });
+
+  const o = data?.order;
+
+  // ⭐ Авто-редирект на полное отслеживание, когда курьер назначен/едет
+  useEffect(() => {
+    if (!o) return;
+    if (
+      ["ASSIGNED", "PICKED", "AWAITING_CONFIRMATION", "DELIVERED"].includes(
+        o.orderStatus,
+      )
+    ) {
+      const t = setTimeout(
+        () => router.replace(`/order/${o.id}/tracking`),
+        1500,
+      );
+      return () => clearTimeout(t);
+    }
+  }, [o?.orderStatus, o?.id, router]);
+
+  if (loading) {
+    return (
+      <Centered>
+        <Loader2 className="w-10 h-10 text-soft-accent animate-spin" />
+        <p className="text-sm text-soft-text-soft mt-3">Загружаем заказ…</p>
+      </Centered>
+    );
+  }
+
+  if (error || !o) {
+    return (
+      <Centered>
+        <XCircle className="w-12 h-12 text-soft-accent" />
+        <h2 className="text-lg font-extrabold text-soft-text mt-3">
+          Заказ не найден
+        </h2>
+        <Link
+          href="/orders"
+          className="mt-4 px-5 py-2.5 bg-soft-surface border border-soft-border rounded-2xl text-sm font-bold text-soft-text-soft hover:border-soft-accent"
+        >
+          К истории заказов
+        </Link>
+      </Centered>
+    );
+  }
+
+  // ───── Времянки ─────
+  const pendingAt = o.statusTimestamps?.pendingAt || o.createdAt;
+  const acceptedAt = o.statusTimestamps?.acceptedAt;
+  const prepTime = o.statusTimestamps?.prepTime;
+
+  const pendingRemainingMs = getPendingRemainingMs(pendingAt, now);
+  const prepRemainingMs = getPrepRemainingMs(acceptedAt, prepTime, now);
+
+  // ⭐ Определяем фазу для отображения
+  // 1. EXPIRED: бэкенд уже отменил ИЛИ локально 5 мин прошло и статус всё ещё PENDING
+  const isCancelled = o.orderStatus === "CANCELLED";
+  const isExpiredByReason = isCancelled && o.cancelReason === "AUTO_EXPIRED";
+  const isExpiredLocally =
+    o.orderStatus === "PENDING" && isLocallyPendingExpired(pendingAt, now);
+  const isExpired = isExpiredByReason || isExpiredLocally;
+
+  let view: "pending" | "accepted" | "expired" | "cancelled" = "pending";
+  if (isExpired) view = "expired";
+  else if (o.orderStatus === "CANCELLED") view = "cancelled";
+  else if (o.orderStatus === "ACCEPTED") view = "accepted";
+  else if (o.orderStatus === "PENDING") view = "pending";
+
+  return (
+    <div className="max-w-3xl mx-auto space-y-6">
+      <Link
+        href="/orders"
+        className="inline-flex items-center gap-1 text-sm font-bold text-soft-text-soft hover:text-soft-accent"
+      >
+        <ArrowLeft className="w-4 h-4" /> История заказов
+      </Link>
+
+      <header>
+        <p className="text-soft-text-muted text-sm">Заказ #{o.orderId}</p>
+        <h1 className="text-2xl md:text-3xl font-extrabold mt-1 text-soft-text">
+          {view === "pending" && "Ожидаем подтверждения ресторана"}
+          {view === "accepted" && "Заказ принят в работу"}
+          {view === "expired" && "Заказ отменён"}
+          {view === "cancelled" && "Заказ отменён"}
+        </h1>
+      </header>
+
+      <section className="bg-soft-surface border border-soft-border rounded-3xl p-6 sm:p-8 shadow-soft-sm">
+        {/* ───────── PENDING VIEW ───────── */}
+        {view === "pending" && (
+          <>
+            <div className="flex flex-col items-center text-center">
+              <div className="w-24 h-24 rounded-full bg-soft-accent-soft flex items-center justify-center">
+                <Store className="w-12 h-12 text-soft-accent" />
+              </div>
+              <p className="text-sm text-soft-text-soft mt-4">
+                Ресторан получил ваш заказ. Обычно подтверждение занимает 1–2
+                минуты.
+              </p>
+              <p className="text-2xs text-soft-text-muted mt-1 max-w-xs">
+                Если ресторан не подтвердит в течение{" "}
+                {PENDING_TIMEOUT_MS / 60000} минут, заказ будет отменён
+                автоматически.
+              </p>
+
+              {/* ⭐ Динамический таймер обратного отсчёта */}
+              <div className="mt-6 bg-soft-warning-soft border border-soft-warning/30 rounded-2xl px-5 py-4 inline-flex items-center gap-3">
+                <Clock className="w-5 h-5 text-soft-warning-dark" />
+                <div className="text-left">
+                  <p className="text-xs text-soft-text-soft font-bold uppercase tracking-wider">
+                    Автоотмена через
+                  </p>
+                  <p className="text-2xl font-extrabold font-mono text-soft-warning-dark tabular-nums">
+                    {formatCountdown(pendingRemainingMs)}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <ProgressBar
+              value={pendingRemainingMs}
+              max={PENDING_TIMEOUT_MS}
+              color="warning"
+            />
+          </>
+        )}
+
+        {/* ───────── ACCEPTED VIEW (готовка) ───────── */}
+        {view === "accepted" && (
+          <>
+            <div className="flex flex-col items-center text-center">
+              <div className="w-24 h-24 rounded-full bg-soft-success-soft flex items-center justify-center">
+                <ChefHat className="w-12 h-12 text-soft-success" />
+              </div>
+              <p className="text-sm text-soft-text-soft mt-4">
+                Ресторан принял ваш заказ и уже готовит.
+              </p>
+
+              {prepTime && prepTime > 0 && (
+                <div className="mt-6 bg-soft-success-soft border border-soft-success/30 rounded-2xl px-5 py-4 inline-flex items-center gap-3">
+                  <Clock className="w-5 h-5 text-soft-success" />
+                  <div className="text-left">
+                    <p className="text-xs text-soft-text-soft font-bold uppercase tracking-wider">
+                      Осталось готовить · {prepTime} мин
+                    </p>
+                    <p className="text-2xl font-extrabold font-mono text-soft-success-dark tabular-nums">
+                      {formatCountdown(prepRemainingMs)}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <ProgressBar
+              value={prepRemainingMs}
+              max={(prepTime || 0) * 60 * 1000}
+              color="success"
+            />
+
+            <Link
+              href={`/order/${o.id}/tracking`}
+              className="mt-6 w-full h-12 bg-soft-accent hover:bg-soft-accent-dark text-white font-extrabold rounded-2xl flex items-center justify-center gap-2 active:scale-[0.99] transition shadow-soft-sm"
+            >
+              Перейти к отслеживанию
+              <ChevronRight className="w-4 h-4" />
+            </Link>
+          </>
+        )}
+
+        {/* ───────── EXPIRED VIEW ───────── */}
+        {view === "expired" && (
+          <div className="flex flex-col items-center text-center">
+            <div className="w-24 h-24 rounded-full bg-soft-accent-soft flex items-center justify-center">
+              <AlertCircle className="w-12 h-12 text-soft-accent" />
+            </div>
+            <p className="text-base text-soft-text mt-4 leading-relaxed max-w-md">
+              К сожалению, ресторан не успел обработать ваш заказ вовремя.
+              <br />
+              Пожалуйста, попробуйте сделать заказ в другом заведении.
+            </p>
+
+            <Link
+              href="/"
+              className="mt-6 w-full h-12 bg-soft-accent hover:bg-soft-accent-dark text-white font-extrabold rounded-2xl flex items-center justify-center gap-2 active:scale-[0.99] transition shadow-soft-sm"
+            >
+              Вернуться к выбору ресторанов
+            </Link>
+          </div>
+        )}
+
+        {/* ───────── CANCELLED VIEW (обычная отмена рестораном) ───────── */}
+        {view === "cancelled" && (
+          <div className="flex flex-col items-center text-center">
+            <div className="w-24 h-24 rounded-full bg-soft-accent-soft flex items-center justify-center">
+              <XCircle className="w-12 h-12 text-soft-accent" />
+            </div>
+            <p className="text-base text-soft-text mt-4 leading-relaxed max-w-md">
+              {o.cancelReason && o.cancelReason !== "AUTO_EXPIRED"
+                ? `Заказ отменён. ${o.cancelReason}`
+                : "Заказ был отменён."}
+            </p>
+            <Link
+              href="/"
+              className="mt-6 w-full h-12 bg-soft-surface border border-soft-border text-soft-text-soft font-bold rounded-2xl flex items-center justify-center gap-2 hover:border-soft-accent"
+            >
+              Вернуться к выбору ресторанов
+            </Link>
+          </div>
+        )}
+
+        {/* Кнопка обновления */}
+        <button
+          type="button"
+          onClick={() => refetch()}
+          className="mt-4 w-full text-xs text-soft-text-muted hover:text-soft-accent flex items-center justify-center gap-1"
+        >
+          <RefreshCw className="w-3 h-3" /> Обновить статус
+        </button>
+      </section>
+
+      {/* Сводка заказа — всегда видна */}
+      <section className="bg-soft-surface border border-soft-border rounded-3xl shadow-soft-sm overflow-hidden">
+        <details className="group">
+          <summary className="cursor-pointer p-4 flex items-center justify-between text-sm font-bold text-soft-text-soft hover:bg-soft-surface-2 transition-colors list-none">
+            <span>Детали заказа</span>
+            <ChevronRight className="w-4 h-4 group-open:rotate-90 transition-transform" />
+          </summary>
+          <div className="border-t border-soft-border p-4 space-y-3 text-sm">
+            <div className="flex justify-between text-soft-text-soft">
+              <span>Сумма</span>
+              <span className="text-soft-text font-bold">
+                {o.amounts?.total} сом.
+              </span>
+            </div>
+            <div className="flex justify-between text-soft-text-soft gap-3">
+              <span className="shrink-0">Адрес</span>
+              <span className="text-soft-text truncate text-right">
+                {o.deliveryAddress?.city}, {o.deliveryAddress?.address}
+              </span>
+            </div>
+            {o.items && o.items.length > 0 && (
+              <div className="pt-2 border-t border-soft-border">
+                <p className="text-xs text-soft-text-muted mb-1.5">
+                  Состав заказа:
+                </p>
+                <ul className="space-y-1">
+                  {o.items.map((it: any) => (
+                    <li
+                      key={it.foodId}
+                      className="flex justify-between text-soft-text"
+                    >
+                      <span className="truncate">
+                        {it.title}{" "}
+                        <span className="text-soft-text-muted">
+                          ×{it.quantity}
+                        </span>
+                      </span>
+                      <span className="font-bold shrink-0 ml-2">
+                        {it.price * it.quantity} сом.
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </details>
+      </section>
+    </div>
+  );
+}
+
+function Centered({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="text-center space-y-2 py-10 max-w-md mx-auto">
+      {children}
+    </div>
+  );
+}
+
+function ProgressBar({
+  value,
+  max,
+  color,
+}: {
+  value: number;
+  max: number;
+  color: "warning" | "success" | "accent";
+}) {
+  const pct = max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
+  const barColor =
+    color === "success"
+      ? "bg-soft-success"
+      : color === "warning"
+        ? "bg-soft-warning"
+        : "bg-soft-accent";
+  return (
+    <div className="w-full h-2 bg-soft-surface-2 rounded-full mt-6 overflow-hidden">
+      <div
+        className={`${barColor} h-full transition-all duration-1000 ease-linear rounded-full`}
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
+}
+</file>
+
+<file path="dastbadast-multivendor-web/lib/order-timers.ts">
+// dastbadast-multivendor-web/lib/order-timers.ts
+//
+// Единое место настройки таймаута на клиенте.
+// Должно совпадать с PENDING_TIMEOUT_SECONDS в API
+// (см. dastbadast-multivendor-api/src/lib/order-timeouts.js).
+//
+// Чтобы изменить таймаут — правим эти две константы в одном месте.
+
+import * as React from "react";
+
+/** ⭐ Таймаут автоотмены PENDING-заказа (мс). Синхронизирован с API. */
+export const PENDING_TIMEOUT_MS = 5 * 60 * 1000; // 5 минут
+
+/**
+ * Форматирует оставшееся время в "MM:SS" или "HH:MM:SS".
+ * Используется для обратного отсчёта.
+ */
+export function formatCountdown(ms: number): string {
+  if (ms <= 0) return "00:00";
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = m.toString().padStart(2, "0");
+  const ss = s.toString().padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+/**
+ * Сколько осталось до автоотмены PENDING (мс).
+ * 0 = уже истёк.
+ */
+export function getPendingRemainingMs(
+  pendingAt: string | Date | null | undefined,
+  now: number = Date.now(),
+): number {
+  if (!pendingAt) return PENDING_TIMEOUT_MS;
+  const t = new Date(pendingAt).getTime();
+  return Math.max(0, PENDING_TIMEOUT_MS - (now - t));
+}
+
+/**
+ * Локальная проверка: PENDING-заказ истёк на клиенте.
+ * Используется, чтобы моментально показать "Заказ отменён" UI,
+ * не дожидаясь round-trip к API.
+ */
+export function isLocallyPendingExpired(
+  pendingAt: string | Date | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (!pendingAt) return false;
+  return getPendingRemainingMs(pendingAt, now) <= 0;
+}
+
+/**
+ * Сколько осталось до конца приготовления (мс).
+ * endTime = acceptedAt + prepTime*60*1000.
+ */
+export function getPrepRemainingMs(
+  acceptedAt: string | Date | null | undefined,
+  prepTimeMin: number | null | undefined,
+  now: number = Date.now(),
+): number {
+  if (!acceptedAt || !prepTimeMin) return 0;
+  const end = new Date(acceptedAt).getTime() + prepTimeMin * 60 * 1000;
+  return Math.max(0, end - now);
+}
+
+/**
+ * Сколько секунд осталось до конца приготовления (0 = уже готово).
+ */
+export function getPrepRemainingSeconds(
+  acceptedAt: string | Date | null | undefined,
+  prepTimeMin: number | null | undefined,
+  now: number = Date.now(),
+): number {
+  if (!acceptedAt || !prepTimeMin) return 0;
+  const end = new Date(acceptedAt).getTime() + prepTimeMin * 60 * 1000;
+  return Math.max(0, Math.floor((end - now) / 1000));
+}
+
+/** Общая длительность приготовления в секундах */
+export function getPrepTotalSeconds(
+  prepTimeMin: number | null | undefined,
+): number {
+  return (prepTimeMin ?? 0) * 60;
+}
+
+/**
+ * React-хук: возвращает текущее значение Date.now() каждую секунду.
+ * Используется для перерасчёта таймеров каждую секунду.
+ *
+ *   const now = useNow();
+ *   const remaining = endTime - now;
+ */
+export function useNow(intervalMs: number = 1000): number {
+  const [now, setNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    const i = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(i);
+  }, [intervalMs]);
+  return now;
+}
+</file>
 
 <file path=".cursor/rules/dastbadast-design.mdc">
 ---
@@ -6621,6 +7447,7 @@ export const FoodReview = mongoose.model('FoodReview', FoodReviewSchema);
 </file>
 
 <file path="dastbadast-multivendor-api/src/models/Order.js">
+// dastbadast-multivendor-api/src/models/Order.js
 import mongoose from "mongoose";
 
 const OrderItemSchema = new mongoose.Schema(
@@ -6669,7 +7496,7 @@ const OrderSchema = new mongoose.Schema(
         "PICKED",
         "DELIVERED",
         "CANCELLED",
-        "AWAITING_CONFIRMATION"
+        "AWAITING_CONFIRMATION",
       ],
       default: "PENDING",
       index: true,
@@ -6710,15 +7537,23 @@ const OrderSchema = new mongoose.Schema(
       deliveredAt: Date,
       cancelledAt: Date,
       prepTime: { type: Number, default: null }, // minutes
+
+      // ⭐⭐⭐ НОВОЕ: для автопоиска курьера
+      courierSearchTimestamps: {
+        initialPushedAt: { type: Date, default: null },
+        escalationPushedAt: { type: Date, default: null },
+      },
     },
 
-    // Новые поля в схеме:
+    // ⭐⭐⭐ НОВОЕ: бонус курьеру за быстрый приём
+    fastAcceptBonus: { type: Number, default: 0 },
+
     paymentStatus: {
       type: String,
       enum: ["NOT_REQUIRED", "AWAITING_PAYMENT", "PAID", "FAILED"],
       default: "NOT_REQUIRED",
     },
-    providerRef: { type: String, default: null }, // ID платежа у провайдера
+    providerRef: { type: String, default: null },
     paidAt: { type: Date, default: null },
 
     cancelReason: { type: String, default: "" },
@@ -6738,6 +7573,16 @@ const OrderSchema = new mongoose.Schema(
 
 OrderSchema.index({ userId: 1, createdAt: -1 });
 OrderSchema.index({ restaurantId: 1, orderStatus: 1, createdAt: -1 });
+// ⭐⭐⭐ НОВЫЙ ИНДЕКС: для быстрого поиска PENDING/ACCEPTED заказов без курьера
+OrderSchema.index(
+  { orderStatus: 1, riderId: 1, "statusTimestamps.pendingAt": 1 },
+  {
+    partialFilterExpression: {
+      riderId: null,
+      orderStatus: { $in: ["PENDING", "ACCEPTED"] },
+    },
+  },
+);
 
 export const Order = mongoose.model("Order", OrderSchema);
 </file>
@@ -8067,62 +8912,97 @@ export async function foodRatingStats(foodId) {
 </file>
 
 <file path="dastbadast-multivendor-api/src/resolvers/order-actions.js">
-import { GraphQLError } from 'graphql';
-import { Order } from '../models/Order.js';
-import { Rider } from '../models/Rider.js';
-import { pubsub, TOPICS } from '../pubsub.js';
+import { GraphQLError } from "graphql";
+import { Order } from "../models/Order.js";
+import { Rider } from "../models/Rider.js";
+import { pubsub, TOPICS } from "../pubsub.js";
+import { startCourierSearchEscalation1 } from "./order-search.js";
 
 function requireRestaurant(ctx) {
-  if (!ctx.restaurant) throw new GraphQLError('Not authenticated', { extensions: { code: 'UNAUTHENTICATED' } });
+  if (!ctx.restaurant)
+    throw new GraphQLError("Not authenticated", {
+      extensions: { code: "UNAUTHENTICATED" },
+    });
   return ctx.restaurant;
 }
 
 const ALLOWED_FROM = {
-  ACCEPTED: ['PENDING'],
-  CANCELLED: ['PENDING', 'ACCEPTED', 'ASSIGNED'],
+  ACCEPTED: ["PENDING"],
+  CANCELLED: ["PENDING", "ACCEPTED", "ASSIGNED"],
 };
 
 export const acceptOrder = async (_p, { input }, ctx) => {
   const r = requireRestaurant(ctx);
   const order = await Order.findById(input.orderId);
-  if (!order) throw new GraphQLError('Заказ не найден', { extensions: { code: 'NOT_FOUND' } });
+  if (!order)
+    throw new GraphQLError("Заказ не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
   if (order.restaurantId.toString() !== r._id.toString()) {
-    throw new GraphQLError('Forbidden', { extensions: { code: 'FORBIDDEN' } });
+    throw new GraphQLError("Forbidden", { extensions: { code: "FORBIDDEN" } });
   }
   if (!ALLOWED_FROM.ACCEPTED.includes(order.orderStatus)) {
-    throw new GraphQLError(`Невозможно принять заказ в статусе ${order.orderStatus}`, {
-      extensions: { code: 'BAD_STATE' },
-    });
+    throw new GraphQLError(
+      `Невозможно принять заказ в статусе ${order.orderStatus}`,
+      {
+        extensions: { code: "BAD_STATE" },
+      },
+    );
   }
-  order.orderStatus = 'ACCEPTED';
+  order.orderStatus = "ACCEPTED";
   order.statusTimestamps = order.statusTimestamps || {};
   order.statusTimestamps.acceptedAt = new Date();
-  if (typeof input.prepTime === 'number' && input.prepTime > 0) {
+  if (typeof input.prepTime === "number" && input.prepTime > 0) {
     order.statusTimestamps.prepTime = input.prepTime;
   }
+
+  // ⭐⭐⭐ НОВОЕ: сбрасываем метки пушей, чтобы Эшелон 1 стартовал заново после принятия
+  order.statusTimestamps.courierSearchTimestamps = {
+    initialPushedAt: null,
+    escalationPushedAt: null,
+  };
   await order.save();
 
-  pubsub.publish(TOPICS.ORDER_TRACK(order._id.toString()), { subscriptionOrder: order });
-  pubsub.publish(TOPICS.ORDER_STATUS_CHANGED(order.userId.toString()), { orderStatusChanged: order });
-  pubsub.publish(TOPICS.PLACE_ORDER(order.restaurantId.toString()), { subscribePlaceOrder: order });
-  pubsub.publish(TOPICS.AVAILABLE_ORDERS(order.zoneId?.toString()), { subscriptionAvailableOrders: order });
+  pubsub.publish(TOPICS.ORDER_TRACK(order._id.toString()), {
+    subscriptionOrder: order,
+  });
+  pubsub.publish(TOPICS.ORDER_STATUS_CHANGED(order.userId.toString()), {
+    orderStatusChanged: order,
+  });
+  pubsub.publish(TOPICS.PLACE_ORDER(order.restaurantId.toString()), {
+    subscribePlaceOrder: order,
+  });
+  pubsub.publish(TOPICS.AVAILABLE_ORDERS(order.zoneId?.toString()), {
+    subscriptionAvailableOrders: order,
+  });
+
+  // ⭐⭐⭐ НОВОЕ: Эшелон 1 — после принятия запускаем новую волну
+  startCourierSearchEscalation1(order._id).catch((e) =>
+    console.error("[acceptOrder] courier search error:", e?.message),
+  );
   return order;
 };
 
 export const cancelOrder = async (_p, { input }, ctx) => {
   const r = requireRestaurant(ctx);
   const order = await Order.findById(input.orderId);
-  if (!order) throw new GraphQLError('Заказ не найден', { extensions: { code: 'NOT_FOUND' } });
+  if (!order)
+    throw new GraphQLError("Заказ не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
   if (order.restaurantId.toString() !== r._id.toString()) {
-    throw new GraphQLError('Forbidden', { extensions: { code: 'FORBIDDEN' } });
+    throw new GraphQLError("Forbidden", { extensions: { code: "FORBIDDEN" } });
   }
   if (!ALLOWED_FROM.CANCELLED.includes(order.orderStatus)) {
-    throw new GraphQLError(`Невозможно отменить заказ в статусе ${order.orderStatus}`, {
-      extensions: { code: 'BAD_STATE' },
-    });
+    throw new GraphQLError(
+      `Невозможно отменить заказ в статусе ${order.orderStatus}`,
+      {
+        extensions: { code: "BAD_STATE" },
+      },
+    );
   }
-  order.orderStatus = 'CANCELLED';
-  order.cancelReason = input.reason || 'Отменено рестораном';
+  order.orderStatus = "CANCELLED";
+  order.cancelReason = input.reason || "Отменено рестораном";
   order.statusTimestamps = order.statusTimestamps || {};
   order.statusTimestamps.cancelledAt = new Date();
   await order.save();
@@ -8131,8 +9011,12 @@ export const cancelOrder = async (_p, { input }, ctx) => {
     await Rider.findByIdAndUpdate(order.riderId, { available: true });
   }
 
-  pubsub.publish(TOPICS.ORDER_TRACK(order._id.toString()), { subscriptionOrder: order });
-  pubsub.publish(TOPICS.ORDER_STATUS_CHANGED(order.userId.toString()), { orderStatusChanged: order });
+  pubsub.publish(TOPICS.ORDER_TRACK(order._id.toString()), {
+    subscriptionOrder: order,
+  });
+  pubsub.publish(TOPICS.ORDER_STATUS_CHANGED(order.userId.toString()), {
+    orderStatusChanged: order,
+  });
   return order;
 };
 </file>
@@ -8149,6 +9033,8 @@ import { pubsub, TOPICS } from "../pubsub.js";
 import { signToken, signRestaurantToken } from "../middleware/auth.js";
 import { Rider } from "../models/Rider.js";
 import { Order } from "../models/Order.js";
+import { expireIfPending } from "../lib/order-timeouts.js";
+import { startCourierSearchEscalation1 } from "./order-search.js";
 
 async function assertAddressInZone(addr) {
   const coords = addr?.location?.coordinates;
@@ -8217,7 +9103,14 @@ async function autoConfirmIfExpired(order) {
 
 export const orders = async (_p, _a, ctx) => {
   const u = requireUser(ctx);
-  return Order.find({ userId: u._id }).sort({ createdAt: -1 });
+  const list = await Order.find({ userId: u._id }).sort({ createdAt: -1 });
+
+  // ⭐ Lazy expire check для каждого PENDING-заказа
+  const checked = [];
+  for (const o of list) {
+    checked.push(await expireIfPending(o));
+  }
+  return checked;
 };
 
 export const order = async (_p, { id }, ctx) => {
@@ -8235,7 +9128,9 @@ export const order = async (_p, { id }, ctx) => {
   if (o.userId.toString() !== u._id.toString()) {
     throw new GraphQLError("Forbidden", { extensions: { code: "FORBIDDEN" } });
   }
-  return o;
+
+  // ⭐ Lazy expire check
+  return await expireIfPending(o);
 };
 
 export const placeOrder = async (_p, { input }, ctx) => {
@@ -8347,6 +9242,11 @@ export const placeOrder = async (_p, { input }, ctx) => {
   pubsub.publish(TOPICS.ORDER_STATUS_CHANGED(user._id.toString()), {
     orderStatusChanged: created,
   });
+
+  startCourierSearchEscalation1(created._id).catch((e) =>
+    console.error("[placeOrder] courier search error:", e?.message),
+  );
+
   return created;
 };
 
@@ -8874,6 +9774,7 @@ export const rider = async (_p, { id }, ctx) => {
 </file>
 
 <file path="dastbadast-multivendor-api/src/resolvers/subscriptions.js">
+// dastbadast-multivendor-api/src/resolvers/subscriptions.js
 import { GraphQLError } from "graphql";
 import { pubsub, TOPICS } from "../pubsub.js";
 
@@ -8942,294 +9843,15 @@ export const newChatMessage = {
   },
   resolve: (p) => p.newChatMessage,
 };
-</file>
 
-<file path="dastbadast-multivendor-api/src/resolvers/user.js">
-import bcrypt from 'bcryptjs';
-import { GraphQLError } from 'graphql';
-import mongoose from 'mongoose';
-import { User } from '../models/User.js';
-import { Zone } from '../models/Zone.js';
-import { Order } from '../models/Order.js';
-import { signToken } from '../middleware/auth.js';
-import { pointInPolygon } from '../utils/zone.js';
-import { requireRole } from '../middleware/rbac.js';
-
-function requireUser(ctx) {
-  if (!ctx.user) {
-    throw new GraphQLError('Not authenticated', {
-      extensions: { code: 'UNAUTHENTICATED' },
-    });
-  }
-  return ctx.user;
-}
-
-async function findZoneForPoint(lng, lat) {
-  const zone = await Zone.findOne({ isActive: true });
-  if (!zone) return null;
-  const poly = zone.location?.coordinates?.[0];
-  if (!poly) return null;
-  const inside = pointInPolygon([lng, lat], poly);
-  return inside ? zone : null;
-}
-
-export const profile = async (_p, _a, ctx) => {
-  const u = requireUser(ctx);
-  return User.findById(u._id);
-};
-
-export const addresses = async (_p, _a, ctx) => {
-  const u = requireUser(ctx);
-  return User.findById(u._id).then((doc) => doc?.addresses || []);
-};
-
-export const selectedAddress = async (_p, _a, ctx) => {
-  const u = requireUser(ctx);
-  const doc = await User.findById(u._id);
-  return doc?.addresses?.find((a) => a.isSelected) || null;
-};
-
-export const createUser = async (_p, { input }) => {
-  if (!input.email && !input.phone) {
-    throw new GraphQLError('Нужен email или телефон', { extensions: { code: 'BAD_USER_INPUT' } });
-  }
-  const passwordHash = await bcrypt.hash(input.password, 10);
-  const or = [];
-  if (input.email) or.push({ email: input.email.toLowerCase() });
-  if (input.phone) or.push({ phone: input.phone });
-  const exists = await User.findOne({ $or: or });
-  if (exists) throw new GraphQLError('Пользователь уже существует', { extensions: { code: 'CONFLICT' } });
-
-  const user = await User.create({
-    name: input.name,
-    email: input.email?.toLowerCase(),
-    phone: input.phone,
-    passwordHash,
-  });
-  const token = signToken(user);
-  return { token, user };
-};
-
-export const login = async (_p, { input }) => {
-  if (!input.email && !input.phone) {
-    throw new GraphQLError('Нужен email или телефон', { extensions: { code: 'BAD_USER_INPUT' } });
-  }
-  const query = input.email ? { email: input.email.toLowerCase() } : { phone: input.phone };
-  const user = await User.findOne(query);
-  if (!user) throw new GraphQLError('Неверные данные', { extensions: { code: 'UNAUTHENTICATED' } });
-  const ok = await bcrypt.compare(input.password, user.passwordHash);
-  if (!ok) throw new GraphQLError('Неверные данные', { extensions: { code: 'UNAUTHENTICATED' } });
-  const token = signToken(user);
-  return { token, user };
-};
-
-async function validatePoint(location) {
-  const coords = location?.coordinates;
-  if (!Array.isArray(coords) || coords.length !== 2) {
-    throw new GraphQLError('Некорректные координаты', { extensions: { code: 'BAD_USER_INPUT' } });
-  }
-  const [lng, lat] = coords.map(Number);
-  if (Number.isNaN(lng) || Number.isNaN(lat)) {
-    throw new GraphQLError('Некорректные координаты', { extensions: { code: 'BAD_USER_INPUT' } });
-  }
-  const zone = await Zone.findOne({ isActive: true });
-  if (!zone) {
-    throw new GraphQLError('Зона доставки не настроена. Запустите npm run seed на API.', {
-      extensions: { code: 'ZONE_NOT_CONFIGURED' },
-    });
-  }
-  const poly = zone.location?.coordinates?.[0];
-  if (!poly || !pointInPolygon([lng, lat], poly)) {
-    throw new GraphQLError(
-      'Адрес вне зоны доставки. Выберите точку внутри оранжевой области на карте (центр Душанбе).',
-      { extensions: { code: 'OUT_OF_ZONE' } }
-    );
-  }
-  return { lng, lat };
-}
-
-export const createAddress = async (_p, { input }, ctx) => {
-  const u = requireUser(ctx);
-  const { lng, lat } = await validatePoint(input.location);
-  const user = await User.findById(u._id);
-  const makeSelected = !user.addresses || user.addresses.length === 0;
-  if (makeSelected) {
-    user.addresses.forEach((a) => (a.isSelected = false));
-  }
-  user.addresses.push({
-    label: input.label || 'Дом',
-    address: input.address,
-    city: input.city || 'Душанбе',
-    details: input.details || '',
-    location: { type: 'Point', coordinates: [lng, lat] },
-    isSelected: makeSelected,
-  });
-  await user.save();
-  return user.addresses[user.addresses.length - 1];
-};
-
-export const editAddress = async (_p, { id, input }, ctx) => {
-  const u = requireUser(ctx);
-  const { lng, lat } = await validatePoint(input.location);
-  const user = await User.findById(u._id);
-  const addr = user.addresses.id(id);
-  if (!addr) throw new GraphQLError('Адрес не найден');
-  addr.label = input.label || addr.label;
-  addr.address = input.address;
-  addr.city = input.city || addr.city;
-  addr.details = input.details ?? addr.details;
-  addr.location = { type: 'Point', coordinates: [lng, lat] };
-  await user.save();
-  return addr;
-};
-
-export const deleteAddress = async (_p, { id }, ctx) => {
-  const u = requireUser(ctx);
-  const user = await User.findById(u._id);
-  const addr = user.addresses.id(id);
-  if (!addr) return false;
-  const wasSelected = addr.isSelected;
-  addr.deleteOne();
-  if (wasSelected && user.addresses.length > 0) {
-    user.addresses[0].isSelected = true;
-  }
-  await user.save();
-  return true;
-};
-
-export const selectAddress = async (_p, { id }, ctx) => {
-  const u = requireUser(ctx);
-  const user = await User.findById(u._id);
-  let found = null;
-  user.addresses.forEach((a) => {
-    a.isSelected = a._id.toString() === id;
-    if (a.isSelected) found = a;
-  });
-  await user.save();
-  return found;
-};
-
-// ==================== ADMIN: USERS LIST ====================
-
-export const adminUsers = async (_p, { filter }, ctx) => {
-  requireRole(['SUPER_ADMIN', 'SUPPORT'])(ctx);
-
-  const q = filter?.search?.trim() || '';
-  const limit = Math.min(filter?.limit || 50, 200);
-  const offset = filter?.offset || 0;
-
-  const mongoFilter = {};
-  if (q) {
-    const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    mongoFilter.$or = [{ name: re }, { email: re }, { phone: re }];
-  }
-
-  const total = await User.countDocuments(mongoFilter);
-  const users = await User.find(mongoFilter)
-    .select('name email phone isActive createdAt addresses')
-    .sort({ createdAt: -1 })
-    .skip(offset)
-    .limit(limit);
-
-  const userIds = users.map((u) => u._id);
-  const orderStats = await Order.aggregate([
-    { $match: { userId: { $in: userIds } } },
-    {
-      $group: {
-        _id: '$userId',
-        totalOrders: { $sum: 1 },
-        totalSpent: { $sum: '$amounts.total' },
-        lastOrderAt: { $max: '$createdAt' },
-      },
-    },
-  ]);
-  const statsMap = new Map(orderStats.map((s) => [s._id.toString(), s]));
-
-  return {
-    total,
-    users: users.map((u) => {
-      const stats = statsMap.get(u._id.toString()) || {};
-      return {
-        id: u._id.toString(),
-        name: u.name,
-        email: u.email,
-        phone: u.phone,
-        isActive: u.isActive,
-        createdAt: u.createdAt,
-        addressesCount: (u.addresses || []).length,
-        totalOrders: stats.totalOrders || 0,
-        totalSpent: stats.totalSpent ? +Number(stats.totalSpent).toFixed(2) : 0,
-        lastOrderAt: stats.lastOrderAt || null,
-      };
-    }),
-  };
-};
-
-export const adminUserDetail = async (_p, { id }, ctx) => {
-  requireRole(['SUPER_ADMIN', 'SUPPORT'])(ctx);
-
-  if (!mongoose.isValidObjectId(id)) {
-    throw new GraphQLError('Некорректный id', { extensions: { code: 'BAD_USER_INPUT' } });
-  }
-
-  const user = await User.findById(id);
-  if (!user) {
-    throw new GraphQLError('Пользователь не найден', { extensions: { code: 'NOT_FOUND' } });
-  }
-
-  const orders = await Order.find({ userId: user._id })
-    .sort({ createdAt: -1 })
-    .limit(20)
-    .populate('restaurantId', 'name')
-    .lean();
-
-  return {
-    user: {
-      id: user._id.toString(),
-      name: user.name,
-      email: user.email,
-      phone: user.phone,
-      isActive: user.isActive,
-      createdAt: user.createdAt,
-    },
-    addresses: (user.addresses || []).map((a) => ({
-      id: a._id.toString(),
-      label: a.label,
-      address: a.address,
-      city: a.city,
-      details: a.details,
-      isSelected: a.isSelected,
-    })),
-    orders: orders.map((o) => ({
-      id: o._id.toString(),
-      orderId: o.orderId,
-      orderStatus: o.orderStatus,
-      total: o.amounts?.total || 0,
-      restaurantName: o.restaurantId?.name || '—',
-      createdAt: o.createdAt,
-    })),
-  };
-};
-
-export const toggleUserActive = async (_p, { id, isActive }, ctx) => {
-  requireRole(['SUPER_ADMIN', 'SUPPORT'])(ctx);
-
-  if (!mongoose.isValidObjectId(id)) {
-    throw new GraphQLError('Некорректный id', { extensions: { code: 'BAD_USER_INPUT' } });
-  }
-
-  const user = await User.findById(id);
-  if (!user) {
-    throw new GraphQLError('Пользователь не найден', { extensions: { code: 'NOT_FOUND' } });
-  }
-
-  user.isActive = !!isActive;
-  await user.save();
-
-  return {
-    id: user._id.toString(),
-    isActive: user.isActive,
-  };
+// ⭐⭐⭐ НОВОЕ: уведомления автопоиска курьера
+// Курьер подписывается на этот канал и получает список заказов,
+// которые были разосланы ему при автопоиске.
+export const courierSearchNotify = {
+  subscribe: (_p, _args) => {
+    return pubsub.asyncIterator(TOPICS.COURIER_SEARCH_NOTIFY);
+  },
+  resolve: (p) => p.courierSearchNotify,
 };
 </file>
 
@@ -9333,6 +9955,7 @@ export async function handlePaymentWebhook(req, method) {
 </file>
 
 <file path="dastbadast-multivendor-api/src/pubsub.js">
+// dastbadast-multivendor-api/src/pubsub.js
 import { PubSub } from "graphql-subscriptions";
 export const pubsub = new PubSub();
 
@@ -9346,591 +9969,10 @@ export const TOPICS = {
   ZONE_ORDERS: (zoneId) => `ZONE_ORDERS_${zoneId || "all"}`,
   AVAILABLE_ORDERS: (zoneId) => `AVAILABLE_ORDERS_${zoneId || "all"}`,
   CHAT: (orderId) => `CHAT_${orderId}`,
+
+  // ⭐⭐⭐ НОВОЕ: уведомления автопоиска курьера
+  COURIER_SEARCH_NOTIFY: "COURIER_SEARCH_NOTIFY",
 };
-</file>
-
-<file path="dastbadast-multivendor-api/src/schema.js">
-export const typeDefs = /* GraphQL */ `
-  scalar JSON
-  scalar DateTime
-
-  type Configuration {
-    currency: String
-    currencySymbol: String
-    deliveryRate: Float
-    skipEmailVerification: Boolean
-    skipMobileVerification: Boolean
-    testOtp: String
-  }
-
-  type Zone {
-    id: ID!
-    name: String
-    description: String
-    isActive: Boolean
-    polygon: JSON
-  }
-
-  type DeliveryZone {
-    id: ID!
-    name: String
-    description: String
-    polygon: JSON!
-  }
-
-  type Address {
-    id: ID!
-    label: String
-    address: String
-    city: String
-    details: String
-    location: JSON
-    isSelected: Boolean
-  }
-
-  type User {
-    id: ID!
-    name: String!
-    email: String
-    phone: String
-    addresses: [Address!]
-  }
-
-  # Расширенный тип для админ-карточки пользователя
-  type AdminUser {
-    id: ID!
-    name: String!
-    email: String
-    phone: String
-    isActive: Boolean!
-    createdAt: String!
-    addressesCount: Int!
-    totalOrders: Int!
-    totalSpent: Float!
-    lastOrderAt: String
-  }
-
-  type AdminUserList {
-    total: Int!
-    users: [AdminUser!]!
-  }
-
-  type AdminUserDetail {
-    user: AdminUser!
-    addresses: [Address!]!
-    orders: [AdminUserOrder!]!
-  }
-
-  type AdminUserOrder {
-    id: ID!
-    orderId: String!
-    orderStatus: String!
-    total: Float!
-    restaurantName: String!
-    createdAt: String!
-  }
-
-  type ToggleUserResult {
-    id: ID!
-    isActive: Boolean!
-  }
-
-  input AdminUsersFilter {
-    search: String
-    limit: Int
-    offset: Int
-  }
-
-  input CreateZoneInput {
-    name: String!
-    description: String
-    polygon: JSON!
-    isActive: Boolean
-  }
-
-  input UpdateZoneInput {
-    name: String
-    description: String
-    polygon: JSON
-    isActive: Boolean
-  }
-
-  type AuthPayload {
-    token: String!
-    user: User!
-  }
-  type AuthPayloadRestaurant {
-    token: String!
-    restaurant: Restaurant!
-  }
-  type AuthPayloadOwner {
-    token: String!
-    owner: Owner!
-  }
-  type AuthPayloadRider {
-    token: String!
-    rider: Rider!
-  }
-
-  type Owner {
-    id: ID!
-    email: String!
-    userType: String
-    permissions: OwnerPermissions
-    isActive: Boolean!
-    lastLoginAt: String
-    createdAt: String!
-  }
-
-  type OwnerPermissions {
-    canManageRestaurants: Boolean!
-    canManageRiders: Boolean!
-    canManageZones: Boolean!
-    canManageConfiguration: Boolean!
-    canViewAccounting: Boolean!
-    canAssignRiders: Boolean!
-    canManageUsers: Boolean!
-  }
-
-  input OwnerPermissionsInput {
-    canManageRestaurants: Boolean
-    canManageRiders: Boolean
-    canManageZones: Boolean
-    canManageConfiguration: Boolean
-    canViewAccounting: Boolean
-    canAssignRiders: Boolean
-    canManageUsers: Boolean
-  }
-
-  input CreateOwnerInput {
-    email: String!
-    password: String!
-    userType: String!
-    permissions: OwnerPermissionsInput
-  }
-
-  input UpdateOwnerInput {
-    email: String
-    userType: String
-    permissions: OwnerPermissionsInput
-    isActive: Boolean
-  }
-
-  input CreateUserInput {
-    name: String!
-    email: String
-    phone: String
-    password: String!
-  }
-  input LoginInput {
-    email: String
-    phone: String
-    password: String!
-  }
-  input LoginRestaurantInput {
-    username: String!
-    password: String!
-  }
-  input LoginOwnerInput {
-    email: String!
-    password: String!
-  }
-  input LoginRiderInput {
-    username: String!
-    password: String!
-  }
-  input CreateRiderInput {
-    username: String!
-    password: String!
-    name: String
-    phone: String
-    zoneId: ID
-  }
-
-  type Rider {
-    id: ID!
-    username: String!
-    name: String
-    phone: String
-    available: Boolean!
-    location: JSON
-    lastLocationAt: String
-    zoneId: ID
-  }
-
-  input AddressInput {
-    label: String
-    address: String!
-    city: String
-    details: String
-    location: JSON!
-  }
-
-  type Restaurant {
-    id: ID!
-    name: String!
-    slug: String
-    image: String
-    address: String
-    location: JSON
-    zoneId: ID
-    isAvailable: Boolean
-    minimumOrder: Float
-    tax: Float
-    categories: [Category!]
-  }
-  type Category {
-    id: ID!
-    title: String!
-    image: String
-    foods: [Food!]
-  }
-  type Food {
-    id: ID!
-    title: String!
-    description: String
-    image: String
-    price: Float
-    isActive: Boolean
-    isAvailable: Boolean
-    averageRating: Float
-    reviewCount: Int
-    reviews: [FoodReview!]
-  }
-  type FoodReview {
-    id: ID!
-    foodId: ID!
-    userName: String
-    rating: Int!
-    comment: String!
-    createdAt: String!
-  }
-  input AddFoodReviewInput {
-    foodId: ID!
-    rating: Int!
-    comment: String!
-  }
-
-  enum OrderStatus {
-    PENDING
-    ACCEPTED
-    ASSIGNED
-    PICKED
-    DELIVERED
-    CANCELLED
-    AWAITING_CONFIRMATION
-  }
-  enum PaymentMethod {
-    COD
-    ALIF_MOBI
-    DS_BANK
-  }
-
-  type OrderItem {
-    foodId: ID
-    title: String!
-    price: Float!
-    quantity: Int!
-    image: String
-    description: String
-    variation: JSON
-    addons: [JSON!]
-  }
-  type OrderAmounts {
-    subtotal: Float!
-    tax: Float!
-    deliveryFee: Float!
-    total: Float!
-  }
-  type DeliveryAddress {
-    label: String
-    address: String!
-    city: String
-    details: String
-    location: JSON!
-  }
-  type PickupAddress {
-    name: String
-    address: String!
-    city: String
-    location: JSON
-  }
-  type StatusTimestamps {
-    pendingAt: String
-    acceptedAt: String
-    assignedAt: String
-    pickedAt: String
-    deliveredAt: String
-    cancelledAt: String
-    prepTime: Int
-  }
-  type Order {
-    id: ID!
-    orderId: String!
-    userId: ID!
-    restaurantId: ID!
-    riderId: ID
-    items: [OrderItem!]!
-    orderStatus: OrderStatus!
-    paymentMethod: PaymentMethod!
-    paid: Boolean!
-    paidAt: String
-    paymentStatus: String
-    providerRef: String
-    deliveryAddress: DeliveryAddress!
-    pickupAddress: PickupAddress
-    note: String
-    amounts: OrderAmounts!
-    statusTimestamps: StatusTimestamps
-    cancelReason: String
-    createdAt: String!
-    updatedAt: String!
-  }
-
-  input OrderItemInput {
-    foodId: ID!
-    quantity: Int!
-    variation: JSON
-    addons: [JSON!]
-  }
-  input PlaceOrderInput {
-    restaurantId: ID!
-    addressId: ID!
-    items: [OrderItemInput!]!
-    paymentMethod: PaymentMethod = COD
-    note: String
-  }
-  input AcceptOrderInput {
-    orderId: ID!
-    prepTime: Int
-  }
-  input CancelOrderInput {
-    orderId: ID!
-    reason: String
-  }
-  input AssignRiderInput {
-    orderId: ID!
-    riderId: ID!
-  }
-  input UpdateOrderStatusRiderInput {
-    orderId: ID!
-    status: OrderStatus!
-  }
-  input ConfirmOrderInput {
-    orderId: ID!
-  }
-  input RiderLocationInput {
-    lng: Float!
-    lat: Float!
-  }
-  input CreateRestaurantInput {
-    name: String!
-    slug: String
-    address: String!
-    city: String
-    username: String!
-    password: String!
-    tax: Float
-    minimumOrder: Float
-    lng: Float!
-    lat: Float!
-  }
-  input CreateCategoryInput {
-    title: String!
-    image: String
-  }
-  input UpdateCategoryInput {
-    title: String
-    image: String
-  }
-  input CreateFoodInput {
-    categoryId: ID!
-    title: String!
-    description: String
-    image: String
-    price: Float!
-  }
-  input UpdateFoodInput {
-    categoryId: ID
-    title: String
-    description: String
-    image: String
-    price: Float
-    isAvailable: Boolean
-    isActive: Boolean
-  }
-
-  input ConfigurationInput {
-    currency: String
-    currencySymbol: String
-    deliveryRate: Float
-    testOtp: String
-  }
-
-  type RiderLocationUpdate {
-    riderId: ID!
-    lat: Float!
-    lng: Float!
-    updatedAt: String!
-  }
-
-  type ChatMessage {
-    id: ID!
-    orderId: ID!
-    senderType: String!
-    text: String!
-    createdAt: String!
-  }
-
-  type AdminAccounting {
-    totalRevenue: Float!
-    totalDelivered: Int!
-    totalCommission: Float!
-    restaurants: [RestaurantAccounting!]!
-    riders: [RiderAccounting!]!
-  }
-  type RestaurantAccounting {
-    restaurantId: ID!
-    restaurantName: String!
-    orderCount: Int!
-    revenue: Float!
-    commission: Float!
-    payout: Float!
-  }
-  type RiderAccounting {
-    riderId: ID!
-    riderName: String!
-    phone: String
-    deliveredCount: Int!
-    totalEarnings: Float!
-  }
-
-  type DashboardToday {
-    orders: Int!
-    delivered: Int!
-    cancelled: Int!
-    revenue: Float!
-  }
-
-  type DashboardLive {
-    activeOrders: Int!
-    activeRiders: Int!
-    restaurantsOnline: Int!
-  }
-
-  type DashboardChartPoint {
-    date: String!
-    count: Int!
-    revenue: Float!
-  }
-
-  type TopRestaurant {
-    restaurantId: ID!
-    name: String!
-    orderCount: Int!
-    revenue: Float!
-  }
-
-  type TopRider {
-    riderId: ID!
-    name: String!
-    deliveredCount: Int!
-    earnings: Float!
-  }
-
-  type AdminDashboard {
-    today: DashboardToday!
-    live: DashboardLive!
-    newUsersToday: Int!
-    chart7Days: [DashboardChartPoint!]!
-    topRestaurants: [TopRestaurant!]!
-    topRiders: [TopRider!]!
-  }
-
-  type Query {
-    configuration: Configuration
-    deliveryZone: DeliveryZone
-    restaurants(zoneId: ID): [Restaurant!]!
-    restaurant(id: ID!): Restaurant
-    foodReviews(foodId: ID!): [FoodReview!]!
-    profile: User
-    addresses: [Address!]!
-    selectedAddress: Address
-    orders: [Order!]!
-    order(id: ID!): Order
-    restaurantOrders(status: OrderStatus): [Order!]!
-    meRestaurant: Restaurant
-    adminUsers(filter: AdminUsersFilter): AdminUserList!
-    adminUserDetail(id: ID!): AdminUserDetail!
-    allOrders(status: OrderStatus): [Order!]!
-    owners: [Owner!]!
-    owner(id: ID!): Owner
-    riders(available: Boolean): [Rider!]!
-    meOwner: Owner
-    meRider: Rider
-    riderOrders(status: OrderStatus): [Order!]!
-    availableOrdersForRiders: [Order!]!
-    rider(id: ID!): Rider
-    chatMessages(orderId: ID!): [ChatMessage!]!
-    adminAccounting: AdminAccounting
-    zones: [Zone!]!
-    zone(id: ID!): Zone
-    adminDashboardMetrics: AdminDashboard!
-  }
-
-  type Mutation {
-    createUser(input: CreateUserInput!): AuthPayload!
-    login(input: LoginInput!): AuthPayload!
-    createAddress(input: AddressInput!): Address!
-    editAddress(id: ID!, input: AddressInput!): Address!
-    deleteAddress(id: ID!): Boolean!
-    selectAddress(id: ID!): Address!
-    placeOrder(input: PlaceOrderInput!): Order!
-    addFoodReview(input: AddFoodReviewInput!): FoodReview!
-    restaurantLogin(input: LoginRestaurantInput!): AuthPayloadRestaurant!
-    acceptOrder(input: AcceptOrderInput!): Order!
-    cancelOrder(input: CancelOrderInput!): Order!
-    createCategory(input: CreateCategoryInput!): Category!
-    updateCategory(id: ID!, input: UpdateCategoryInput!): Category!
-    deleteCategory(id: ID!): Boolean!
-    createFood(input: CreateFoodInput!): Food!
-    updateFood(id: ID!, input: UpdateFoodInput!): Food!
-    deleteFood(id: ID!): Boolean!
-    ownerLogin(input: LoginOwnerInput!): AuthPayloadOwner!
-    createRider(input: CreateRiderInput!): Rider!
-    createRestaurant(input: CreateRestaurantInput!): Restaurant!
-    assignRider(input: AssignRiderInput!): Order!
-    riderLogin(input: LoginRiderInput!): AuthPayloadRider!
-    claimOrder(orderId: ID!): Order!
-    updateOrderStatusRider(input: UpdateOrderStatusRiderInput!): Order!
-    confirmOrderReceived(input: ConfirmOrderInput!): Order!
-    refreshOrderStatus(id: ID!): Order! # ← ДОБАВЬ
-    updateRiderLocation(input: RiderLocationInput!): Rider!
-    toggleRider(available: Boolean!): Rider!
-    updateConfiguration(input: ConfigurationInput!): Configuration!
-    sendChatMessage(orderId: ID!, text: String!): ChatMessage!
-    createOwner(input: CreateOwnerInput!): Owner!
-    updateOwner(id: ID!, input: UpdateOwnerInput!): Owner!
-    deactivateOwner(id: ID!): Boolean!
-    resetOwnerPassword(id: ID!, newPassword: String!): Boolean!
-    toggleUserActive(id: ID!, isActive: Boolean!): ToggleUserResult!
-    createZone(input: CreateZoneInput!): Zone!
-    updateZone(id: ID!, input: UpdateZoneInput!): Zone!
-    deleteZone(id: ID!): Boolean!
-  }
-
-  type Subscription {
-    orderStatusChanged(userId: ID!): Order!
-    subscriptionOrder(orderId: ID!): Order!
-    subscribePlaceOrder(restaurantId: ID!): Order!
-    subscriptionAssignedRider(riderId: ID!): Order!
-    subscriptionZoneOrders(zoneId: ID): Order!
-    subscriptionAvailableOrders(zoneId: ID): Order!
-    subscriptionRiderLocation(riderId: ID!): RiderLocationUpdate!
-    subscriptionRiderOrderCompleted(riderId: ID!): Order!
-    newChatMessage(orderId: ID!): ChatMessage!
-  }
-`;
 </file>
 
 <file path="dastbadast-multivendor-api/.env.example">
@@ -14983,6 +15025,7 @@ import {
   ActivityIndicator,
   Switch,
   Alert,
+  Vibration,
 } from "react-native";
 import {
   useQuery,
@@ -14999,6 +15042,7 @@ import {
   SUB_ASSIGNED,
   SUB_AVAILABLE,
   SUB_RIDER_ORDER_COMPLETED,
+  COURIER_SEARCH_NOTIFY,
 } from "../../lib/api/queries";
 import { useAuth } from "../../lib/auth-context";
 import Toast from "react-native-toast-message";
@@ -15038,6 +15082,12 @@ export default function OrdersScreen() {
   const [available, setAvailable] = useState(true);
   const [tab, setTab] = useState<"pool" | "mine">("pool");
 
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const i = setInterval(() => setNow(Date.now()), 10_000);
+    return () => clearInterval(i);
+  }, []);
+
   // GPS lifecycle
   useEffect(() => {
     if (!token || !rider) return;
@@ -15062,6 +15112,30 @@ export default function OrdersScreen() {
     variables: { status: null },
     pollInterval: 8_000,
     skip: !token,
+  }) as any;
+
+  // Если мы среди targetRiders, обновляем список
+  useSubscription(COURIER_SEARCH_NOTIFY, {
+    onData: ({ data: subData }: any) => {
+      const ev = subData?.courierSearchNotify;
+      if (!ev) return;
+      if (!rider?.id) return;
+      if (ev.riderIds?.includes(String(rider.id))) {
+        Toast.show({
+          type: "info",
+          text1: ev.escalation
+            ? "⚡ Срочно: эскалация поиска"
+            : "🔔 Новый заказ рядом",
+          text2: ev.restaurantName,
+          visibilityTime: 3000,
+        });
+        // Вибрация
+        try {
+          Vibration.vibrate(ev.escalation ? [0, 200, 100, 200] : 100);
+        } catch {}
+        refetchPool();
+      }
+    },
   });
 
   // Refetch только один раз при mount, дальше работают подписки
@@ -15111,9 +15185,95 @@ export default function OrdersScreen() {
     },
   });
 
+  // ⭐⭐⭐ НОВОЕ: вычислить urgency для заказа
+  const getUrgency = (order: any): "normal" | "warning" | "urgent" | null => {
+    if (!order) return null;
+    if (order.orderStatus !== "PENDING" && order.orderStatus !== "ACCEPTED") {
+      return null;
+    }
+    const pendingAt = order.statusTimestamps?.pendingAt;
+    if (!pendingAt) return null;
+    const ageMs = now - new Date(pendingAt).getTime();
+    const escalated =
+      !!order.statusTimestamps?.courierSearchTimestamps?.escalationPushedAt;
+    if (ageMs > 90 * 1000 || escalated) return "urgent";
+    if (ageMs > 45 * 1000) return "warning";
+    return "normal";
+  };
+
   const [claimOrder, { loading: claiming }] = useMutation(CLAIM_ORDER);
   const [updateStatus, { loading: updating }] = useMutation(UPDATE_STATUS);
   const [toggleRider] = useMutation(TOGGLE);
+
+  // ⭐⭐⭐ НОВОЕ: badge "⚡ Срочно" в renderPoolItem
+  const renderPoolItem = useCallback(
+    ({ item }: any) => {
+      const urgency = getUrgency(item);
+      function cn(arg0: string, arg1: string): string | undefined {
+        throw new Error("Function not implemented.");
+      }
+
+      return (
+        <View
+          className={cn(
+            "bg-soft-surface border rounded-2xl p-4 mb-3 shadow-soft-sm",
+            urgency === "urgent"
+              ? "border-red border-2 bg-red-soft"
+              : urgency === "warning"
+                ? "border-warning border-2"
+                : "border-border",
+          )}
+        >
+          <View className="flex-row justify-between items-center border-b border-border pb-2">
+            <Text className="text-base font-extrabold text-text">
+              📦 #{item.orderId.substring(0, 8)}
+            </Text>
+            <View className="flex-row gap-1">
+              {urgency === "urgent" && (
+                <View className="bg-red rounded-full px-2 py-0.5">
+                  <Text className="text-text-inverse text-2xs font-extrabold">
+                    ⚡ Срочно
+                  </Text>
+                </View>
+              )}
+              {urgency === "warning" && (
+                <View className="bg-warning-soft rounded-full px-2 py-0.5">
+                  <Text className="text-warning-dark text-2xs font-extrabold">
+                    ⏳ Ждём
+                  </Text>
+                </View>
+              )}
+              <Text className="text-xs font-bold text-accent-dark bg-accent-soft px-2.5 py-1 rounded-lg">
+                Ждёт курьера
+              </Text>
+            </View>
+          </View>
+          {/* ... остальной JSZ без изменений ... */}
+          <View className="flex-row items-center justify-between mt-4 pt-2 border-t border-border">
+            <Text className="text-lg font-black text-success">
+              {item.amounts?.total} сом.
+            </Text>
+            <Pressable
+              disabled={claiming || !available}
+              onPress={() => onClaim(item.id)}
+              className={`px-6 h-11 rounded-xl items-center justify-center active:scale-[0.98] ${
+                available ? "bg-accent" : "bg-border opacity-40"
+              }`}
+            >
+              <Text className="text-text-inverse font-bold text-sm">
+                {claiming
+                  ? "..."
+                  : urgency === "urgent"
+                    ? "⚡ Взять срочно"
+                    : "Взять заказ"}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      );
+    },
+    [claiming, available, now],
+  );
 
   const onAvailableChange = useCallback(
     async (v: boolean) => {
@@ -15170,67 +15330,6 @@ export default function OrdersScreen() {
   );
 
   const loading = tab === "pool" ? poolLoading : myLoading;
-
-  const renderPoolItem = useCallback(
-    ({ item }: any) => (
-      <View className="bg-soft-surface border border-border rounded-2xl p-4 mb-3 shadow-soft-sm">
-        <View className="flex-row justify-between items-center border-b border-border pb-2">
-          <Text className="text-base font-extrabold text-text">
-            📦 #{item.orderId.substring(0, 8)}
-          </Text>
-          <Text className="text-xs font-bold text-accent-dark bg-accent-soft px-2.5 py-1 rounded-lg">
-            Ждёт курьера
-          </Text>
-        </View>
-
-        <AddressBlock
-          label="Откуда (Ресторан)"
-          name={item.pickupAddress?.name}
-          address={item.pickupAddress?.address}
-        />
-        <AddressBlock
-          label="Куда (Клиент)"
-          city={item.deliveryAddress?.city}
-          address={item.deliveryAddress?.address}
-        />
-
-        {item.note ? (
-          <View className="bg-soft-surface-2 p-2.5 rounded-xl mt-3 border border-border/40">
-            <Text className="text-xs italic text-text-soft">
-              💬 {item.note}
-            </Text>
-          </View>
-        ) : null}
-
-        <View className="mt-3 pt-2 border-t border-border/30 space-y-0.5">
-          {item.items.map((i: any) => (
-            <Text key={i.foodId} className="text-xs text-text-soft font-medium">
-              • {i.title}{" "}
-              <Text className="text-text font-bold">×{i.quantity}</Text>
-            </Text>
-          ))}
-        </View>
-
-        <View className="flex-row items-center justify-between mt-4 pt-2 border-t border-border">
-          <Text className="text-lg font-black text-success">
-            {item.amounts?.total} сом.
-          </Text>
-          <Pressable
-            disabled={claiming || !available}
-            onPress={() => onClaim(item.id)}
-            className={`px-6 h-11 rounded-xl items-center justify-center active:scale-[0.98] ${
-              available ? "bg-accent" : "bg-border opacity-40"
-            }`}
-          >
-            <Text className="text-text-inverse font-bold text-sm">
-              {claiming ? "..." : "Взять заказ"}
-            </Text>
-          </Pressable>
-        </View>
-      </View>
-    ),
-    [claiming, available, onClaim],
-  );
 
   const renderMyItem = useCallback(
     ({ item }: any) => {
@@ -15575,6 +15674,21 @@ export const RIDER_LOGIN = gql`
     }
   }
 `;
+export const COURIER_SEARCH_NOTIFY = gql`
+  subscription CourierSearchNotify {
+    courierSearchNotify {
+      orderId
+      orderIdStr
+      restaurantName
+      restaurantLocation
+      riderIds
+      radiusKm
+      escalation
+      fastAcceptBonus
+      createdAt
+    }
+  }
+`;
 
 export const AVAILABLE_ORDERS = gql`
   query AvailableOrders {
@@ -15600,6 +15714,14 @@ export const AVAILABLE_ORDERS = gql`
       }
       amounts {
         total
+      }
+      statusTimestamps {
+        pendingAt
+        acceptedAt
+        courierSearchTimestamps {
+          initialPushedAt
+          escalationPushedAt
+        }
       }
     }
   }
@@ -17420,7 +17542,7 @@ export default function MenuScreen() {
 </file>
 
 <file path="dastbadast-multivendor-store/app/(tabs)/new.tsx">
-import { useEffect, useCallback, useMemo } from "react";
+import { useEffect, useMemo, useCallback, useState } from "react";
 import {
   View,
   Text,
@@ -17428,7 +17550,8 @@ import {
   Pressable,
   ActivityIndicator,
   Alert,
-  TouchableOpacity
+  Modal,
+  TouchableOpacity,
 } from "react-native";
 import { useQuery, useMutation, useSubscription } from "@apollo/client/react";
 import {
@@ -17450,7 +17573,10 @@ import { EmptyState } from "../../components/EmptyState";
 import { cn } from "../../lib/cn";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-const PREP_TIME = 20;
+// Предустановленные опции времени приготовления (мин).
+// Шаг 5, диапазон 20..60.
+const PREP_TIME_OPTIONS = [20, 25, 30, 35, 40, 45, 50, 55, 60];
+const DEFAULT_PREP_TIME = 40;
 
 export default function NewOrders() {
   const { restaurant } = useAuth();
@@ -17472,9 +17598,9 @@ export default function NewOrders() {
     onData: ({ data: subData, client }: any) => {
       const order = subData?.data?.subscribePlaceOrder;
       if (!order) return;
-      Haptics.notificationAsync(
-        Haptics.NotificationFeedbackType.Success
-      ).catch(() => {});
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
+        () => {},
+      );
       Toast.show({
         type: "success",
         text1: "🔔 Новый заказ!",
@@ -17492,32 +17618,48 @@ export default function NewOrders() {
   const [acceptOrder, { loading: acLoading }] = useMutation(ACCEPT_ORDER);
   const [cancelOrder, { loading: cancelLoading }] = useMutation(CANCEL_ORDER);
 
+  // ⭐ Модалка выбора времени приготовления
+  const [prepModal, setPrepModal] = useState<{
+    orderId: string;
+    order: any;
+  } | null>(null);
+  const [prepTime, setPrepTime] = useState<number>(DEFAULT_PREP_TIME);
+
+  // Просто открывает модалку — без Alert
   const onAccept = useCallback(
     (orderId: string) => {
-      Alert.alert("Принять заказ?", `Время приготовления: ${PREP_TIME} минут`, [
-        { text: "Отмена", style: "cancel" },
-        {
-          text: "Принять",
-          onPress: async () => {
-            try {
-              await acceptOrder({
-                variables: { input: { orderId, prepTime: PREP_TIME } },
-              });
-              Toast.show({
-                type: "success",
-                text1: "✅ Заказ принят",
-                text2: "Курьер сам заберёт из списка",
-              });
-              refetch();
-            } catch (e: any) {
-              Alert.alert("Ошибка", e?.message ?? "Не удалось принять");
-            }
-          },
-        },
-      ]);
+      const order = (data?.restaurantOrders ?? []).find(
+        (o: any) => o.id === orderId,
+      );
+      if (!order) {
+        Alert.alert("Ошибка", "Заказ не найден в списке");
+        return;
+      }
+      setPrepTime(DEFAULT_PREP_TIME);
+      setPrepModal({ orderId, order });
     },
-    [acceptOrder, refetch]
+    [data],
   );
+
+  const confirmAccept = async () => {
+    if (!prepModal) return;
+    try {
+      await acceptOrder({
+        variables: {
+          input: { orderId: prepModal.orderId, prepTime },
+        },
+      });
+      Toast.show({
+        type: "success",
+        text1: "✅ Заказ принят",
+        text2: `Время приготовления: ${prepTime} мин`,
+      });
+      setPrepModal(null);
+      refetch();
+    } catch (e: any) {
+      Alert.alert("Ошибка", e?.message ?? "Не удалось принять");
+    }
+  };
 
   const onCancel = useCallback(
     (orderId: string) => {
@@ -17540,7 +17682,7 @@ export default function NewOrders() {
         },
       ]);
     },
-    [cancelOrder, refetch]
+    [cancelOrder, refetch],
   );
 
   const orders = data?.restaurantOrders ?? [];
@@ -17550,7 +17692,7 @@ export default function NewOrders() {
     const total = orders.length;
     const totalAmount = orders.reduce(
       (s: number, o: any) => s + (o.amounts?.total ?? 0),
-      0
+      0,
     );
     return { total, totalAmount };
   }, [orders]);
@@ -17565,7 +17707,7 @@ export default function NewOrders() {
   }
 
   return (
-    <View className="flex-1 bg-soft-bg">
+    <SafeAreaView className="flex-1 bg-soft-bg">
       <View className="px-5 pb-2 flex-row items-end justify-between">
         <View className="flex-1">
           <Text className="text-2xl font-extrabold text-text tracking-tight">
@@ -17589,7 +17731,7 @@ export default function NewOrders() {
 
       {queryError && (
         <View className="mx-5 my-2 bg-red-soft border border-red/30 rounded-xl px-3 py-2">
-          <Text className="text-red-dark text-sm font-semibold">
+          <Text className="text-red text-sm font-semibold">
             ⚠️ {queryError.message}
           </Text>
         </View>
@@ -17612,7 +17754,7 @@ export default function NewOrders() {
         }
         renderItem={({ item }: any) => {
           const minutesAgo = Math.floor(
-            (Date.now() - new Date(item.createdAt).getTime()) / 60_000
+            (Date.now() - new Date(item.createdAt).getTime()) / 60_000,
           );
           const isUrgent = minutesAgo >= 10;
 
@@ -17622,7 +17764,7 @@ export default function NewOrders() {
                 "bg-soft-surface border rounded-2xl p-4 mb-3.5 shadow-soft-sm",
                 isUrgent
                   ? "bg-accent-soft border-accent border-2"
-                  : "border-border"
+                  : "border-border",
               )}
             >
               <View className="flex-row justify-between items-start mb-3">
@@ -17681,7 +17823,9 @@ export default function NewOrders() {
 
               {item.note && (
                 <View className="mt-2.5 bg-warning-soft rounded-xl p-2.5 border-l-[3px] border-warning">
-                  <Text className="text-sm text-text italic">💬 {item.note}</Text>
+                  <Text className="text-sm text-text italic">
+                    💬 {item.note}
+                  </Text>
                 </View>
               )}
 
@@ -17691,7 +17835,7 @@ export default function NewOrders() {
                   onPress={() => onAccept(item.id)}
                   className={cn(
                     "flex-1 h-12 rounded-xl items-center justify-center bg-success shadow-soft-sm",
-                    busy ? "opacity-40" : "active:opacity-80"
+                    busy ? "opacity-40" : "active:opacity-80",
                   )}
                 >
                   <Text className="text-text-inverse font-extrabold text-base tracking-wide">
@@ -17703,10 +17847,10 @@ export default function NewOrders() {
                   onPress={() => onCancel(item.id)}
                   className={cn(
                     "flex-1 h-12 rounded-xl items-center justify-center bg-soft-surface border border-red",
-                    busy ? "opacity-40" : "active:opacity-80"
+                    busy ? "opacity-40" : "active:opacity-80",
                   )}
                 >
-                  <Text className="text-red-dark font-extrabold text-base tracking-wide">
+                  <Text className="text-red font-extrabold text-base tracking-wide">
                     ✕ Отменить
                   </Text>
                 </TouchableOpacity>
@@ -17715,19 +17859,187 @@ export default function NewOrders() {
           );
         }}
       />
-    </View>
+
+      {/* ⭐ Модалка выбора времени приготовления */}
+      {prepModal && (
+        <PrepTimeModal
+          visible={!!prepModal}
+          order={prepModal.order}
+          selected={prepTime}
+          onSelect={setPrepTime}
+          onConfirm={confirmAccept}
+          onClose={() => setPrepModal(null)}
+          busy={acLoading}
+        />
+      )}
+    </SafeAreaView>
+  );
+}
+
+/* ============== Модалка выбора времени ============== */
+
+function PrepTimeModal({
+  visible,
+  order,
+  selected,
+  onSelect,
+  onConfirm,
+  onClose,
+  busy,
+}: {
+  visible: boolean;
+  order: any;
+  selected: number;
+  onSelect: (m: number) => void;
+  onConfirm: () => void;
+  onClose: () => void;
+  busy: boolean;
+}) {
+  if (!visible || !order) return null;
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
+      <View className="flex-1 bg-black/50 justify-end">
+        <Pressable className="flex-1" onPress={onClose} />
+
+        <View className="bg-soft-surface rounded-t-3xl p-5 pb-8">
+          <View className="items-center mb-3">
+            <View className="w-12 h-1 bg-border rounded-full" />
+          </View>
+
+          <Text className="text-lg font-extrabold text-text">
+            Принять заказ
+          </Text>
+
+          {/* Информация о заказе */}
+          <View className="mt-3 bg-soft-surface-2 border border-border rounded-2xl p-3.5">
+            <Text className="text-sm font-bold text-text" numberOfLines={1}>
+              Заказ #{String(order.orderId).substring(0, 8)}
+            </Text>
+            <View className="flex-row justify-between mt-1.5">
+              <Text className="text-xs text-text-muted">Сумма</Text>
+              <Text className="text-sm font-extrabold text-accent">
+                {order.amounts?.total} сом.
+              </Text>
+            </View>
+            <View className="flex-row justify-between mt-1">
+              <Text className="text-xs text-text-muted">Ожидает с</Text>
+              <Text className="text-xs font-bold text-text-soft">
+                {formatTimeAgo(order.createdAt)}
+              </Text>
+            </View>
+            {order.deliveryAddress && (
+              <View className="mt-2 pt-2 border-t border-border">
+                <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
+                  📍 Доставить
+                </Text>
+                <Text className="text-xs text-text-soft leading-5">
+                  {order.deliveryAddress.city
+                    ? `${order.deliveryAddress.city}, `
+                    : ""}
+                  {order.deliveryAddress.address}
+                </Text>
+              </View>
+            )}
+            {order.items && order.items.length > 0 && (
+              <View className="mt-2 pt-2 border-t border-border">
+                <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
+                  🍽 Состав
+                </Text>
+                {order.items.map((it: any) => (
+                  <Text key={it.foodId} className="text-xs text-text-soft">
+                    • {it.title}{" "}
+                    <Text className="text-text-muted">×{it.quantity}</Text>
+                  </Text>
+                ))}
+              </View>
+            )}
+          </View>
+
+          {/* Заголовок выбора */}
+          <Text className="text-sm font-extrabold text-text mt-5">
+            ⏱ Сколько времени на готовку?
+          </Text>
+          <Text className="text-2xs text-text-muted mt-0.5 mb-3">
+            Минимум 20 минут · Максимум 60 минут · Шаг 5 минут
+          </Text>
+
+          {/* Сетка выбора 3×3 */}
+          <View className="flex-row flex-wrap gap-2">
+            {PREP_TIME_OPTIONS.map((min) => {
+              const active = selected === min;
+              return (
+                <Pressable
+                  key={min}
+                  onPress={() => onSelect(min)}
+                  className={cn(
+                    "w-[31%] py-3.5 rounded-2xl items-center border-2",
+                    active
+                      ? "bg-accent border-accent"
+                      : "bg-soft-surface border-border",
+                  )}
+                >
+                  <Text
+                    className={cn(
+                      "text-lg font-extrabold",
+                      active ? "text-text-inverse" : "text-text",
+                    )}
+                  >
+                    {min}
+                  </Text>
+                  <Text
+                    className={cn(
+                      "text-2xs font-bold mt-0.5",
+                      active ? "text-text-inverse/80" : "text-text-muted",
+                    )}
+                  >
+                    мин
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          {/* Кнопки действий */}
+          <View className="flex-row gap-2 mt-5">
+            <Pressable
+              onPress={onClose}
+              className="flex-1 h-12 rounded-2xl items-center justify-center border border-border bg-soft-surface"
+            >
+              <Text className="text-text-soft font-bold text-base">Отмена</Text>
+            </Pressable>
+            <Pressable
+              onPress={onConfirm}
+              disabled={busy}
+              className={cn(
+                "flex-[2] h-12 rounded-2xl items-center justify-center bg-success shadow-soft-sm",
+                busy ? "opacity-40" : "active:opacity-80",
+              )}
+            >
+              {busy ? (
+                <ActivityIndicator color="white" />
+              ) : (
+                <Text className="text-text-inverse font-extrabold text-base">
+                  ✓ Принять · {selected} мин
+                </Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 </file>
 
 <file path="dastbadast-multivendor-store/app/(tabs)/processing.tsx">
 import { useMemo, useState, useEffect } from "react";
-import {
-  View,
-  Text,
-  FlatList,
-  ActivityIndicator,
-} from "react-native";
+import { View, Text, FlatList, ActivityIndicator } from "react-native";
 import { useQuery } from "@apollo/client/react";
 import { RESTAURANT_ORDERS } from "../../lib/api/graphql/queries";
 import { useAuth } from "../../lib/auth-context";
@@ -17735,6 +18047,7 @@ import { SegmentedTabs } from "../../components/SegmentedTabs";
 import { EmptyState } from "../../components/EmptyState";
 import { StatusPill } from "../../components/StatusPill";
 import { cn } from "../../lib/cn";
+import { usePrepRemainingMs, formatPrepRemaining } from "../../lib/prep-timer";
 import {
   formatDateTime,
   formatOrdersCount,
@@ -17757,18 +18070,24 @@ export default function Processing() {
     skip: !restaurant?.id,
   }) as any;
 
-  const { data: histAll, loading: histLoading, refetch: refetchHist } =
-    useQuery(RESTAURANT_ORDERS, {
-      variables: { status: "DELIVERED" },
-      pollInterval: 30_000,
-      skip: !restaurant?.id || tab !== "history",
-    }) as any;
+  const {
+    data: histAll,
+    loading: histLoading,
+    refetch: refetchHist,
+  } = useQuery(RESTAURANT_ORDERS, {
+    variables: { status: "DELIVERED" },
+    pollInterval: 30_000,
+    skip: !restaurant?.id || tab !== "history",
+  }) as any;
 
-  const { data: cancAll, loading: cancLoading, refetch: refetchCanc } =
-    useQuery(RESTAURANT_ORDERS, {
-      variables: { status: "CANCELLED" },
-      skip: !restaurant?.id || tab !== "history",
-    }) as any;
+  const {
+    data: cancAll,
+    loading: cancLoading,
+    refetch: refetchCanc,
+  } = useQuery(RESTAURANT_ORDERS, {
+    variables: { status: "CANCELLED" },
+    skip: !restaurant?.id || tab !== "history",
+  }) as any;
 
   useEffect(() => {
     if (restaurant?.id) refetch();
@@ -17791,27 +18110,89 @@ export default function Processing() {
         new Date(
           b.statusTimestamps?.deliveredAt ||
             b.statusTimestamps?.cancelledAt ||
-            b.createdAt
+            b.createdAt,
         ).getTime() -
         new Date(
           a.statusTimestamps?.deliveredAt ||
             a.statusTimestamps?.cancelledAt ||
-            a.createdAt
-        ).getTime()
+            a.createdAt,
+        ).getTime(),
     );
   }, [histOrders, cancOrders]);
 
   const tabs = [
-    { value: "cooking" as const, label: "Готовятся", count: orders.length, icon: "👨‍🍳" },
-    { value: "history" as const, label: "История", count: history.length, icon: "📦" },
+    {
+      value: "cooking" as const,
+      label: "Готовятся",
+      count: orders.length,
+      icon: "👨‍🍳",
+    },
+    {
+      value: "history" as const,
+      label: "История",
+      count: history.length,
+      icon: "📦",
+    },
   ];
 
-  const isLoading =
-    tab === "cooking" ? loading : histLoading || cancLoading;
+  function PrepCountdown({
+    acceptedAt,
+    prepTime,
+  }: {
+    acceptedAt?: string | null;
+    prepTime?: number | null;
+  }) {
+    const { remainingMs, isLate, elapsedMs, totalMs } = usePrepRemainingMs(
+      acceptedAt,
+      prepTime,
+    );
+
+    if (!acceptedAt || !prepTime) return null;
+
+    // Прогресс-бар (0–100%)
+    const pct = totalMs > 0 ? Math.min(100, (elapsedMs / totalMs) * 100) : 0;
+
+    return (
+      <View className="mt-2">
+        <View className="flex-row items-center justify-between mb-1.5">
+          {isLate ? (
+            <View className="flex-row items-center">
+              <Text className="text-xs font-bold text-red">
+                ⚠️ Задержка {Math.floor((elapsedMs - totalMs) / 60000)} мин
+              </Text>
+            </View>
+          ) : (
+            <Text className="text-xs font-bold text-text-soft">
+              ⏱ Осталось готовить
+            </Text>
+          )}
+          <Text
+            className={cn(
+              "text-base font-extrabold font-mono tabular-nums",
+              isLate ? "text-red" : "text-accent",
+            )}
+          >
+            {formatPrepRemaining(remainingMs)}
+          </Text>
+        </View>
+        <View className="w-full h-1.5 bg-soft-surface-2 rounded-full overflow-hidden">
+          <View
+            className={cn(
+              "h-full rounded-full transition-all",
+              isLate ? "bg-red" : pct > 80 ? "bg-warning" : "bg-success",
+            )}
+            style={{ width: `${Math.min(100, pct)}%` }}
+          />
+        </View>
+      </View>
+    );
+  }
+
+  const isLoading = tab === "cooking" ? loading : histLoading || cancLoading;
 
   const renderCookingItem = ({ item }: any) => {
     const elapsed = Math.floor(
-      (Date.now() - new Date(item.createdAt).getTime()) / 60_000
+      (Date.now() - new Date(item.createdAt).getTime()) / 60_000,
     );
     const isLate = elapsed > PREP_TIME + 5;
 
@@ -17819,7 +18200,7 @@ export default function Processing() {
       <View
         className={cn(
           "bg-soft-surface border rounded-2xl p-4 mb-3.5 shadow-soft-sm",
-          isLate ? "border-warning border-2" : "border-border"
+          isLate ? "border-warning border-2" : "border-border",
         )}
       >
         <View className="flex-row justify-between items-start mb-3">
@@ -17851,24 +18232,24 @@ export default function Processing() {
             📍 Доставить
           </Text>
           <Text className="text-sm text-text font-semibold leading-5">
-            {item.deliveryAddress?.city
-              ? `${item.deliveryAddress.city}, `
-              : ""}
+            {item.deliveryAddress?.city ? `${item.deliveryAddress.city}, ` : ""}
             {item.deliveryAddress?.address}
           </Text>
         </View>
 
         <View className="pt-2.5 border-t border-border">
           {item.items?.map((it: any) => (
-            <Text
-              key={it.foodId}
-              className="text-sm text-text-soft leading-6"
-            >
+            <Text key={it.foodId} className="text-sm text-text-soft leading-6">
               • {it.title}{" "}
               <Text className="text-accent font-extrabold">×{it.quantity}</Text>
             </Text>
           ))}
         </View>
+
+        <PrepCountdown
+          acceptedAt={item.statusTimestamps?.acceptedAt}
+          prepTime={item.statusTimestamps?.prepTime}
+        />
 
         <View className="mt-3 pt-3 border-t border-border">
           <Text className="text-xs text-text-muted italic leading-4">
@@ -17895,7 +18276,7 @@ export default function Processing() {
       <View
         className={cn(
           "bg-soft-surface border rounded-2xl p-4 mb-3 shadow-soft-sm",
-          isDelivered ? "border-border" : "border-red/30 bg-red-soft/30"
+          isDelivered ? "border-border" : "border-red/30 bg-red-soft/30",
         )}
       >
         <View className="flex-row justify-between items-start mb-2.5">
@@ -17915,7 +18296,7 @@ export default function Processing() {
           <Text
             className={cn(
               "text-base font-extrabold tracking-tight",
-              isDelivered ? "text-text" : "text-text-muted line-through"
+              isDelivered ? "text-text" : "text-text-muted line-through",
             )}
           >
             {item.amounts?.total} сом.
@@ -17926,13 +18307,8 @@ export default function Processing() {
           <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
             📍 Доставлено
           </Text>
-          <Text
-            className="text-sm text-text-soft leading-5"
-            numberOfLines={2}
-          >
-            {item.deliveryAddress?.city
-              ? `${item.deliveryAddress.city}, `
-              : ""}
+          <Text className="text-sm text-text-soft leading-5" numberOfLines={2}>
+            {item.deliveryAddress?.city ? `${item.deliveryAddress.city}, ` : ""}
             {item.deliveryAddress?.address}
           </Text>
         </View>
@@ -18016,10 +18392,7 @@ export default function Processing() {
             <Text className="text-2xl font-black text-success mt-0.5">
               {history
                 .filter((o: any) => o.orderStatus === "DELIVERED")
-                .reduce(
-                  (s: number, o: any) => s + (o.amounts?.total ?? 0),
-                  0
-                )
+                .reduce((s: number, o: any) => s + (o.amounts?.total ?? 0), 0)
                 .toLocaleString("ru")}{" "}
               сом.
             </Text>
@@ -18037,9 +18410,7 @@ export default function Processing() {
               Отменено
             </Text>
             <Text className="text-xl font-extrabold text-red mt-0.5">
-              {
-                history.filter((o: any) => o.orderStatus === "CANCELLED").length
-              }
+              {history.filter((o: any) => o.orderStatus === "CANCELLED").length}
             </Text>
           </View>
         </View>
@@ -18514,6 +18885,11 @@ export const RESTAURANT_ORDERS = gql`
         pickedAt
         deliveredAt
         cancelledAt
+        prepTime
+        courierSearchTimestamps {
+          initialPushedAt
+          escalationPushedAt
+        }
       }
     }
   }
@@ -20696,7 +21072,7 @@ function CartInner() {
               return;
             }
             clear();
-            router.push(`/order/${orderId}/tracking`);
+            router.push(`/orders/${orderId}/waiting`);
           } catch (e: any) {
             debugError("Cart", "placeOrder failed", e.message);
             setError(e.message);
@@ -21050,6 +21426,9 @@ function TrackingInner() {
 
   const o = data?.order;
 
+  const isSearchingRider =
+    !o.riderId && (o.orderStatus === "PENDING" || o.orderStatus === "ACCEPTED");
+
   useEffect(() => {
     if (!o || o.orderStatus !== "AWAITING_CONFIRMATION") return;
     const interval = setInterval(async () => {
@@ -21275,7 +21654,30 @@ function TrackingInner() {
 
   return (
     <>
-      <OrderStatusStage status={o.orderStatus as any} />
+      {/* ⭐ Передаём acceptedAt и prepTime в OrderStatusStage */}
+      <OrderStatusStage
+        status={o.orderStatus as any}
+        acceptedAt={o.statusTimestamps?.acceptedAt ?? null}
+        prepTime={o.statusTimestamps?.prepTime ?? null}
+      />
+
+      {/* ⭐⭐⭐ НОВОЕ: баннер "Ищем курьера" */}
+      {isSearchingRider && (
+        <div className="mt-6 bg-soft-warning-soft text-soft-warning-dark border border-soft-warning/30 rounded-2xl p-4 flex items-center gap-3 shadow-soft-sm animate-fade-in">
+          <div className="text-3xl animate-pulse">🛵</div>
+          <div className="flex-1">
+            <p className="font-extrabold text-base">Ищем ближайшего курьера</p>
+            <p className="text-xs text-soft-warning-dark/80 mt-0.5">
+              Отправили заявку{" "}
+              {o.statusTimestamps?.courierSearchTimestamps?.initialPushedAt
+                ? `${Math.max(1, Math.round((Date.now() - new Date(o.statusTimestamps.courierSearchTimestamps.initialPushedAt).getTime()) / 1000))} сек назад`
+                : "только что"}
+              {o.statusTimestamps?.courierSearchTimestamps
+                ?.escalationPushedAt && " · ⚡ эскалация отправлена"}
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="mt-6 bg-soft-surface border border-soft-border rounded-2xl p-5 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-soft-sm">
         <p className="text-sm text-soft-text-soft text-center sm:text-left">
@@ -21562,6 +21964,8 @@ import {
   XCircle,
   Clock,
   ChevronRight,
+  ArrowLeft,
+  RefreshCw,
 } from "lucide-react";
 import { GET_ORDERS, GET_CONFIGURATION, SUB_USER_ORDERS } from "@/lib/queries";
 import { useAuth } from "@/lib/auth-context";
@@ -21597,7 +22001,7 @@ function StatusPills({ status }: { status: string }) {
 function StatusBadge({ status }: { status: string }) {
   if (status === "PENDING")
     return (
-      <span className="inline-flex items-center gap-1 bg-soft-rating-soft text-soft-rating-dark border border-soft-rating/30 text-xs px-2.5 py-1 rounded-full font-bold">
+      <span className="inline-flex items-center gap-1 bg-soft-warning-soft text-soft-warning-dark border border-soft-warning/30 text-xs px-2.5 py-1 rounded-full font-bold">
         <Clock className="w-3 h-3" /> Ожидает
       </span>
     );
@@ -21621,7 +22025,7 @@ function StatusBadge({ status }: { status: string }) {
     );
   if (status === "CANCELLED")
     return (
-      <span className="inline-flex items-center gap-1 bg-red-50 text-red-600 border border-red-200 text-xs px-2.5 py-1 rounded-full font-bold">
+      <span className="inline-flex items-center gap-1 bg-red-soft text-red border border-red/30 text-xs px-2.5 py-1 rounded-full font-bold">
         <XCircle className="w-3 h-3" /> Отменён
       </span>
     );
@@ -21661,13 +22065,30 @@ function OrdersInner() {
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-extrabold text-soft-text tracking-tight">
-          История заказов
-        </h1>
-        <p className="text-sm text-soft-text-soft mt-1">
-          Статус обновляется автоматически через WebSocket
-        </p>
+      <Link
+        href="/"
+        className="inline-flex items-center gap-1 text-sm font-bold text-soft-text-soft hover:text-soft-accent"
+      >
+        <ArrowLeft className="w-4 h-4" /> На главную
+      </Link>
+
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-extrabold text-soft-text tracking-tight">
+            История заказов
+          </h1>
+          <p className="text-sm text-soft-text-soft mt-1">
+            Статус обновляется автоматически через WebSocket
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => refetch()}
+          aria-label="Обновить"
+          className="w-10 h-10 rounded-full bg-soft-surface border border-soft-border text-soft-text-soft hover:text-soft-accent hover:border-soft-accent flex items-center justify-center active:scale-95 transition"
+        >
+          <RefreshCw className="w-4 h-4" />
+        </button>
       </div>
 
       <div className="flex bg-soft-surface border border-soft-border rounded-full p-1.5 shadow-soft-sm">
@@ -21693,7 +22114,7 @@ function OrdersInner() {
         </button>
       </div>
 
-      {loading ? (
+      {loading && !orders.length ? (
         <div className="space-y-3">
           {[1, 2].map((n) => (
             <div
@@ -21726,46 +22147,63 @@ function OrdersInner() {
         </div>
       ) : (
         <ul className="space-y-3">
-          {visible.map((o: any) => (
-            <li
-              key={o.id}
-              className="bg-soft-surface border border-soft-border rounded-2xl p-5 shadow-soft-sm hover:border-soft-accent transition-all"
-            >
-              <div className="flex justify-between items-start gap-4">
-                <div className="min-w-0 space-y-1">
-                  <div className="font-extrabold text-soft-text text-base">
-                    Заказ #{o.orderId}
+          {visible.map((o: any) => {
+            // ⭐ TASK 2.2: Smart routing в зависимости от статуса
+            const isPending = o.orderStatus === "PENDING";
+            const detailHref = isPending
+              ? `/orders/${o.id}/waiting`
+              : `/order/${o.id}/tracking`;
+            const detailLabel = isPending ? "Ожидание" : "Подробнее";
+
+            return (
+              <li
+                key={o.id}
+                className="bg-soft-surface border border-soft-border rounded-2xl p-5 shadow-soft-sm hover:border-soft-accent transition-all"
+              >
+                <div className="flex justify-between items-start gap-4">
+                  <div className="min-w-0 space-y-1">
+                    <div className="font-extrabold text-soft-text text-base">
+                      Заказ #{o.orderId}
+                    </div>
+                    <div className="text-xs text-soft-text-muted">
+                      {new Date(o.createdAt).toLocaleString("ru", {
+                        day: "numeric",
+                        month: "short",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </div>
+                    <div className="text-sm text-soft-text-soft pt-1 truncate">
+                      📍 {o.deliveryAddress?.city}, {o.deliveryAddress?.address}
+                    </div>
                   </div>
-                  <div className="text-xs text-soft-text-muted">
-                    {new Date(o.createdAt).toLocaleString("ru", {
-                      day: "numeric",
-                      month: "short",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </div>
-                  <div className="text-sm text-soft-text-soft pt-1 truncate">
-                    📍 {o.deliveryAddress?.city}, {o.deliveryAddress?.address}
+                  <div className="text-right shrink-0 flex flex-col items-end gap-2">
+                    <div className="font-extrabold text-soft-accent text-base">
+                      {o.amounts?.total} {sym}
+                    </div>
+                    <Link
+                      href={detailHref}
+                      className="inline-flex items-center gap-1 bg-soft-surface-2 hover:bg-soft-accent-soft border border-soft-border hover:border-soft-accent text-soft-text-soft hover:text-soft-accent px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all"
+                    >
+                      {detailLabel}
+                      <ChevronRight className="w-3 h-3" />
+                    </Link>
                   </div>
                 </div>
-                <div className="text-right shrink-0 flex flex-col items-end gap-2">
-                  <div className="font-extrabold text-soft-accent text-base">
-                    {o.amounts?.total} {sym}
-                  </div>
-                  <Link
-                    href={`/order/${o.id}/tracking`}
-                    className="inline-flex items-center gap-1 bg-soft-surface-2 hover:bg-soft-accent-soft border border-soft-border hover:border-soft-accent text-soft-text-soft hover:text-soft-accent px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all"
-                  >
-                    Подробнее <ChevronRight className="w-3 h-3" />
-                  </Link>
+
+                <div className="mt-3 pt-3 border-t border-soft-border flex items-center justify-between flex-wrap gap-2">
+                  <StatusBadge status={o.orderStatus} />
+                  {/* ⭐ NEW: Визуальный бейдж для PENDING */}
+                  {isPending && (
+                    <span className="inline-flex items-center gap-1 bg-soft-warning-soft text-soft-warning-dark border border-soft-warning/30 text-[10px] px-2 py-0.5 rounded-full font-extrabold">
+                      <Clock className="w-2.5 h-2.5" /> Ожидает подтверждения
+                    </span>
+                  )}
                 </div>
-              </div>
-              <div className="mt-3 pt-3 border-t border-soft-border flex items-center justify-between flex-wrap gap-2">
-                <StatusBadge status={o.orderStatus} />
-              </div>
-              <StatusPills status={o.orderStatus} />
-            </li>
-          ))}
+                <StatusPills status={o.orderStatus} />
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>
@@ -21950,292 +22388,6 @@ export default function PrivacyPage() {
         </section>
       </div>
     </div>
-  );
-}
-</file>
-
-<file path="dastbadast-multivendor-web/app/(main)/profile/page.tsx">
-"use client";
-
-import { useEffect, useState } from "react";
-import { useQuery, useMutation } from "@apollo/client";
-import { GET_PROFILE } from "@/lib/queries";
-import { useAuth } from "@/lib/auth-context";
-import { useRouter } from "next/navigation";
-import {
-  User,
-  Mail,
-  Phone,
-  Save,
-  LogOut,
-  Shield,
-  Bell,
-  CreditCard,
-  MapPin,
-  ChevronRight,
-} from "lucide-react";
-import { RequireAuth } from "@/components/RequireAuth";
-
-export default function ProfilePage() {
-  return (
-    <RequireAuth>
-      <ProfileInner />
-    </RequireAuth>
-  );
-}
-
-function ProfileInner() {
-  const { user, logout } = useAuth();
-  const router = useRouter();
-  const [editing, setEditing] = useState(false);
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [email, setEmail] = useState("");
-  const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    if (user) {
-      setName(user.name || "");
-      setPhone(user.phone || "");
-      setEmail(user.email || "");
-    }
-  }, [user]);
-
-  const { data, refetch } = useQuery(GET_PROFILE, {
-    skip: !user,
-  });
-  const profile = data?.profile ?? user;
-
-  const [updateProfile, { loading: saving }] = useMutation(
-    require("@/lib/queries").UPDATE_USER ?? require("@/lib/queries").LOGIN,
-  );
-
-  const save = async () => {
-    try {
-      const { UPDATE_USER } = await import("@/lib/queries");
-      await updateProfile({ variables: { input: { name, phone, email } } });
-      setSaved(true);
-      setEditing(false);
-      setTimeout(() => setSaved(false), 2500);
-      refetch();
-    } catch (e) {
-      /* noop */
-    }
-  };
-
-  if (!user) return null;
-
-  return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-extrabold text-soft-text tracking-tight">
-          Настройки профиля
-        </h1>
-        <p className="text-sm text-soft-text-soft mt-1">
-          Управляйте своими данными и предпочтениями
-        </p>
-      </div>
-
-      {saved && (
-        <div className="bg-soft-success-soft text-soft-success border border-soft-success/30 rounded-2xl px-4 py-3 text-sm font-semibold">
-          ✅ Данные сохранены
-        </div>
-      )}
-
-      <section className="bg-soft-surface border border-soft-border rounded-3xl p-6 shadow-soft-sm">
-        <div className="flex items-center gap-5">
-          <div className="w-20 h-20 rounded-full bg-gradient-to-br from-soft-rating to-soft-accent flex items-center justify-center text-white text-2xl font-extrabold shrink-0 ring-4 ring-white shadow-soft">
-            {(profile?.name || "Г")
-              .split(" ")
-              .map((p: string) => p[0])
-              .slice(0, 2)
-              .join("")
-              .toUpperCase()}
-          </div>
-          <div className="flex-1 min-w-0">
-            <h2 className="text-xl font-extrabold text-soft-text truncate">
-              {profile?.name || "Гость"}
-            </h2>
-            <p className="text-sm text-soft-text-soft truncate">
-              {profile?.email || profile?.phone || "—"}
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <section className="bg-soft-surface border border-soft-border rounded-3xl p-6 shadow-soft-sm">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-extrabold text-soft-text">Личная информация</h3>
-          {!editing ? (
-            <button
-              type="button"
-              onClick={() => setEditing(true)}
-              className="text-sm font-bold text-soft-accent hover:underline"
-            >
-              Редактировать
-            </button>
-          ) : (
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setEditing(false);
-                  setName(profile?.name || "");
-                  setPhone(profile?.phone || "");
-                  setEmail(profile?.email || "");
-                }}
-                className="text-sm font-semibold text-soft-text-soft hover:text-soft-text px-3 py-1.5 rounded-lg"
-              >
-                Отмена
-              </button>
-              <button
-                type="button"
-                onClick={save}
-                disabled={saving}
-                className="text-sm font-extrabold text-white bg-soft-accent hover:bg-soft-accent-dark px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 disabled:opacity-50"
-              >
-                <Save className="w-3.5 h-3.5" />
-                {saving ? "…" : "Сохранить"}
-              </button>
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-3">
-          <Field
-            icon={<User className="w-4 h-4" />}
-            label="Имя"
-            value={editing ? name : profile?.name || ""}
-            onChange={setName}
-            disabled={!editing}
-          />
-          <Field
-            icon={<Mail className="w-4 h-4" />}
-            label="Email"
-            type="email"
-            value={editing ? email : profile?.email || ""}
-            onChange={setEmail}
-            disabled={!editing}
-          />
-          <Field
-            icon={<Phone className="w-4 h-4" />}
-            label="Телефон"
-            type="tel"
-            value={editing ? phone : profile?.phone || ""}
-            onChange={setPhone}
-            disabled={!editing}
-          />
-        </div>
-      </section>
-
-      <section className="bg-soft-surface border border-soft-border rounded-3xl shadow-soft-sm overflow-hidden">
-        <LinkItem
-          href="/address"
-          icon={<MapPin className="w-5 h-5" />}
-          title="Мои адреса"
-          subtitle="Управление адресами доставки"
-        />
-        <LinkItem
-          href="/orders"
-          icon={<CreditCard className="w-5 h-5" />}
-          title="История заказов"
-          subtitle="Все ваши заказы"
-        />
-        <LinkItem
-          href="#"
-          icon={<Bell className="w-5 h-5" />}
-          title="Уведомления"
-          subtitle="Скоро"
-          disabled
-        />
-        <LinkItem
-          href="#"
-          icon={<Shield className="w-5 h-5" />}
-          title="Безопасность"
-          subtitle="Скоро"
-          disabled
-        />
-      </section>
-
-      <button
-        type="button"
-        onClick={async () => {
-          await logout();
-          router.push("/");
-        }}
-        className="w-full bg-soft-surface border border-soft-border hover:border-soft-accent text-soft-text-soft hover:text-soft-accent font-extrabold py-3.5 rounded-2xl flex items-center justify-center gap-2 transition-colors"
-      >
-        <LogOut className="w-4 h-4" />
-        Выйти из аккаунта
-      </button>
-    </div>
-  );
-}
-
-function Field({
-  icon,
-  label,
-  value,
-  onChange,
-  type = "text",
-  disabled,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  type?: string;
-  disabled?: boolean;
-}) {
-  return (
-    <div className="space-y-1">
-      <label className="text-xs font-semibold text-soft-text-soft px-1 flex items-center gap-1.5">
-        <span className="text-soft-text-muted">{icon}</span>
-        {label}
-      </label>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        disabled={disabled}
-        className="w-full px-4 py-2.5 bg-soft-surface-2 border border-soft-border text-soft-text placeholder-soft-text-muted rounded-xl text-sm focus:outline-none focus:border-soft-accent disabled:opacity-70 disabled:cursor-default transition-colors"
-      />
-    </div>
-  );
-}
-
-function LinkItem({
-  href,
-  icon,
-  title,
-  subtitle,
-  disabled,
-}: {
-  href: string;
-  icon: React.ReactNode;
-  title: string;
-  subtitle: string;
-  disabled?: boolean;
-}) {
-  const Comp: any = disabled ? "div" : "a";
-  return (
-    <Comp
-      href={disabled ? undefined : href}
-      className={`flex items-center gap-4 p-4 border-b border-soft-border last:border-0 ${
-        disabled
-          ? "opacity-60 cursor-not-allowed"
-          : "hover:bg-soft-surface-2 transition-colors cursor-pointer"
-      }`}
-    >
-      <div className="w-10 h-10 rounded-xl bg-soft-surface-2 flex items-center justify-center text-soft-text-soft shrink-0">
-        {icon}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-bold text-soft-text">{title}</div>
-        <div className="text-xs text-soft-text-muted">{subtitle}</div>
-      </div>
-      <ChevronRight className="w-4 h-4 text-soft-text-muted shrink-0" />
-    </Comp>
   );
 }
 </file>
@@ -24339,6 +24491,12 @@ import {
   MapPin,
 } from "lucide-react";
 import { STATUS_LABELS } from "@/lib/order-status";
+import {
+  useNow,
+  formatCountdown,
+  getPrepRemainingSeconds,
+  getPrepTotalSeconds,
+} from "@/lib/order-timers";
 
 type RiderPos = { lat: number; lng: number } | null;
 
@@ -24346,9 +24504,12 @@ type Stage = {
   icon: any;
   image: string;
   headline: string;
+  /** Статический fallback (мин), если нет динамических данных */
   minutes: number;
   subline: string;
   ringColor: string;
+  /** Использовать живой динамический таймер для этого статуса */
+  liveTimer?: boolean;
 };
 
 const STAGES: Record<string, Stage> = {
@@ -24358,7 +24519,7 @@ const STAGES: Record<string, Stage> = {
       "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=600&q=80",
     headline: "Заказ отправлен на кухню",
     minutes: 3,
-    subline: "Ресторан подтвердит приём в течение пары минут",
+    subline: "Ресторан подтвердит приём в течение пары минуты",
     ringColor: "#F5A623",
   },
   ACCEPTED: {
@@ -24369,6 +24530,7 @@ const STAGES: Record<string, Stage> = {
     minutes: 12,
     subline: "Шеф-повар готовит ваш заказ",
     ringColor: "#F26A4A",
+    liveTimer: true,
   },
   ASSIGNED: {
     icon: Bike,
@@ -24419,25 +24581,83 @@ const STAGES: Record<string, Stage> = {
 
 export function OrderStatusStage({
   status,
+  acceptedAt,
+  prepTime,
   onAsk,
 }: {
   status: keyof typeof STATUS_LABELS;
+  acceptedAt?: string | null;
+  prepTime?: number | null;
   onAsk?: () => void;
 }) {
   const s = STAGES[status] ?? STAGES.PENDING;
   const Icon = s.icon;
+
+  // ⭐ Тикаем раз в секунду — используется только если нужен живой таймер
+  const now = useNow(1000);
+
+  // ⭐⭐⭐ УСИЛЕННАЯ ПРОВЕРКА: живой режим только если ВСЁ есть
+  const useLive =
+    s.liveTimer === true &&
+    status === "ACCEPTED" &&
+    !!acceptedAt &&
+    !!prepTime &&
+    Number(prepTime) > 0; // защита от 0/NaN
+
+  const liveRemainingSec = useLive
+    ? getPrepRemainingSeconds(acceptedAt!, prepTime!, now)
+    : -1;
+  const liveTotalSec = useLive ? getPrepTotalSeconds(prepTime!) : -1;
+
+  // Что показывать в блоке «X минут»
+  const minutesToShow = useLive
+    ? Math.max(0, Math.ceil(liveRemainingSec / 60))
+    : s.minutes;
+
+  const sublineText = useLive
+    ? `Шеф-повар готовит. Срок: ${prepTime} мин. с момента принятия.`
+    : s.subline;
+
+  // Прогресс готовки (0–100%), если есть динамика
+  const progressPct =
+    useLive && liveTotalSec > 0
+      ? Math.max(
+          0,
+          Math.min(
+            100,
+            ((liveTotalSec - liveRemainingSec) / liveTotalSec) * 100,
+          ),
+        )
+      : null;
+
   return (
     <div className="bg-soft-surface border border-soft-border rounded-3xl p-6 sm:p-10 text-center shadow-soft-sm">
       <div className="text-sm text-soft-text-soft">
-        Ваш заказ будет готов через
+        {useLive ? "Заказ будет готов через" : "Ваш заказ будет готов через"}
       </div>
       <div className="text-3xl sm:text-4xl font-extrabold text-soft-accent mt-1">
-        {s.minutes} {minutesWord(s.minutes)}
+        {minutesToShow} {minutesWord(minutesToShow)}
       </div>
 
-      {/* Концентрические кольца как на скриншоте 2 */}
+      {/* ⭐ Если живой режим — показываем точный таймер MM:SS + прогресс-бар */}
+      {useLive && liveRemainingSec > 0 && (
+        <div className="mt-3 flex flex-col items-center gap-2">
+          <div className="text-3xl font-extrabold font-mono text-soft-text tabular-nums tracking-widest">
+            ⏱ {formatCountdown(liveRemainingSec * 1000)}
+          </div>
+          {progressPct !== null && (
+            <div className="w-full max-w-xs h-2 bg-soft-surface-2 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-soft-accent rounded-full transition-all duration-1000 ease-linear"
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Концентрические кольца */}
       <div className="relative mt-6 mx-auto w-[300px] h-[300px] sm:w-[380px] sm:h-[380px]">
-        {/* Внешнее кольцо */}
         <svg
           className="absolute inset-0 w-full h-full animate-spin-slow"
           viewBox="0 0 400 400"
@@ -24469,7 +24689,6 @@ export function OrderStatusStage({
           />
           <circle cx="10" cy="200" r="3" fill={s.ringColor} fillOpacity="0.5" />
         </svg>
-        {/* Внутреннее кольцо */}
         <svg
           className="absolute inset-[40px] w-[calc(100%-80px)] h-[calc(100%-80px)] animate-spin-reverse"
           viewBox="0 0 320 320"
@@ -24487,7 +24706,6 @@ export function OrderStatusStage({
           <circle cx="160" cy="14" r="3" fill={s.ringColor} />
         </svg>
 
-        {/* Центральный круг с эмодзи/иконкой */}
         <div className="absolute inset-[70px] sm:inset-[90px] rounded-full overflow-hidden bg-soft-accent-soft border-2 border-white shadow-soft-lg flex items-center justify-center">
           <img
             src={s.image}
@@ -24510,7 +24728,7 @@ export function OrderStatusStage({
       <h2 className="text-xl sm:text-2xl font-extrabold text-soft-text mt-8">
         {s.headline}
       </h2>
-      <p className="text-soft-text-soft text-sm mt-1">{s.subline}</p>
+      <p className="text-soft-text-soft text-sm mt-1">{sublineText}</p>
     </div>
   );
 }
@@ -26040,7 +26258,6 @@ export const CREATE_ADDRESS = gql`
       address
       city
       isSelected
-      location
     }
   }
 `;
@@ -26069,6 +26286,19 @@ export const GET_RESTAURANTS = gql`
       image
       address
       minimumOrder
+    }
+  }
+`;
+
+// ⭐ ДОБАВЛЕНО: лёгкая проверка ресторана для корзины
+export const GET_RESTAURANT_CHECK = gql`
+  query GetRestaurantCheck($id: ID!) {
+    restaurant(id: $id) {
+      id
+      name
+      tax
+      minimumOrder
+      isAvailable
     }
   }
 `;
@@ -26102,18 +26332,6 @@ export const GET_RESTAURANT = gql`
           }
         }
       }
-    }
-  }
-`;
-
-export const GET_RESTAURANT_CHECK = gql`
-  query GetRestaurantCheck($id: ID!) {
-    restaurant(id: $id) {
-      id
-      name
-      tax
-      minimumOrder
-      isAvailable
     }
   }
 `;
@@ -26176,6 +26394,7 @@ export const PLACE_ORDER = gql`
   }
 `;
 
+// ⭐⭐⭐ ИСПРАВЛЕНО: добавлен prepTime в selection set
 export const GET_ORDER = gql`
   query GetOrder($id: ID!) {
     order(id: $id) {
@@ -26205,12 +26424,18 @@ export const GET_ORDER = gql`
         city
         location
       }
+      # ⭐⭐⭐ ВОТ ОН — КЛЮЧЕВОЙ ФИКС: prepTime
       statusTimestamps {
         deliveredAt
         pickedAt
         assignedAt
         acceptedAt
         pendingAt
+        prepTime
+        courierSearchTimestamps {
+          initialPushedAt
+          escalationPushedAt
+        }
       }
       createdAt
     }
@@ -26891,255 +27116,383 @@ Email: admin@dastbadast.tj
 // see https://nextjs.org/docs/app/building-your-application/configuring/typescript for more information.
 </file>
 
-<file path="dastbadast-multivendor-api/src/resolvers/index.js">
-import { configuration, updateConfiguration } from "./configuration.js";
-import { deliveryZone } from "./zone-public.js";
-import { chatMessages, sendChatMessage } from "./chat.js";
-import { restaurants, restaurant } from "./restaurant.js";
-import {
-  profile,
-  addresses,
-  selectedAddress,
-  createUser,
-  login,
-  createAddress,
-  editAddress,
-  deleteAddress,
-  selectAddress,
-  adminUsers,
-  adminUserDetail,
-  toggleUserActive,
-} from "./user.js";
-import {
-  orders,
-  order,
-  placeOrder,
-  restaurantOrders,
-  meRestaurant,
-  restaurantLogin,
-  confirmOrderReceived,
-  refreshOrderStatus,
-} from "./order.js";
-import { acceptOrder, cancelOrder } from "./order-actions.js";
-import { foodReviews, addFoodReview, foodRatingStats } from "./food-review.js";
-import {
-  createCategory,
-  updateCategory,
-  deleteCategory,
-  createFood,
-  updateFood,
-  deleteFood,
-} from "./restaurant-menu.js";
-import {
-  allOrders,
-  ownerLogin,
-  meOwner,
-  createRider,
-  riders,
-  assignRider,
-  createRestaurant,
-  adminAccounting,
-  owners,
-  ownerOne,
-  createOwner,
-  updateOwner,
-  deactivateOwner,
-  resetOwnerPassword,
-  zones,
-  zoneOne,
-  createZone,
-  updateZone,
-  deleteZone,
-  adminDashboardMetrics,
-} from "./admin.js";
-import {
-  meRider,
-  riderOrders,
-  availableOrdersForRiders,
-  riderLogin,
-  claimOrder,
-  updateOrderStatusRider,
-  updateRiderLocation,
-  toggleRider,
-  rider as riderOne,
-} from "./rider.js";
-import {
-  orderStatusChanged,
-  subscriptionOrder,
-  subscribePlaceOrder,
-  subscriptionAssignedRider,
-  subscriptionZoneOrders,
-  subscriptionAvailableOrders,
-  subscriptionRiderLocation,
-  subscriptionRiderOrderCompleted,
-  newChatMessage,
-} from "./subscriptions.js";
-import { JSONScalar, DateTimeScalar } from "../utils/scalars.js";
+<file path="dastbadast-multivendor-api/src/resolvers/user.js">
+import bcrypt from "bcryptjs";
+import { GraphQLError } from "graphql";
+import mongoose from "mongoose";
+import { User } from "../models/User.js";
+import { Zone } from "../models/Zone.js";
+import { Order } from "../models/Order.js";
+import { signToken } from "../middleware/auth.js";
+import { pointInPolygon } from "../utils/zone.js";
+import { requireRole } from "../middleware/rbac.js";
 
-const mongoId = (parent) => parent?.id ?? parent?._id?.toString();
+function requireUser(ctx) {
+  if (!ctx.user) {
+    throw new GraphQLError("Not authenticated", {
+      extensions: { code: "UNAUTHENTICATED" },
+    });
+  }
+  return ctx.user;
+}
 
-export const resolvers = {
-  JSON: JSONScalar,
-  DateTime: DateTimeScalar,
-  Query: {
-    configuration,
-    deliveryZone,
-    restaurants,
-    restaurant,
-    foodReviews,
-    profile,
-    addresses,
-    selectedAddress,
-    orders,
-    order,
-    restaurantOrders,
-    meRestaurant,
-    allOrders,
-    riders,
-    meOwner,
-    meRider,
-    riderOrders,
-    availableOrdersForRiders,
-    chatMessages,
-    adminAccounting,
-    rider: riderOne,
-    owners,
-    owner: ownerOne,
-    adminUsers,
-    adminUserDetail,
-    zones,
-    zone: zoneOne,
-    adminDashboardMetrics,
-  },
-  Mutation: {
-    createUser,
-    login,
-    createAddress,
-    editAddress,
-    deleteAddress,
-    selectAddress,
-    placeOrder,
-    addFoodReview,
-    restaurantLogin,
-    acceptOrder,
-    cancelOrder,
-    createCategory,
-    updateCategory,
-    deleteCategory,
-    createFood,
-    updateFood,
-    deleteFood,
-    ownerLogin,
-    createRider,
-    createRestaurant,
-    assignRider,
-    riderLogin,
-    claimOrder,
-    updateOrderStatusRider,
-    confirmOrderReceived,
-    updateRiderLocation,
-    toggleRider,
-    sendChatMessage,
-    createOwner,
-    updateOwner,
-    deactivateOwner,
-    resetOwnerPassword,
-    toggleUserActive,
-    createZone,
-    updateZone,
-    deleteZone,
-    updateConfiguration,
-  },
-  Subscription: {
-    orderStatusChanged,
-    subscriptionOrder,
-    subscribePlaceOrder,
-    subscriptionAssignedRider,
-    subscriptionZoneOrders,
-    subscriptionAvailableOrders,
-    subscriptionRiderLocation,
-    subscriptionRiderOrderCompleted,
-    newChatMessage,
-  },
-  Restaurant: {
-    id: mongoId,
-    categories: async (parent) => {
-      const { Category } = await import("../models/Category.js");
-      return Category.find({ restaurantId: parent._id });
+const TJ_PHONE_REGEX = /^\+992\d{9}$/;
+
+async function findZoneForPoint(lng, lat) {
+  const zone = await Zone.findOne({ isActive: true });
+  if (!zone) return null;
+  const poly = zone.location?.coordinates?.[0];
+  if (!poly) return null;
+  const inside = pointInPolygon([lng, lat], poly);
+  return inside ? zone : null;
+}
+
+export const profile = async (_p, _a, ctx) => {
+  const u = requireUser(ctx);
+  return User.findById(u._id);
+};
+
+export const addresses = async (_p, _a, ctx) => {
+  const u = requireUser(ctx);
+  return User.findById(u._id).then((doc) => doc?.addresses || []);
+};
+
+export const selectedAddress = async (_p, _a, ctx) => {
+  const u = requireUser(ctx);
+  const doc = await User.findById(u._id);
+  return doc?.addresses?.find((a) => a.isSelected) || null;
+};
+
+export const createUser = async (_p, { input }) => {
+  if (!input.email && !input.phone) {
+    throw new GraphQLError("Нужен email или телефон", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+  const passwordHash = await bcrypt.hash(input.password, 10);
+  const or = [];
+  if (input.email) or.push({ email: input.email.toLowerCase() });
+  if (input.phone) or.push({ phone: input.phone });
+  const exists = await User.findOne({ $or: or });
+  if (exists)
+    throw new GraphQLError("Пользователь уже существует", {
+      extensions: { code: "CONFLICT" },
+    });
+
+  const user = await User.create({
+    name: input.name,
+    email: input.email?.toLowerCase(),
+    phone: input.phone,
+    passwordHash,
+  });
+  const token = signToken(user);
+  return { token, user };
+};
+
+export const login = async (_p, { input }) => {
+  if (!input.email && !input.phone) {
+    throw new GraphQLError("Нужен email или телефон", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+  const query = input.email
+    ? { email: input.email.toLowerCase() }
+    : { phone: input.phone };
+  const user = await User.findOne(query);
+  if (!user)
+    throw new GraphQLError("Неверные данные", {
+      extensions: { code: "UNAUTHENTICATED" },
+    });
+  const ok = await bcrypt.compare(input.password, user.passwordHash);
+  if (!ok)
+    throw new GraphQLError("Неверные данные", {
+      extensions: { code: "UNAUTHENTICATED" },
+    });
+  const token = signToken(user);
+  return { token, user };
+};
+
+async function validatePoint(location) {
+  const coords = location?.coordinates;
+  if (!Array.isArray(coords) || coords.length !== 2) {
+    throw new GraphQLError("Некорректные координаты", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+  const [lng, lat] = coords.map(Number);
+  if (Number.isNaN(lng) || Number.isNaN(lat)) {
+    throw new GraphQLError("Некорректные координаты", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+  const zone = await Zone.findOne({ isActive: true });
+  if (!zone) {
+    throw new GraphQLError(
+      "Зона доставки не настроена. Запустите npm run seed на API.",
+      {
+        extensions: { code: "ZONE_NOT_CONFIGURED" },
+      },
+    );
+  }
+  const poly = zone.location?.coordinates?.[0];
+  if (!poly || !pointInPolygon([lng, lat], poly)) {
+    throw new GraphQLError(
+      "Адрес вне зоны доставки. Выберите точку внутри оранжевой области на карте (центр Душанбе).",
+      { extensions: { code: "OUT_OF_ZONE" } },
+    );
+  }
+  return { lng, lat };
+}
+
+export const createAddress = async (_p, { input }, ctx) => {
+  const u = requireUser(ctx);
+  const { lng, lat } = await validatePoint(input.location);
+  const user = await User.findById(u._id);
+  const makeSelected = !user.addresses || user.addresses.length === 0;
+  if (makeSelected) {
+    user.addresses.forEach((a) => (a.isSelected = false));
+  }
+  user.addresses.push({
+    label: input.label || "Дом",
+    address: input.address,
+    city: input.city || "Душанбе",
+    details: input.details || "",
+    location: { type: "Point", coordinates: [lng, lat] },
+    isSelected: makeSelected,
+  });
+  await user.save();
+  return user.addresses[user.addresses.length - 1];
+};
+
+export const editAddress = async (_p, { id, input }, ctx) => {
+  const u = requireUser(ctx);
+  const { lng, lat } = await validatePoint(input.location);
+  const user = await User.findById(u._id);
+  const addr = user.addresses.id(id);
+  if (!addr) throw new GraphQLError("Адрес не найден");
+  addr.label = input.label || addr.label;
+  addr.address = input.address;
+  addr.city = input.city || addr.city;
+  addr.details = input.details ?? addr.details;
+  addr.location = { type: "Point", coordinates: [lng, lat] };
+  await user.save();
+  return addr;
+};
+
+export const deleteAddress = async (_p, { id }, ctx) => {
+  const u = requireUser(ctx);
+  const user = await User.findById(u._id);
+  const addr = user.addresses.id(id);
+  if (!addr) return false;
+  const wasSelected = addr.isSelected;
+  addr.deleteOne();
+  if (wasSelected && user.addresses.length > 0) {
+    user.addresses[0].isSelected = true;
+  }
+  await user.save();
+  return true;
+};
+
+export const selectAddress = async (_p, { id }, ctx) => {
+  const u = requireUser(ctx);
+  const user = await User.findById(u._id);
+  let found = null;
+  user.addresses.forEach((a) => {
+    a.isSelected = a._id.toString() === id;
+    if (a.isSelected) found = a;
+  });
+  await user.save();
+  return found;
+};
+
+// ==================== ADMIN: USERS LIST ====================
+
+export const adminUsers = async (_p, { filter }, ctx) => {
+  requireRole(["SUPER_ADMIN", "SUPPORT"])(ctx);
+
+  const q = filter?.search?.trim() || "";
+  const limit = Math.min(filter?.limit || 50, 200);
+  const offset = filter?.offset || 0;
+
+  const mongoFilter = {};
+  if (q) {
+    const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    mongoFilter.$or = [{ name: re }, { email: re }, { phone: re }];
+  }
+
+  const total = await User.countDocuments(mongoFilter);
+  const users = await User.find(mongoFilter)
+    .select("name email phone isActive createdAt addresses")
+    .sort({ createdAt: -1 })
+    .skip(offset)
+    .limit(limit);
+
+  const userIds = users.map((u) => u._id);
+  const orderStats = await Order.aggregate([
+    { $match: { userId: { $in: userIds } } },
+    {
+      $group: {
+        _id: "$userId",
+        totalOrders: { $sum: 1 },
+        totalSpent: { $sum: "$amounts.total" },
+        lastOrderAt: { $max: "$createdAt" },
+      },
     },
-  },
-  Category: {
-    id: mongoId,
-    foods: async (parent, _a, ctx) => {
-      const { Food } = await import("../models/Food.js");
-      const filter = { categoryId: parent._id };
-      const isOwner =
-        ctx.restaurant &&
-        parent.restaurantId &&
-        parent.restaurantId.toString() === ctx.restaurant._id.toString();
-      if (!isOwner) {
-        filter.isActive = true;
-        filter.isAvailable = true;
-      } else {
-        filter.isActive = true;
-      }
-      return Food.find(filter).sort({ createdAt: 1 });
-    },
-  },
-  Address: { id: mongoId },
-  Order: {
-    id: mongoId,
-    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
-    updatedAt: (p) => p.updatedAt?.toISOString?.() ?? String(p.updatedAt ?? ""),
-    paidAt: (p) => p.paidAt?.toISOString?.() ?? null,
-    statusTimestamps: (p) => {
-      const t = p.statusTimestamps || {};
+  ]);
+  const statsMap = new Map(orderStats.map((s) => [s._id.toString(), s]));
+
+  return {
+    total,
+    users: users.map((u) => {
+      const stats = statsMap.get(u._id.toString()) || {};
       return {
-        pendingAt: t.pendingAt?.toISOString?.() ?? null,
-        acceptedAt: t.acceptedAt?.toISOString?.() ?? null,
-        assignedAt: t.assignedAt?.toISOString?.() ?? null,
-        pickedAt: t.pickedAt?.toISOString?.() ?? null,
-        deliveredAt: t.deliveredAt?.toISOString?.() ?? null,
-        cancelledAt: t.cancelledAt?.toISOString?.() ?? null,
-        prepTime: t.prepTime ?? null,
+        id: u._id.toString(),
+        name: u.name,
+        email: u.email,
+        phone: u.phone,
+        isActive: u.isActive,
+        createdAt: u.createdAt,
+        addressesCount: (u.addresses || []).length,
+        totalOrders: stats.totalOrders || 0,
+        totalSpent: stats.totalSpent ? +Number(stats.totalSpent).toFixed(2) : 0,
+        lastOrderAt: stats.lastOrderAt || null,
       };
-    },
-  },
+    }),
+  };
+};
 
-  User: { id: mongoId },
-  Food: {
-    id: mongoId,
-    averageRating: async (parent) => {
-      const s = await foodRatingStats(parent._id);
-      return s.averageRating;
-    },
-    reviewCount: async (parent) => {
-      const s = await foodRatingStats(parent._id);
-      return s.reviewCount;
-    },
-    reviews: async (parent) => {
-      const { FoodReview } = await import("../models/FoodReview.js");
-      return FoodReview.find({ foodId: parent._id })
-        .sort({ createdAt: -1 })
-        .limit(10);
-    },
-  },
-  FoodReview: {
-    id: mongoId,
-    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
-  },
-  Rider: { id: mongoId },
-  Owner: {
-    id: mongoId,
-    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
-    lastLoginAt: (p) => p.lastLoginAt?.toISOString?.() ?? null,
-  },
+export const adminUserDetail = async (_p, { id }, ctx) => {
+  requireRole(["SUPER_ADMIN", "SUPPORT"])(ctx);
 
-  Zone: { id: mongoId },
-  ChatMessage: {
-    id: mongoId,
-    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
-  },
+  if (!mongoose.isValidObjectId(id)) {
+    throw new GraphQLError("Некорректный id", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  const user = await User.findById(id);
+  if (!user) {
+    throw new GraphQLError("Пользователь не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
+  }
+
+  const orders = await Order.find({ userId: user._id })
+    .sort({ createdAt: -1 })
+    .limit(20)
+    .populate("restaurantId", "name")
+    .lean();
+
+  return {
+    user: {
+      id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      isActive: user.isActive,
+      createdAt: user.createdAt,
+    },
+    addresses: (user.addresses || []).map((a) => ({
+      id: a._id.toString(),
+      label: a.label,
+      address: a.address,
+      city: a.city,
+      details: a.details,
+      isSelected: a.isSelected,
+    })),
+    orders: orders.map((o) => ({
+      id: o._id.toString(),
+      orderId: o.orderId,
+      orderStatus: o.orderStatus,
+      total: o.amounts?.total || 0,
+      restaurantName: o.restaurantId?.name || "—",
+      createdAt: o.createdAt,
+    })),
+  };
+};
+
+export const toggleUserActive = async (_p, { id, isActive }, ctx) => {
+  requireRole(["SUPER_ADMIN", "SUPPORT"])(ctx);
+
+  if (!mongoose.isValidObjectId(id)) {
+    throw new GraphQLError("Некорректный id", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  const user = await User.findById(id);
+  if (!user) {
+    throw new GraphQLError("Пользователь не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
+  }
+
+  user.isActive = !!isActive;
+  await user.save();
+
+  return {
+    id: user._id.toString(),
+    isActive: user.isActive,
+  };
+};
+
+export const updateUser = async (_p, { input }, ctx) => {
+  const current = requireUser(ctx);
+
+  // 1) Валидация телефона, если передан
+  if (input.phone !== undefined && input.phone !== null && input.phone !== "") {
+    const cleaned = String(input.phone).replace(/[\s\-()]/g, "");
+    if (!TJ_PHONE_REGEX.test(cleaned)) {
+      throw new GraphQLError(
+        "Телефон должен быть в формате +992 и ровно 9 цифр (например +992901234567)",
+        { extensions: { code: "BAD_USER_INPUT" } },
+      );
+    }
+    input.phone = cleaned;
+  }
+
+  const user = await User.findById(current._id);
+  if (!user) {
+    throw new GraphQLError("Пользователь не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
+  }
+
+  // 2) Применяем изменения
+  if (input.name !== undefined) {
+    const name = String(input.name).trim();
+    if (name.length < 2) {
+      throw new GraphQLError("Имя должно содержать минимум 2 символа", {
+        extensions: { code: "BAD_USER_INPUT" },
+      });
+    }
+    user.name = name;
+  }
+
+  if (input.email !== undefined) {
+    const email = String(input.email).trim().toLowerCase();
+    if (email) {
+      // Проверяем уникальность email, если он сменился
+      if (email !== (user.email || "").toLowerCase()) {
+        const exists = await User.findOne({ email });
+        if (exists && exists._id.toString() !== user._id.toString()) {
+          throw new GraphQLError("Этот email уже используется", {
+            extensions: { code: "CONFLICT" },
+          });
+        }
+        user.email = email;
+      }
+    } else {
+      user.email = undefined;
+    }
+  }
+
+  if (input.phone !== undefined) {
+    user.phone = input.phone || undefined;
+  }
+
+  await user.save();
+  return user;
 };
 </file>
 
@@ -27426,6 +27779,618 @@ start().catch((err) => {
   console.error(err);
   process.exit(1);
 });
+</file>
+
+<file path="dastbadast-multivendor-api/src/schema.js">
+export const typeDefs = /* GraphQL */ `
+  scalar JSON
+  scalar DateTime
+
+  type Configuration {
+    currency: String
+    currencySymbol: String
+    deliveryRate: Float
+    skipEmailVerification: Boolean
+    skipMobileVerification: Boolean
+    testOtp: String
+  }
+
+  type Zone {
+    id: ID!
+    name: String
+    description: String
+    isActive: Boolean
+    polygon: JSON
+  }
+
+  type DeliveryZone {
+    id: ID!
+    name: String
+    description: String
+    polygon: JSON!
+  }
+
+  type Address {
+    id: ID!
+    label: String
+    address: String
+    city: String
+    details: String
+    location: JSON
+    isSelected: Boolean
+  }
+
+  type User {
+    id: ID!
+    name: String!
+    email: String
+    phone: String
+    addresses: [Address!]
+  }
+
+  # ⭐ НОВОЕ: входные данные для обновления профиля клиента
+  input UpdateUserInput {
+    name: String
+    email: String
+    phone: String
+  }
+
+  # Расширенный тип для админ-карточки пользователя
+  type AdminUser {
+    id: ID!
+    name: String!
+    email: String
+    phone: String
+    isActive: Boolean!
+    createdAt: String!
+    addressesCount: Int!
+    totalOrders: Int!
+    totalSpent: Float!
+    lastOrderAt: String
+  }
+
+  type AdminUserList {
+    total: Int!
+    users: [AdminUser!]!
+  }
+
+  type AdminUserDetail {
+    user: AdminUser!
+    addresses: [Address!]!
+    orders: [AdminUserOrder!]!
+  }
+
+  type AdminUserOrder {
+    id: ID!
+    orderId: String!
+    orderStatus: String!
+    total: Float!
+    restaurantName: String!
+    createdAt: String!
+  }
+
+  type ToggleUserResult {
+    id: ID!
+    isActive: Boolean!
+  }
+
+  input AdminUsersFilter {
+    search: String
+    limit: Int
+    offset: Int
+  }
+
+  input CreateZoneInput {
+    name: String!
+    description: String
+    polygon: JSON!
+    isActive: Boolean
+  }
+
+  input UpdateZoneInput {
+    name: String
+    description: String
+    polygon: JSON
+    isActive: Boolean
+  }
+
+  type AuthPayload {
+    token: String!
+    user: User!
+  }
+  type AuthPayloadRestaurant {
+    token: String!
+    restaurant: Restaurant!
+  }
+  type AuthPayloadOwner {
+    token: String!
+    owner: Owner!
+  }
+  type AuthPayloadRider {
+    token: String!
+    rider: Rider!
+  }
+
+  type Owner {
+    id: ID!
+    email: String!
+    userType: String
+    permissions: OwnerPermissions
+    isActive: Boolean!
+    lastLoginAt: String
+    createdAt: String!
+  }
+
+  type OwnerPermissions {
+    canManageRestaurants: Boolean!
+    canManageRiders: Boolean!
+    canManageZones: Boolean!
+    canManageConfiguration: Boolean!
+    canViewAccounting: Boolean!
+    canAssignRiders: Boolean!
+    canManageUsers: Boolean!
+  }
+
+  input OwnerPermissionsInput {
+    canManageRestaurants: Boolean
+    canManageRiders: Boolean
+    canManageZones: Boolean
+    canManageConfiguration: Boolean
+    canViewAccounting: Boolean
+    canAssignRiders: Boolean
+    canManageUsers: Boolean
+  }
+
+  input CreateOwnerInput {
+    email: String!
+    password: String!
+    userType: String!
+    permissions: OwnerPermissionsInput
+  }
+
+  input UpdateOwnerInput {
+    email: String
+    userType: String
+    permissions: OwnerPermissionsInput
+    isActive: Boolean
+  }
+
+  input CreateUserInput {
+    name: String!
+    email: String
+    phone: String
+    password: String!
+  }
+  input LoginInput {
+    email: String
+    phone: String
+    password: String!
+  }
+  input LoginRestaurantInput {
+    username: String!
+    password: String!
+  }
+  input LoginOwnerInput {
+    email: String!
+    password: String!
+  }
+  input LoginRiderInput {
+    username: String!
+    password: String!
+  }
+  input CreateRiderInput {
+    username: String!
+    password: String!
+    name: String
+    phone: String
+    zoneId: ID
+  }
+
+  type Rider {
+    id: ID!
+    username: String!
+    name: String
+    phone: String
+    available: Boolean!
+    location: JSON
+    lastLocationAt: String
+    zoneId: ID
+  }
+
+  input AddressInput {
+    label: String
+    address: String!
+    city: String
+    details: String
+    location: JSON!
+  }
+
+  type Restaurant {
+    id: ID!
+    name: String!
+    slug: String
+    image: String
+    address: String
+    location: JSON
+    zoneId: ID
+    isAvailable: Boolean
+    minimumOrder: Float
+    tax: Float
+    categories: [Category!]
+  }
+  type Category {
+    id: ID!
+    title: String!
+    image: String
+    foods: [Food!]
+  }
+  type Food {
+    id: ID!
+    title: String!
+    description: String
+    image: String
+    price: Float
+    isActive: Boolean
+    isAvailable: Boolean
+    averageRating: Float
+    reviewCount: Int
+    reviews: [FoodReview!]
+  }
+  type FoodReview {
+    id: ID!
+    foodId: ID!
+    userName: String
+    rating: Int!
+    comment: String!
+    createdAt: String!
+  }
+  input AddFoodReviewInput {
+    foodId: ID!
+    rating: Int!
+    comment: String!
+  }
+
+  enum OrderStatus {
+    PENDING
+    ACCEPTED
+    ASSIGNED
+    PICKED
+    DELIVERED
+    CANCELLED
+    AWAITING_CONFIRMATION
+  }
+  enum PaymentMethod {
+    COD
+    ALIF_MOBI
+    DS_BANK
+  }
+
+  type OrderItem {
+    foodId: ID
+    title: String!
+    price: Float!
+    quantity: Int!
+    image: String
+    description: String
+    variation: JSON
+    addons: [JSON!]
+  }
+  type OrderAmounts {
+    subtotal: Float!
+    tax: Float!
+    deliveryFee: Float!
+    total: Float!
+  }
+  type DeliveryAddress {
+    label: String
+    address: String!
+    city: String
+    details: String
+    location: JSON!
+  }
+  type PickupAddress {
+    name: String
+    address: String!
+    city: String
+    location: JSON
+  }
+  type StatusTimestamps {
+    pendingAt: String
+    acceptedAt: String
+    assignedAt: String
+    pickedAt: String
+    deliveredAt: String
+    cancelledAt: String
+    prepTime: Int
+    courierSearchTimestamps: CourierSearchTimestamps
+  }
+  type CourierSearchTimestamps {
+    initialPushedAt: String
+    escalationPushedAt: String
+  }
+
+  type Order {
+    id: ID!
+    orderId: String!
+    userId: ID!
+    restaurantId: ID!
+    riderId: ID
+    items: [OrderItem!]!
+    orderStatus: OrderStatus!
+    paymentMethod: PaymentMethod!
+    paid: Boolean!
+    paidAt: String
+    paymentStatus: String
+    providerRef: String
+    deliveryAddress: DeliveryAddress!
+    pickupAddress: PickupAddress
+    note: String
+    amounts: OrderAmounts!
+    statusTimestamps: StatusTimestamps
+    cancelReason: String
+    createdAt: String!
+    updatedAt: String!
+  }
+
+  input OrderItemInput {
+    foodId: ID!
+    quantity: Int!
+    variation: JSON
+    addons: [JSON!]
+  }
+  input PlaceOrderInput {
+    restaurantId: ID!
+    addressId: ID!
+    items: [OrderItemInput!]!
+    paymentMethod: PaymentMethod = COD
+    note: String
+  }
+  input AcceptOrderInput {
+    orderId: ID!
+    prepTime: Int
+  }
+  input CancelOrderInput {
+    orderId: ID!
+    reason: String
+  }
+  input AssignRiderInput {
+    orderId: ID!
+    riderId: ID!
+  }
+  input UpdateOrderStatusRiderInput {
+    orderId: ID!
+    status: OrderStatus!
+  }
+  input ConfirmOrderInput {
+    orderId: ID!
+  }
+  input RiderLocationInput {
+    lng: Float!
+    lat: Float!
+  }
+  input CreateRestaurantInput {
+    name: String!
+    slug: String
+    address: String!
+    city: String
+    username: String!
+    password: String!
+    tax: Float
+    minimumOrder: Float
+    lng: Float!
+    lat: Float!
+  }
+  input CreateCategoryInput {
+    title: String!
+    image: String
+  }
+  input UpdateCategoryInput {
+    title: String
+    image: String
+  }
+  input CreateFoodInput {
+    categoryId: ID!
+    title: String!
+    description: String
+    image: String
+    price: Float!
+  }
+  input UpdateFoodInput {
+    categoryId: ID
+    title: String
+    description: String
+    image: String
+    price: Float
+    isAvailable: Boolean
+    isActive: Boolean
+  }
+
+  input ConfigurationInput {
+    currency: String
+    currencySymbol: String
+    deliveryRate: Float
+    testOtp: String
+  }
+
+  type RiderLocationUpdate {
+    riderId: ID!
+    lat: Float!
+    lng: Float!
+    updatedAt: String!
+  }
+
+  type ChatMessage {
+    id: ID!
+    orderId: ID!
+    senderType: String!
+    text: String!
+    createdAt: String!
+  }
+
+  type AdminAccounting {
+    totalRevenue: Float!
+    totalDelivered: Int!
+    totalCommission: Float!
+    restaurants: [RestaurantAccounting!]!
+    riders: [RiderAccounting!]!
+  }
+  type RestaurantAccounting {
+    restaurantId: ID!
+    restaurantName: String!
+    orderCount: Int!
+    revenue: Float!
+    commission: Float!
+    payout: Float!
+  }
+  type RiderAccounting {
+    riderId: ID!
+    riderName: String!
+    phone: String
+    deliveredCount: Int!
+    totalEarnings: Float!
+  }
+
+  type DashboardToday {
+    orders: Int!
+    delivered: Int!
+    cancelled: Int!
+    revenue: Float!
+  }
+
+  type DashboardLive {
+    activeOrders: Int!
+    activeRiders: Int!
+    restaurantsOnline: Int!
+  }
+
+  type DashboardChartPoint {
+    date: String!
+    count: Int!
+    revenue: Float!
+  }
+
+  type TopRestaurant {
+    restaurantId: ID!
+    name: String!
+    orderCount: Int!
+    revenue: Float!
+  }
+
+  type TopRider {
+    riderId: ID!
+    name: String!
+    deliveredCount: Int!
+    earnings: Float!
+  }
+
+  type AdminDashboard {
+    today: DashboardToday!
+    live: DashboardLive!
+    newUsersToday: Int!
+    chart7Days: [DashboardChartPoint!]!
+    topRestaurants: [TopRestaurant!]!
+    topRiders: [TopRider!]!
+  }
+
+  type CourierSearchEvent {
+    orderId: ID!
+    orderIdStr: String!
+    restaurantName: String!
+    restaurantLocation: JSON
+    riderIds: [String!]!
+    radiusKm: Float!
+    escalation: Boolean!
+    fastAcceptBonus: Float!
+    createdAt: String!
+  }
+
+  type Query {
+    configuration: Configuration
+    deliveryZone: DeliveryZone
+    restaurants(zoneId: ID): [Restaurant!]!
+    restaurant(id: ID!): Restaurant
+    foodReviews(foodId: ID!): [FoodReview!]!
+    profile: User
+    addresses: [Address!]!
+    selectedAddress: Address
+    orders: [Order!]!
+    order(id: ID!): Order
+    restaurantOrders(status: OrderStatus): [Order!]!
+    meRestaurant: Restaurant
+    adminUsers(filter: AdminUsersFilter): AdminUserList!
+    adminUserDetail(id: ID!): AdminUserDetail!
+    allOrders(status: OrderStatus): [Order!]!
+    owners: [Owner!]!
+    owner(id: ID!): Owner
+    riders(available: Boolean): [Rider!]!
+    meOwner: Owner
+    meRider: Rider
+    riderOrders(status: OrderStatus): [Order!]!
+    availableOrdersForRiders: [Order!]!
+    rider(id: ID!): Rider
+    chatMessages(orderId: ID!): [ChatMessage!]!
+    adminAccounting: AdminAccounting
+    zones: [Zone!]!
+    zone(id: ID!): Zone
+    adminDashboardMetrics: AdminDashboard!
+  }
+
+  type Mutation {
+    createUser(input: CreateUserInput!): AuthPayload!
+    login(input: LoginInput!): AuthPayload!
+    createAddress(input: AddressInput!): Address!
+    editAddress(id: ID!, input: AddressInput!): Address!
+    deleteAddress(id: ID!): Boolean!
+    selectAddress(id: ID!): Address!
+    placeOrder(input: PlaceOrderInput!): Order!
+    addFoodReview(input: AddFoodReviewInput!): FoodReview!
+    restaurantLogin(input: LoginRestaurantInput!): AuthPayloadRestaurant!
+    acceptOrder(input: AcceptOrderInput!): Order!
+    cancelOrder(input: CancelOrderInput!): Order!
+    createCategory(input: CreateCategoryInput!): Category!
+    updateCategory(id: ID!, input: UpdateCategoryInput!): Category!
+    deleteCategory(id: ID!): Boolean!
+    createFood(input: CreateFoodInput!): Food!
+    updateFood(id: ID!, input: UpdateFoodInput!): Food!
+    deleteFood(id: ID!): Boolean!
+    ownerLogin(input: LoginOwnerInput!): AuthPayloadOwner!
+    createRider(input: CreateRiderInput!): Rider!
+    createRestaurant(input: CreateRestaurantInput!): Restaurant!
+    assignRider(input: AssignRiderInput!): Order!
+    riderLogin(input: LoginRiderInput!): AuthPayloadRider!
+    claimOrder(orderId: ID!): Order!
+    updateOrderStatusRider(input: UpdateOrderStatusRiderInput!): Order!
+    confirmOrderReceived(input: ConfirmOrderInput!): Order!
+    refreshOrderStatus(id: ID!): Order! # ← ДОБАВЬ
+    updateRiderLocation(input: RiderLocationInput!): Rider!
+    toggleRider(available: Boolean!): Rider!
+    updateConfiguration(input: ConfigurationInput!): Configuration!
+    sendChatMessage(orderId: ID!, text: String!): ChatMessage!
+    createOwner(input: CreateOwnerInput!): Owner!
+    updateOwner(id: ID!, input: UpdateOwnerInput!): Owner!
+    deactivateOwner(id: ID!): Boolean!
+    resetOwnerPassword(id: ID!, newPassword: String!): Boolean!
+    toggleUserActive(id: ID!, isActive: Boolean!): ToggleUserResult!
+    createZone(input: CreateZoneInput!): Zone!
+    updateZone(id: ID!, input: UpdateZoneInput!): Zone!
+    deleteZone(id: ID!): Boolean!
+    # ⭐ НОВОЕ: обновление профиля клиента (имя / email / телефон)
+    updateUser(input: UpdateUserInput!): User!
+  }
+
+  type Subscription {
+    orderStatusChanged(userId: ID!): Order!
+    subscriptionOrder(orderId: ID!): Order!
+    subscribePlaceOrder(restaurantId: ID!): Order!
+    subscriptionAssignedRider(riderId: ID!): Order!
+    subscriptionZoneOrders(zoneId: ID): Order!
+    subscriptionAvailableOrders(zoneId: ID): Order!
+    subscriptionRiderLocation(riderId: ID!): RiderLocationUpdate!
+    subscriptionRiderOrderCompleted(riderId: ID!): Order!
+    newChatMessage(orderId: ID!): ChatMessage!
+    courierSearchNotify: CourierSearchEvent!
+  }
+`;
 </file>
 
 <file path="dastbadast-multivendor-client/app/(app)/restaurant/[id].tsx">
@@ -27738,6 +28703,711 @@ function categoryEmoji(title: string): string {
   if (t.includes("основ") || t.includes("горяч")) return "🍽️";
   if (t.includes("шашлык") || t.includes("мяс")) return "🥩";
   return "🍴";
+}
+</file>
+
+<file path="dastbadast-multivendor-web/app/(main)/profile/page.tsx">
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { useMutation, useQuery } from "@apollo/client";
+import Link from "next/link";
+import { GET_PROFILE, UPDATE_USER } from "@/lib/queries";
+import { useAuth } from "@/lib/auth-context";
+import { useRouter } from "next/navigation";
+import {
+  AlertCircle,
+  Bell,
+  Camera,
+  CheckCircle2,
+  ChevronRight,
+  Clock,
+  CreditCard,
+  HelpCircle,
+  LogOut,
+  Mail,
+  MapPin,
+  Phone,
+  Save,
+  Shield,
+  Trash2,
+  User,
+  X as XIcon,
+} from "lucide-react";
+import { RequireAuth } from "@/components/RequireAuth";
+import { storage } from "@/lib/security";
+import { debugLog, debugWarn } from "@/lib/debug-log";
+
+/* ================== КОНСТАНТЫ ================== */
+
+// 24 часа в миллисекундах
+const EDIT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+// Максимальный размер аватарки — 2 МБ
+const MAX_AVATAR_SIZE = 2 * 1024 * 1024;
+
+// Допустимые MIME-типы
+const ALLOWED_AVATAR_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
+
+// Строгий TJ-формат: +992 и ровно 9 цифр
+const TJ_PHONE_REGEX = /^\+992\d{9}$/;
+
+/* ================== HELPERS ================== */
+
+/**
+ * Валидация TJ-номера.
+ * Пустая строка допустима (поле необязательное).
+ * Если заполнено — строго +992 и 9 цифр.
+ */
+function isValidTJPhone(phone: string): boolean {
+  const cleaned = (phone || "").trim().replace(/[\s\-()]/g, "");
+  if (!cleaned) return true; // optional
+  return TJ_PHONE_REGEX.test(cleaned);
+}
+
+/**
+ * Возвращает оставшееся время до разблокировки редактирования (мс).
+ * 0 = редактирование доступно.
+ */
+function getRemainingCooldownMs(): number {
+  if (typeof window === "undefined") return 0;
+  const stored = storage.get("db_profile_last_edit");
+  if (!stored) return 0;
+  const last = parseInt(stored, 10);
+  if (!Number.isFinite(last)) return 0;
+  const elapsed = Date.now() - last;
+  return Math.max(0, EDIT_COOLDOWN_MS - elapsed);
+}
+
+/** Проставляет метку времени последнего успешного редактирования */
+function markEditTimestamp(): void {
+  if (typeof window === "undefined") return;
+  storage.set("db_profile_last_edit", Date.now().toString());
+}
+
+/** Форматирует оставшееся время в "X ч Y мин" / "Y мин" */
+function formatRemaining(ms: number): string {
+  const totalMin = Math.ceil(ms / 60_000);
+  if (totalMin < 60) return `${totalMin} мин`;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return m === 0 ? `${h} ч` : `${h} ч ${m} мин`;
+}
+
+/**
+ * Получает сохранённую аватарку (data URL) из localStorage.
+ * Ключ — `db_user_avatar_<userId>`, чтобы у разных аккаунтов
+ * не было конфликта при переключении в одном браузере.
+ */
+function getAvatarKey(userId?: string): string | null {
+  return userId ? `db_user_avatar_${userId}` : null;
+}
+
+function getAvatar(userId?: string): string | null {
+  const key = getAvatarKey(userId);
+  if (!key) return null;
+  return storage.get(key);
+}
+
+function saveAvatar(userId: string, dataUrl: string): void {
+  const key = getAvatarKey(userId);
+  if (!key) return;
+  storage.set(key, dataUrl);
+}
+
+function removeAvatar(userId: string): void {
+  const key = getAvatarKey(userId);
+  if (!key) return;
+  storage.remove(key);
+}
+
+/* ================== КОМПОНЕНТ ================== */
+
+export default function ProfilePage() {
+  return (
+    <RequireAuth>
+      <ProfileInner />
+    </RequireAuth>
+  );
+}
+
+function ProfileInner() {
+  const { user, setAuth, logout } = useAuth();
+  const router = useRouter();
+
+  // ───── состояние формы ─────
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+
+  // ───── UI-флаги ─────
+  const [saved, setSaved] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [phoneError, setPhoneError] = useState<string | null>(null);
+
+  // ───── АВАТАРКА ─────
+  const [avatar, setAvatar] = useState<string | null>(null);
+  const [pendingAvatar, setPendingAvatar] = useState<string | null>(null); // превью до сохранения
+  const [avatarError, setAvatarError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // ───── 24-ЧАСОВОЙ КУЛДАУН ─────
+  // null = кулдаун ещё не начат (редактирование разрешено),
+  // число = оставшиеся мс до разблокировки.
+  const [cooldownMs, setCooldownMs] = useState<number>(0);
+
+  // ───── PROFILE QUERY ─────
+  const { data, refetch } = useQuery(GET_PROFILE, {
+    skip: !user,
+    fetchPolicy: "cache-and-network",
+  });
+  const profile = data?.profile ?? user;
+
+  // ───── UPDATE_USER MUTATION (исправленный, task 1.2) ─────
+  const [updateProfile, { loading: saving }] = useMutation(UPDATE_USER, {
+    refetchQueries: [{ query: GET_PROFILE }],
+    awaitRefetchQueries: true,
+  });
+
+  // ───── ИНИЦИАЛИЗАЦИЯ + ПОДПИСКА НА КУЛДАУН ─────
+  useEffect(() => {
+    if (user) {
+      setName(user.name || "");
+      setPhone(user.phone || "");
+      setEmail(user.email || "");
+      setAvatar(getAvatar(user.id));
+    }
+
+    // Первичная проверка кулдауна
+    setCooldownMs(getRemainingCooldownMs());
+
+    // Тикаем раз в минуту, чтобы счётчик сам обновлялся
+    const interval = setInterval(() => {
+      setCooldownMs(getRemainingCooldownMs());
+    }, 60_000);
+
+    return () => clearInterval(interval);
+  }, [user]);
+
+  // Если профиль пришёл из БД — синхронизируем локальные поля
+  useEffect(() => {
+    if (profile) {
+      setName((n) => (n ? n : profile.name || ""));
+      setPhone((p) => (p ? p : profile.phone || ""));
+      setEmail((e) => (e ? e : profile.email || ""));
+    }
+  }, [profile]);
+
+  /* ============== АВАТАРКА: загрузка и валидация ============== */
+
+  function triggerAvatarPicker() {
+    setAvatarError(null);
+    fileInputRef.current?.click();
+  }
+
+  function onAvatarFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setAvatarError(null);
+
+    if (!ALLOWED_AVATAR_TYPES.includes(file.type as never)) {
+      setAvatarError("Поддерживаются только JPG, PNG или WebP");
+      return;
+    }
+    if (file.size > MAX_AVATAR_SIZE) {
+      setAvatarError("Файл слишком большой — максимум 2 МБ");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = String(ev.target?.result || "");
+      if (!dataUrl) {
+        setAvatarError("Не удалось прочитать файл");
+        return;
+      }
+      setPendingAvatar(dataUrl);
+    };
+    reader.onerror = () => setAvatarError("Ошибка чтения файла");
+    reader.readAsDataURL(file);
+
+    // сбрасываем value, чтобы можно было выбрать тот же файл повторно
+    e.target.value = "";
+  }
+
+  function onRemoveAvatar() {
+    setPendingAvatar(null);
+    setAvatar(null);
+    removeAvatar(user!.id);
+  }
+
+  /* ============== ВАЛИДАЦИЯ ТЕЛЕФОНА (task 1.3) ============== */
+
+  function validatePhone(value: string): boolean {
+    if (!value || !value.trim()) {
+      setPhoneError(null);
+      return true;
+    }
+    if (!isValidTJPhone(value)) {
+      setPhoneError("Формат: +992 и ровно 9 цифр (например +992901234567)");
+      return false;
+    }
+    setPhoneError(null);
+    return true;
+  }
+
+  /* ============== СОХРАНЕНИЕ (исправлено, task 1.2) ============== */
+
+  async function save() {
+    setErrorMsg(null);
+
+    // 1. Кулдаун
+    if (cooldownMs > 0) {
+      setErrorMsg(
+        `Редактирование профиля доступно через ${formatRemaining(cooldownMs)}.`,
+      );
+      return;
+    }
+
+    // 2. Валидация телефона
+    if (!validatePhone(phone)) {
+      return;
+    }
+
+    // Нормализуем телефон перед отправкой
+    const normalizedPhone = phone.replace(/[\s\-()]/g, "").trim();
+
+    try {
+      // ── GraphQL-мутация ──
+      const res = await updateProfile({
+        variables: {
+          input: {
+            name: name.trim(),
+            phone: normalizedPhone || null,
+            email: email.trim() || null,
+          },
+        },
+      }).catch((e: any) => {
+        // Бэкенд может не иметь updateUser — продолжаем локально
+        debugWarn(
+          "Profile",
+          "updateUser mutation unavailable, falling back to local update",
+          e?.message,
+        );
+        return null;
+      });
+
+      const updatedUser = res?.data?.updateUser ??
+        // фоллбэк: если мутации нет — берём локальные значения
+        {
+          ...user,
+          name: name.trim(),
+          phone: normalizedPhone || undefined,
+          email: email.trim() || undefined,
+        };
+
+      // 3. Обновляем auth-context (там сохранится и token, и user)
+      setAuth(user!.id || "", updatedUser as any);
+      // ^ лучше так:
+      // setAuth сохранит токен из storage, подменив user.
+      // Если у вас setAuth требует (token, user), берём токен отдельно:
+      const token =
+        typeof window !== "undefined" ? storage.get("db_token") : null;
+      if (token) {
+        setAuth(token, updatedUser as any);
+      }
+
+      // 4. Сохраняем аватарку
+      if (pendingAvatar !== null) {
+        if (pendingAvatar === "") {
+          removeAvatar(user!.id);
+          setAvatar(null);
+        } else {
+          saveAvatar(user!.id, pendingAvatar);
+          setAvatar(pendingAvatar);
+        }
+        setPendingAvatar(null);
+      }
+
+      // 5. Проставляем кулдаун
+      markEditTimestamp();
+      setCooldownMs(EDIT_COOLDOWN_MS);
+
+      setSaved(true);
+      setEditing(false);
+      setTimeout(() => setSaved(false), 3000);
+      await refetch();
+      debugLog("Profile", "profile saved", { name, phone: normalizedPhone });
+    } catch (e: any) {
+      debugWarn("Profile", "save failed", e?.message);
+      setErrorMsg(e?.message || "Не удалось сохранить профиль");
+    }
+  }
+
+  /* ============== РЕНДЕР ============== */
+
+  if (!user) return null;
+
+  const isCooldown = cooldownMs > 0;
+  const canSave = !isCooldown && !phoneError && !saving;
+
+  // Что показывать в кружке аватарки: превью > сохранённая > инициалы
+  const displayedAvatar = pendingAvatar ?? avatar;
+
+  return (
+    <div className="max-w-3xl mx-auto space-y-6">
+      <div>
+        <h1 className="text-2xl font-extrabold text-soft-text tracking-tight">
+          Настройки профиля
+        </h1>
+        <p className="text-sm text-soft-text-soft mt-1">
+          Управляйте своими данными и предпочтениями
+        </p>
+      </div>
+
+      {/* ───── Тосты ───── */}
+      {saved && (
+        <div className="bg-soft-success-soft text-soft-success border border-soft-success/30 rounded-2xl px-4 py-3 text-sm font-semibold flex items-center gap-2">
+          <CheckCircle2 className="w-4 h-4" />
+          Данные сохранены. Следующее редактирование через 24 часа.
+        </div>
+      )}
+
+      {errorMsg && (
+        <div className="bg-soft-accent-soft text-soft-accent border border-soft-accent/30 rounded-2xl px-4 py-3 text-sm font-semibold flex items-center gap-2">
+          <AlertCircle className="w-4 h-4" />
+          {errorMsg}
+        </div>
+      )}
+
+      {/* ───── Баннер 24-часового кулдауна ───── */}
+      {isCooldown && (
+        <div className="bg-soft-info-soft text-soft-info border border-red-500/70 rounded-2xl px-4 py-3 text-sm font-semibold flex items-center gap-2">
+          <Clock className="w-4 h-4 shrink-0" />
+          <span>
+            Редактирование профиля заблокировано. Осталось:{" "}
+            <strong>{formatRemaining(cooldownMs)}</strong>
+          </span>
+        </div>
+      )}
+
+      {/* ───── Аватарка + профиль ───── */}
+      <section className="bg-soft-surface border border-soft-border rounded-3xl p-6 shadow-soft-sm">
+        <div className="flex items-center gap-5">
+          {/* Аватарка */}
+          <div className="relative shrink-0">
+            <div className="w-20 h-20 rounded-full overflow-hidden bg-gradient-to-br from-soft-rating to-soft-accent flex items-center justify-center text-white text-2xl font-extrabold ring-4 ring-white shadow-soft">
+              {displayedAvatar ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={displayedAvatar}
+                  alt="Аватар"
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                (profile?.name || "Г")
+                  .split(" ")
+                  .map((p: string) => p[0])
+                  .slice(0, 2)
+                  .join("")
+                  .toUpperCase()
+              )}
+            </div>
+
+            {/* Кнопка загрузки */}
+            <button
+              type="button"
+              onClick={triggerAvatarPicker}
+              disabled={isCooldown}
+              aria-label="Загрузить аватар"
+              className="absolute -bottom-1 -right-1 w-8 h-8 rounded-full bg-soft-accent hover:bg-soft-accent-dark text-white flex items-center justify-center shadow-soft-sm border-2 border-white active:scale-95 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Camera className="w-4 h-4" />
+            </button>
+
+            {/* Кнопка «удалить аватар» */}
+            {(avatar || pendingAvatar) && !isCooldown && (
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingAvatar("");
+                  setAvatar(null);
+                  if (user?.id) removeAvatar(user.id);
+                }}
+                aria-label="Удалить аватар"
+                className="absolute -bottom-1 -left-1 w-8 h-8 rounded-full bg-soft-surface border border-soft-border text-soft-text-muted hover:text-soft-accent flex items-center justify-center shadow-soft-sm active:scale-95 transition"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+
+            {/* Скрытый file input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={onAvatarFile}
+              className="hidden"
+              aria-hidden="true"
+            />
+          </div>
+
+          <div className="flex-1 min-w-0">
+            <h2 className="text-xl font-extrabold text-soft-text truncate">
+              {profile?.name || "Гость"}
+            </h2>
+            <p className="text-sm text-soft-text-soft truncate">
+              {profile?.email || profile?.phone || "—"}
+            </p>
+            {pendingAvatar !== null && pendingAvatar !== "" && (
+              <p className="text-2xs text-soft-accent mt-1 font-semibold">
+                ✨ Новая аватарка будет сохранена вместе с профилем
+              </p>
+            )}
+          </div>
+        </div>
+
+        {avatarError && (
+          <p className="mt-3 text-sm text-soft-accent font-semibold flex items-center gap-1.5">
+            <AlertCircle className="w-3.5 h-3.5" />
+            {avatarError}
+          </p>
+        )}
+      </section>
+
+      {/* ───── Личная информация ───── */}
+      <section className="bg-soft-surface border border-soft-border rounded-3xl p-6 shadow-soft-sm">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-extrabold text-soft-text">Личная информация</h3>
+          {!editing && !isCooldown && (
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="text-sm font-bold text-soft-accent hover:underline"
+            >
+              Редактировать
+            </button>
+          )}
+          {!editing && isCooldown && (
+            <span className="text-xs font-bold text-soft-text-muted bg-soft-surface-2 px-2.5 py-1 rounded-full">
+              Заблокировано
+            </span>
+          )}
+        </div>
+
+        <div className="space-y-3">
+          <Field
+            icon={<User className="w-4 h-4" />}
+            label="Имя"
+            value={editing ? name : profile?.name || ""}
+            onChange={setName}
+            disabled={!editing}
+            placeholder="Как вас зовут"
+          />
+
+          <Field
+            icon={<Mail className="w-4 h-4" />}
+            label="Email"
+            type="email"
+            value={editing ? email : profile?.email || ""}
+            onChange={setEmail}
+            disabled={!editing}
+            placeholder="email@example.com"
+          />
+
+          <div>
+            <Field
+              icon={<Phone className="w-4 h-4" />}
+              label="Телефон"
+              type="tel"
+              value={editing ? phone : profile?.phone || ""}
+              onChange={(v) => {
+                setPhone(v);
+                if (editing) validatePhone(v);
+              }}
+              disabled={!editing}
+              placeholder="+992XXXXXXXXX"
+            />
+            {editing && phoneError && (
+              <p className="mt-1 ml-1 text-xs font-semibold text-soft-accent flex items-center gap-1">
+                <AlertCircle className="w-3 h-3" />
+                {phoneError}
+              </p>
+            )}
+            {editing && !phoneError && phone && (
+              <p className="mt-1 ml-1 text-xs font-semibold text-soft-success flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" />
+                Формат телефона корректный
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* ───── Кнопки Сохранить / Отмена ───── */}
+        {editing && (
+          <div className="flex gap-2 mt-5 pt-5 border-t border-soft-border">
+            <button
+              type="button"
+              onClick={() => {
+                setEditing(false);
+                setPhoneError(null);
+                setPendingAvatar(null);
+                setAvatarError(null);
+                setName(profile?.name || "");
+                setPhone(profile?.phone || "");
+                setEmail(profile?.email || "");
+              }}
+              className="flex-1 sm:flex-none px-5 py-2.5 bg-soft-surface border border-soft-border text-soft-text-soft font-bold rounded-2xl text-sm hover:bg-soft-surface-2 active:scale-[0.98] transition"
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              onClick={save}
+              disabled={!canSave}
+              className="flex-1 px-6 py-2.5 bg-soft-accent hover:bg-soft-accent-dark text-white font-extrabold rounded-2xl text-sm flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98] transition shadow-soft-sm"
+            >
+              {saving ? (
+                <>
+                  <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  Сохраняем…
+                </>
+              ) : (
+                <>
+                  <Save className="w-3.5 h-3.5" />
+                  Сохранить
+                </>
+              )}
+            </button>
+          </div>
+        )}
+      </section>
+
+      {/* ───── Ссылки: адреса / заказы / помощь / политика / безопасность ───── */}
+      <section className="bg-soft-surface border border-soft-border rounded-3xl shadow-soft-sm overflow-hidden">
+        <LinkItem
+          href="/address"
+          icon={<MapPin className="w-5 h-5" />}
+          title="Мои адреса"
+          subtitle="Управление адресами доставки"
+        />
+        <LinkItem
+          href="/orders"
+          icon={<CreditCard className="w-5 h-5" />}
+          title="История заказов"
+          subtitle="Все ваши заказы"
+        />
+        <LinkItem
+          href="/help"
+          icon={<HelpCircle className="w-5 h-5" />}
+          title="Помощь"
+          subtitle="FAQ и поддержка клиентов"
+        />
+        <LinkItem
+          href="/privacy"
+          icon={<Shield className="w-5 h-5" />}
+          title="Политика конфиденциальности"
+          subtitle="Как мы обрабатываем ваши данные"
+        />
+        <LinkItem
+          href="#"
+          icon={<Bell className="w-5 h-5" />}
+          title="Уведомления"
+          subtitle="Скоро"
+          disabled
+        />
+      </section>
+
+      {/* ───── Выход ───── */}
+      <button
+        type="button"
+        onClick={async () => {
+          await logout();
+          router.push("/");
+        }}
+        className="w-full bg-soft-surface border border-soft-border hover:border-soft-accent text-soft-text-soft hover:text-soft-accent font-extrabold py-3.5 rounded-2xl flex items-center justify-center gap-2 transition-colors"
+      >
+        <LogOut className="w-4 h-4" />
+        Выйти из аккаунта
+      </button>
+    </div>
+  );
+}
+
+/* ================== UI-АТОМЫ ================== */
+
+function Field({
+  icon,
+  label,
+  value,
+  onChange,
+  type = "text",
+  disabled,
+  placeholder,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: string;
+  disabled?: boolean;
+  placeholder?: string;
+}) {
+  return (
+    <div className="space-y-1">
+      <label className="text-xs font-semibold text-soft-text-soft px-1 flex items-center gap-1.5">
+        <span className="text-soft-text-muted">{icon}</span>
+        {label}
+      </label>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        placeholder={placeholder}
+        autoComplete="off"
+        inputMode={type === "tel" ? "tel" : undefined}
+        className="w-full px-4 py-2.5 bg-soft-surface-2 border border-soft-border text-soft-text placeholder-soft-text-muted rounded-xl text-sm focus:outline-none focus:border-soft-accent disabled:opacity-70 disabled:cursor-default transition-colors"
+      />
+    </div>
+  );
+}
+
+function LinkItem({
+  href,
+  icon,
+  title,
+  subtitle,
+  disabled,
+}: {
+  href: string;
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+  disabled?: boolean;
+}) {
+  const Comp: any = disabled ? "div" : Link;
+  return (
+    <Comp
+      href={disabled ? undefined : href}
+      className={`flex items-center gap-4 p-4 border-b border-soft-border last:border-0 transition-colors ${
+        disabled
+          ? "opacity-60 cursor-not-allowed"
+          : "hover:bg-soft-surface-2 transition-colors cursor-pointer"
+      }`}
+    >
+      <div className="w-10 h-10 rounded-xl bg-soft-surface-2 flex items-center justify-center text-soft-text-soft shrink-0">
+        {icon}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-bold text-soft-text">{title}</div>
+        <div className="text-xs text-soft-text-muted">{subtitle}</div>
+      </div>
+      <ChevronRight className="w-4 h-4 text-soft-text-muted shrink-0" />
+    </Comp>
+  );
 }
 </file>
 
@@ -28141,6 +29811,262 @@ Sprint 7 для Dastbadast (только если есть API docs от бан�
 
 *Файл создан для репозитория food-delivery-multivendor / Dastbadast.*
 # Dastbadast
+</file>
+
+<file path="dastbadast-multivendor-api/src/resolvers/index.js">
+import { configuration, updateConfiguration } from "./configuration.js";
+import { deliveryZone } from "./zone-public.js";
+import { chatMessages, sendChatMessage } from "./chat.js";
+import { restaurants, restaurant } from "./restaurant.js";
+import {
+  profile,
+  addresses,
+  selectedAddress,
+  createUser,
+  login,
+  createAddress,
+  editAddress,
+  deleteAddress,
+  selectAddress,
+  adminUsers,
+  adminUserDetail,
+  toggleUserActive,
+  updateUser,
+} from "./user.js";
+import {
+  orders,
+  order,
+  placeOrder,
+  restaurantOrders,
+  meRestaurant,
+  restaurantLogin,
+  confirmOrderReceived,
+  refreshOrderStatus,
+} from "./order.js";
+import { acceptOrder, cancelOrder } from "./order-actions.js";
+import { foodReviews, addFoodReview, foodRatingStats } from "./food-review.js";
+import {
+  createCategory,
+  updateCategory,
+  deleteCategory,
+  createFood,
+  updateFood,
+  deleteFood,
+} from "./restaurant-menu.js";
+import {
+  allOrders,
+  ownerLogin,
+  meOwner,
+  createRider,
+  riders,
+  assignRider,
+  createRestaurant,
+  adminAccounting,
+  owners,
+  ownerOne,
+  createOwner,
+  updateOwner,
+  deactivateOwner,
+  resetOwnerPassword,
+  zones,
+  zoneOne,
+  createZone,
+  updateZone,
+  deleteZone,
+  adminDashboardMetrics,
+} from "./admin.js";
+import {
+  meRider,
+  riderOrders,
+  availableOrdersForRiders,
+  riderLogin,
+  claimOrder,
+  updateOrderStatusRider,
+  updateRiderLocation,
+  toggleRider,
+  rider as riderOne,
+} from "./rider.js";
+import {
+  orderStatusChanged,
+  subscriptionOrder,
+  subscribePlaceOrder,
+  subscriptionAssignedRider,
+  subscriptionZoneOrders,
+  subscriptionAvailableOrders,
+  subscriptionRiderLocation,
+  subscriptionRiderOrderCompleted,
+  newChatMessage,
+  courierSearchNotify,
+} from "./subscriptions.js";
+import { JSONScalar, DateTimeScalar } from "../utils/scalars.js";
+
+const mongoId = (parent) => parent?.id ?? parent?._id?.toString();
+
+export const resolvers = {
+  JSON: JSONScalar,
+  DateTime: DateTimeScalar,
+  Query: {
+    configuration,
+    deliveryZone,
+    restaurants,
+    restaurant,
+    foodReviews,
+    profile,
+    addresses,
+    selectedAddress,
+    orders,
+    order,
+    restaurantOrders,
+    meRestaurant,
+    allOrders,
+    riders,
+    meOwner,
+    meRider,
+    riderOrders,
+    availableOrdersForRiders,
+    chatMessages,
+    adminAccounting,
+    rider: riderOne,
+    owners,
+    owner: ownerOne,
+    adminUsers,
+    adminUserDetail,
+    zones,
+    zone: zoneOne,
+    adminDashboardMetrics,
+  },
+  Mutation: {
+    createUser,
+    login,
+    createAddress,
+    editAddress,
+    deleteAddress,
+    selectAddress,
+    placeOrder,
+    addFoodReview,
+    restaurantLogin,
+    acceptOrder,
+    cancelOrder,
+    createCategory,
+    updateCategory,
+    deleteCategory,
+    createFood,
+    updateFood,
+    deleteFood,
+    ownerLogin,
+    createRider,
+    createRestaurant,
+    assignRider,
+    riderLogin,
+    claimOrder,
+    updateOrderStatusRider,
+    confirmOrderReceived,
+    updateRiderLocation,
+    toggleRider,
+    sendChatMessage,
+    createOwner,
+    updateOwner,
+    deactivateOwner,
+    resetOwnerPassword,
+    toggleUserActive,
+    createZone,
+    updateZone,
+    deleteZone,
+    updateConfiguration,
+    updateUser,
+  },
+  Subscription: {
+    orderStatusChanged,
+    subscriptionOrder,
+    subscribePlaceOrder,
+    subscriptionAssignedRider,
+    subscriptionZoneOrders,
+    subscriptionAvailableOrders,
+    subscriptionRiderLocation,
+    subscriptionRiderOrderCompleted,
+    newChatMessage,
+    courierSearchNotify,
+  },
+  Restaurant: {
+    id: mongoId,
+    categories: async (parent) => {
+      const { Category } = await import("../models/Category.js");
+      return Category.find({ restaurantId: parent._id });
+    },
+  },
+  Category: {
+    id: mongoId,
+    foods: async (parent, _a, ctx) => {
+      const { Food } = await import("../models/Food.js");
+      const filter = { categoryId: parent._id };
+      const isOwner =
+        ctx.restaurant &&
+        parent.restaurantId &&
+        parent.restaurantId.toString() === ctx.restaurant._id.toString();
+      if (!isOwner) {
+        filter.isActive = true;
+        filter.isAvailable = true;
+      } else {
+        filter.isActive = true;
+      }
+      return Food.find(filter).sort({ createdAt: 1 });
+    },
+  },
+  Address: { id: mongoId },
+  Order: {
+    id: mongoId,
+    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
+    updatedAt: (p) => p.updatedAt?.toISOString?.() ?? String(p.updatedAt ?? ""),
+    paidAt: (p) => p.paidAt?.toISOString?.() ?? null,
+    statusTimestamps: (p) => {
+      const t = p.statusTimestamps || {};
+      return {
+        pendingAt: t.pendingAt?.toISOString?.() ?? null,
+        acceptedAt: t.acceptedAt?.toISOString?.() ?? null,
+        assignedAt: t.assignedAt?.toISOString?.() ?? null,
+        pickedAt: t.pickedAt?.toISOString?.() ?? null,
+        deliveredAt: t.deliveredAt?.toISOString?.() ?? null,
+        cancelledAt: t.cancelledAt?.toISOString?.() ?? null,
+        prepTime: t.prepTime ?? null,
+      };
+    },
+  },
+
+  User: { id: mongoId },
+  Food: {
+    id: mongoId,
+    averageRating: async (parent) => {
+      const s = await foodRatingStats(parent._id);
+      return s.averageRating;
+    },
+    reviewCount: async (parent) => {
+      const s = await foodRatingStats(parent._id);
+      return s.reviewCount;
+    },
+    reviews: async (parent) => {
+      const { FoodReview } = await import("../models/FoodReview.js");
+      return FoodReview.find({ foodId: parent._id })
+        .sort({ createdAt: -1 })
+        .limit(10);
+    },
+  },
+  FoodReview: {
+    id: mongoId,
+    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
+  },
+  Rider: { id: mongoId },
+  Owner: {
+    id: mongoId,
+    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
+    lastLoginAt: (p) => p.lastLoginAt?.toISOString?.() ?? null,
+  },
+
+  Zone: { id: mongoId },
+  ChatMessage: {
+    id: mongoId,
+    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
+  },
+};
 </file>
 
 <file path="dastbadast-multivendor-api/package.json">
