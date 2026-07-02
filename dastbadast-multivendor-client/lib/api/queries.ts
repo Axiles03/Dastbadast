@@ -365,7 +365,10 @@ export const SUB_RIDER_LOCATION = gql`
       riderId
       lat
       lng
+      bearing
+      speedKmh
       updatedAt
+      stopped
     }
   }
 `;

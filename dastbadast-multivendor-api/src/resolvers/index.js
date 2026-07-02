@@ -1,3 +1,4 @@
+// dastbadast-multivendor-api/src/resolvers/index.js
 import { configuration, updateConfiguration } from "./configuration.js";
 import { deliveryZone } from "./zone-public.js";
 import { chatMessages, sendChatMessage } from "./chat.js";
@@ -84,6 +85,12 @@ import {
 } from "./subscriptions.js";
 import { JSONScalar, DateTimeScalar } from "../utils/scalars.js";
 
+import {
+  registerPushToken,
+  unregisterPushToken,
+  myPushTokens,
+} from "./notifications.js";
+
 const mongoId = (parent) => parent?.id ?? parent?._id?.toString();
 
 export const resolvers = {
@@ -118,6 +125,7 @@ export const resolvers = {
     zones,
     zone: zoneOne,
     adminDashboardMetrics,
+    myPushTokens, // ⭐ только в Query
   },
   Mutation: {
     createUser,
@@ -158,6 +166,9 @@ export const resolvers = {
     deleteZone,
     updateConfiguration,
     updateUser,
+    registerPushToken,
+    unregisterPushToken,
+    // ⭐ ВАЖНО: myPushTokens НЕ должен быть в Mutation (это Query, а не Mutation)
   },
   Subscription: {
     orderStatusChanged,
@@ -215,7 +226,6 @@ export const resolvers = {
       };
     },
   },
-
   User: { id: mongoId },
   Food: {
     id: mongoId,
@@ -244,10 +254,14 @@ export const resolvers = {
     createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
     lastLoginAt: (p) => p.lastLoginAt?.toISOString?.() ?? null,
   },
-
   Zone: { id: mongoId },
   ChatMessage: {
     id: mongoId,
     createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
+  },
+  PushToken: {
+    id: (p) => p._id?.toString?.() ?? p.id,
+    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
+    lastUsedAt: (p) => p.lastUsedAt?.toISOString?.() ?? null,
   },
 };

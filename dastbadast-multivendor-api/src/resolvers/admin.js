@@ -1,3 +1,4 @@
+// dastbadast-multivendor-api/src/resolvers/admin.js
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import { GraphQLError } from "graphql";
@@ -5,13 +6,12 @@ import { Order } from "../models/Order.js";
 import { Rider } from "../models/Rider.js";
 import { Restaurant } from "../models/Restaurant.js";
 import { Zone } from "../models/Zone.js";
-import { User } from "../models/User.js"; 
+import { User } from "../models/User.js";
 import { Owner } from "../models/Owner.js";
 import { signOwnerToken } from "../middleware/auth.js";
 import { requireRole, requireOwner } from "../middleware/rbac.js";
 import { pubsub, TOPICS } from "../pubsub.js";
 
-// Список всех допустимых ролей Owner (для валидации)
 const VALID_OWNER_ROLES = [
   "SUPER_ADMIN",
   "DISPATCHER",
@@ -30,7 +30,6 @@ export const ownerLogin = async (_p, { input }) => {
       extensions: { code: "UNAUTHENTICATED" },
     });
   }
-  // Разрешаем вход любой валидной роли, но только активным аккаунтам
   if (!VALID_OWNER_ROLES.includes(o.userType)) {
     throw new GraphQLError("Forbidden", { extensions: { code: "FORBIDDEN" } });
   }
@@ -45,7 +44,6 @@ export const ownerLogin = async (_p, { input }) => {
       extensions: { code: "UNAUTHENTICATED" },
     });
   }
-  // Фиксируем время входа
   o.lastLoginAt = new Date();
   await o.save();
 
@@ -58,7 +56,7 @@ export const meOwner = async (_p, _a, ctx) => requireOwner(ctx);
 // =================== ORDERS / RIDERS (read) ===================
 
 export const allOrders = async (_p, { status }, ctx) => {
-  requireOwner(ctx); // любая активная роль
+  requireOwner(ctx);
   const filter = {};
   if (status) filter.orderStatus = status;
   return Order.find(filter).sort({ createdAt: -1 }).limit(200);
@@ -139,7 +137,7 @@ export const createRestaurant = async (_p, { input }, ctx) => {
 
 // =================== DISPATCH ===================
 
-const ASSIGN_FROM = ["ACCEPTED"];
+const ASSIGN_FROM = ["ACCEPTED", "READY_FOR_PICKUP"];
 const NEXT_AFTER_ASSIGN = "ASSIGNED";
 
 export const assignRider = async (_p, { input }, ctx) => {
@@ -196,7 +194,6 @@ export const assignRider = async (_p, { input }, ctx) => {
 export const adminAccounting = async (_p, _a, ctx) => {
   requireRole(["SUPER_ADMIN", "FINANCE", "ANALYST"])(ctx);
 
-  // 1) Агрегация по ресторанам (DELIVERED)
   const restaurantRows = await Order.aggregate([
     { $match: { orderStatus: "DELIVERED" } },
     {
@@ -229,7 +226,6 @@ export const adminAccounting = async (_p, _a, ctx) => {
     };
   });
 
-  // 2) Агрегация по курьерам
   const riderRows = await Order.aggregate([
     { $match: { orderStatus: "DELIVERED", riderId: { $ne: null } } },
     {
@@ -311,7 +307,6 @@ export const createOwner = async (_p, { input }, ctx) => {
 
   const passwordHash = await bcrypt.hash(input.password, 10);
 
-  // Заполняем гранулярные права дефолтами по роли
   const permissions = buildPermissionsForRole(
     input.userType,
     input.permissions,
@@ -362,14 +357,12 @@ export const updateOwner = async (_p, { id, input }, ctx) => {
       });
     }
     owner.userType = input.userType;
-    // При смене роли обновляем дефолтные permissions, если они не переданы явно
     if (!input.permissions) {
       owner.permissions = buildPermissionsForRole(input.userType, null);
     }
   }
 
   if (input.permissions) {
-    // Мерджим переданные permissions с текущими
     owner.permissions = {
       ...(owner.permissions?.toObject?.() || owner.permissions || {}),
       ...input.permissions,
@@ -377,7 +370,6 @@ export const updateOwner = async (_p, { id, input }, ctx) => {
   }
 
   if (typeof input.isActive === "boolean") {
-    // Защита от деактивации себя
     if (
       input.isActive === false &&
       owner._id.toString() === actor._id.toString()
@@ -386,7 +378,6 @@ export const updateOwner = async (_p, { id, input }, ctx) => {
         extensions: { code: "BAD_USER_INPUT" },
       });
     }
-    // Защита от деактивации последнего активного SUPER_ADMIN
     if (
       input.isActive === false &&
       owner.userType === "SUPER_ADMIN" &&
@@ -400,9 +391,7 @@ export const updateOwner = async (_p, { id, input }, ctx) => {
       if (otherActiveSupers === 0) {
         throw new GraphQLError(
           "Нельзя деактивировать последнего активного SUPER_ADMIN",
-          {
-            extensions: { code: "BAD_USER_INPUT" },
-          },
+          { extensions: { code: "BAD_USER_INPUT" } },
         );
       }
     }
@@ -444,9 +433,7 @@ export const deactivateOwner = async (_p, { id }, ctx) => {
     if (otherActiveSupers === 0) {
       throw new GraphQLError(
         "Нельзя деактивировать последнего активного SUPER_ADMIN",
-        {
-          extensions: { code: "BAD_USER_INPUT" },
-        },
+        { extensions: { code: "BAD_USER_INPUT" } },
       );
     }
   }
@@ -483,13 +470,6 @@ export const resetOwnerPassword = async (_p, { id, newPassword }, ctx) => {
   return true;
 };
 
-// =================== HELPERS ===================
-
-/**
- * Дефолтные permissions для каждой роли.
- * Гранулярные права — для будущего расширения.
- * Сейчас резолверы используют только userType, но permissions уже заполняются.
- */
 function buildPermissionsForRole(role, custom) {
   const defaults = {
     SUPER_ADMIN: {
@@ -578,8 +558,6 @@ export const createZone = async (_p, { input }, ctx) => {
     });
   }
 
-  // polygon: [[lng, lat], [lng, lat], ...]
-  // Mongoose ожидает GeoJSON Polygon: coordinates[0] = ring
   const zone = await Zone.create({
     name: input.name.trim(),
     description: input.description?.trim() || "",
@@ -625,7 +603,7 @@ export const updateZone = async (_p, { id, input }, ctx) => {
 };
 
 export const deleteZone = async (_p, { id }, ctx) => {
-  requireRole(["SUPER_ADMIN"])(ctx); // только SUPER_ADMIN может удалять
+  requireRole(["SUPER_ADMIN"])(ctx);
 
   if (!mongoose.isValidObjectId(id)) {
     throw new GraphQLError("Некорректный id", {
@@ -633,7 +611,6 @@ export const deleteZone = async (_p, { id }, ctx) => {
     });
   }
 
-  // Проверка: нельзя удалить активную зону с привязанными ресторанами
   const zone = await Zone.findById(id);
   if (!zone) {
     throw new GraphQLError("Зона не найдена", {
@@ -655,10 +632,6 @@ export const deleteZone = async (_p, { id }, ctx) => {
 
 // =================== DASHBOARD METRICS (ANALYST) ====================
 
-/**
- * Сводные метрики за сегодня + последние 7 дней.
- * Используется на /dashboard для SUPER_ADMIN, FINANCE, ANALYST.
- */
 export const adminDashboardMetrics = async (_p, _a, ctx) => {
   requireRole([
     "SUPER_ADMIN",
@@ -675,11 +648,10 @@ export const adminDashboardMetrics = async (_p, _a, ctx) => {
     now.getDate(),
   );
   const startOf7DaysAgo = new Date(startOfToday);
-  startOf7DaysAgo.setDate(startOf7DaysAgo.getDate() - 6); // 7 дней включая сегодня
+  startOf7DaysAgo.setDate(startOf7DaysAgo.getDate() - 6);
   const startOf30DaysAgo = new Date(startOfToday);
   startOf30DaysAgo.setDate(startOf30DaysAgo.getDate() - 29);
 
-  // 1) Заказы сегодня
   const [todayAgg] = await Order.aggregate([
     { $match: { createdAt: { $gte: startOfToday } } },
     {
@@ -705,28 +677,23 @@ export const adminDashboardMetrics = async (_p, _a, ctx) => {
     },
   ]);
 
-  // 2) Пользователи за сегодня
   const newUsersToday = await User.countDocuments({
     createdAt: { $gte: startOfToday },
   });
 
-  // 3) Активные курьеры (available === true)
   const activeRiders = await Rider.countDocuments({
     isActive: true,
     available: true,
   });
 
-  // 4) Активные заказы (не DELIVERED/CANCELLED)
   const activeOrders = await Order.countDocuments({
     orderStatus: { $nin: ["DELIVERED", "CANCELLED"] },
   });
 
-  // 5) Рестораны онлайн
   const restaurantsOnline = await Restaurant.countDocuments({
     isAvailable: true,
   });
 
-  // 6) График заказов за 7 дней
   const last7Days = await Order.aggregate([
     { $match: { createdAt: { $gte: startOf7DaysAgo } } },
     {
@@ -747,7 +714,6 @@ export const adminDashboardMetrics = async (_p, _a, ctx) => {
     { $sort: { _id: 1 } },
   ]);
 
-  // Дозаполняем пропущенные дни нулями
   const chart7Days = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(startOf7DaysAgo);
@@ -761,7 +727,6 @@ export const adminDashboardMetrics = async (_p, _a, ctx) => {
     });
   }
 
-  // 7) Топ-5 ресторанов за 30 дней
   const topRestaurants = await Order.aggregate([
     {
       $match: {
@@ -791,7 +756,6 @@ export const adminDashboardMetrics = async (_p, _a, ctx) => {
     revenue: +Number(r.revenue).toFixed(2),
   }));
 
-  // 8) Топ-5 курьеров за 30 дней
   const topRiders = await Order.aggregate([
     {
       $match: {

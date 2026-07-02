@@ -57,6 +57,15 @@ async function start() {
   await mongoose.connect(MONGO_URI);
   console.log("✅ MongoDB connected");
 
+  try {
+    const { startNotificationTriggers } =
+      await import("./lib/notifications/triggers.js");
+    startNotificationTriggers();
+    console.log("🔔 Notification triggers started");
+  } catch (e) {
+    console.warn("⚠️ Notification triggers failed to start:", e?.message);
+  }
+
   const schema = makeExecutableSchema({ typeDefs, resolvers });
 
   const app = express();

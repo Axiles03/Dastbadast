@@ -71,12 +71,12 @@ export default function OrdersScreen() {
     return () => clearInterval(i);
   }, []);
 
-  // GPS lifecycle
-  useEffect(() => {
-    if (!token || !rider) return;
-    startGpsLoop(client);
-    return () => stopGpsLoop();
-  }, [client, token, rider]);
+  // // GPS lifecycle
+  // useEffect(( ) => {
+  //   if (!token || !rider) return;
+  //   startGpsLoop(client);
+  //   return () => stopGpsLoop();
+  // }, [client, token, rider]);
 
   const {
     data: poolData,

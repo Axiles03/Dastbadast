@@ -43,8 +43,12 @@ const OrderSchema = new mongoose.Schema(
       enum: [
         "PENDING",
         "ACCEPTED",
+        "PREPARING",
+        "READY_FOR_PICKUP",
         "ASSIGNED",
         "PICKED",
+        "EN_ROUTE_TO_DROP_OFF",
+        "ARRIVED_AT_DROP_OFF",
         "DELIVERED",
         "CANCELLED",
         "AWAITING_CONFIRMATION",
@@ -83,20 +87,21 @@ const OrderSchema = new mongoose.Schema(
     statusTimestamps: {
       pendingAt: { type: Date, default: Date.now },
       acceptedAt: Date,
+      preparingAt: Date,
+      readyAt: Date,
       assignedAt: Date,
       pickedAt: Date,
+      enRouteToDropOffAt: Date,
+      arrivedAtDropOffAt: Date,
       deliveredAt: Date,
       cancelledAt: Date,
-      prepTime: { type: Number, default: null }, // minutes
-
-      // ⭐⭐⭐ НОВОЕ: для автопоиска курьера
+      prepTime: { type: Number, default: null },
       courierSearchTimestamps: {
         initialPushedAt: { type: Date, default: null },
         escalationPushedAt: { type: Date, default: null },
       },
     },
 
-    // ⭐⭐⭐ НОВОЕ: бонус курьеру за быстрый приём
     fastAcceptBonus: { type: Number, default: 0 },
 
     paymentStatus: {
@@ -124,7 +129,6 @@ const OrderSchema = new mongoose.Schema(
 
 OrderSchema.index({ userId: 1, createdAt: -1 });
 OrderSchema.index({ restaurantId: 1, orderStatus: 1, createdAt: -1 });
-// ⭐⭐⭐ НОВЫЙ ИНДЕКС: для быстрого поиска PENDING/ACCEPTED заказов без курьера
 OrderSchema.index(
   { orderStatus: 1, riderId: 1, "statusTimestamps.pendingAt": 1 },
   {

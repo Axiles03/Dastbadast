@@ -1,7 +1,8 @@
 // dastbadast-multivendor-api/src/resolvers/order-search.js
 //
-// Агрессивный автопоиск курьера (Эшелон 1).
+// ⭐⭐⭐ Эшелон 1: агрессивный автопоиск курьера.
 // 3 пуши: при PENDING, при ACCEPTED, эскалация через 90 сек.
+// Раздел 2: кэш расстояний + hot zone detection.
 
 import { Order } from "../models/Order.js";
 import { Rider } from "../models/Rider.js";
@@ -11,17 +12,52 @@ import {
   COURIER_SEARCH_RULES,
   buildPushList,
 } from "../lib/order-search-rules.js";
+import { haversineKm } from "../utils/geo.js";
+
+// ⭐⭐⭐ Кэш последних координат курьеров (в памяти)
+const riderLocationCache = new Map();
+const CACHE_TTL_MS = 60_000;
+
+export function getCachedRiderLocation(riderId) {
+  const entry = riderLocationCache.get(riderId.toString());
+  if (!entry) return null;
+  if (Date.now() - entry.at > CACHE_TTL_MS) {
+    riderLocationCache.delete(riderId.toString());
+    return null;
+  }
+  return entry;
+}
+
+export function setCachedRiderLocation(riderId, lat, lng) {
+  riderLocationCache.set(riderId.toString(), {
+    lat,
+    lng,
+    at: Date.now(),
+  });
+}
+
+// ⭐⭐⭐ Hot zone detection
+const restaurantHeatMap = new Map();
+
+export async function trackRestaurantActivity(restaurantId) {
+  const key = restaurantId.toString();
+  const now = Date.now();
+  const entry = restaurantHeatMap.get(key) || { orderCount: 0, lastHour: [] };
+  entry.orderCount += 1;
+  entry.lastHour = entry.lastHour.filter((t) => now - t < 60 * 60 * 1000);
+  entry.lastHour.push(now);
+  restaurantHeatMap.set(key, entry);
+}
+
+export function isRestaurantHot(restaurantId) {
+  const entry = restaurantHeatMap.get(restaurantId.toString());
+  if (!entry) return false;
+  return entry.lastHour.length >= 5;
+}
 
 /**
- * Пушит ближайшим курьерам, что появился заказ.
- * Не выбирает курьера — только рассылает уведомления.
- *
- * @param {Object} opts
- * @param {string} opts.orderId
- * @param {number} opts.radiusKm
- * @param {number} opts.count
- * @param {boolean} opts.escalation  — true при второй волне
- * @returns {Promise<string[]>} — список ID уведомлённых курьеров
+ * ⭐⭐⭐ Главная функция автопоиска курьера.
+ * С кэшем расстояний и hot zone detection (Раздел 2).
  */
 export async function dispatchCourierSearch({
   orderId,
@@ -32,34 +68,72 @@ export async function dispatchCourierSearch({
 }) {
   const order = await Order.findById(orderId);
   if (!order) return [];
-
-  // Если курьер уже назначен — не дёргаем остальных
   if (order.riderId) return [];
-
-  // Если заказ уже не ждёт курьера (DELIVERED / CANCELLED) — выходим
   if (!["PENDING", "ACCEPTED"].includes(order.orderStatus)) return [];
 
-  // Получаем координаты ресторана
   const restaurant = await Restaurant.findById(order.restaurantId).lean();
   const restaurantLocation = restaurant?.location?.coordinates || null;
 
-  // Все доступные курьеры
+  // Hot zone: расширяем радиус если ресторан горячий
+  let effectiveRadiusKm = radiusKm;
+  if (!escalation && isRestaurantHot(order.restaurantId)) {
+    effectiveRadiusKm = Math.min(radiusKm * 1.5, 12);
+  }
+
+  // Получаем всех доступных курьеров
   const allRiders = await Rider.find({
     available: true,
     isActive: true,
   }).lean();
 
-  // Формируем список (с сортировкой по близости и лимитом)
-  const targetRiders = buildPushList({
-    riders: allRiders,
-    restaurantLocation,
-    count: escalation
-      ? count + COURIER_SEARCH_RULES.ESCALATION_EXTRA_COUNT
-      : count,
-    excludeIds,
-  });
+  // ⭐ Сортируем по расстоянию (используя кэш)
+  const sorted = allRiders
+    .map((r) => {
+      const coords = r.location?.coordinates || [null, null];
+      const [lng, lat] = coords;
+      let distance = null;
 
-  if (!targetRiders.length) {
+      // Сначала проверяем кэш (быстрее, чем пересчитывать)
+      const cached = getCachedRiderLocation(r._id);
+      if (cached) {
+        distance = haversineKm(
+          cached.lat,
+          cached.lng,
+          restaurantLocation ? restaurantLocation[1] : 0,
+          restaurantLocation ? restaurantLocation[0] : 0,
+        );
+      } else if (lat != null && lng != null && restaurantLocation) {
+        distance = haversineKm(
+          lat,
+          lng,
+          restaurantLocation[1],
+          restaurantLocation[0],
+        );
+        setCachedRiderLocation(r._id, lat, lng);
+      } else if (lat != null && lng != null) {
+        // У курьера есть координаты, но у ресторана нет — оставляем distance = null
+        distance = null;
+      }
+
+      return { rider: r, distance };
+    })
+    .filter(
+      (x) =>
+        x.rider.available &&
+        x.rider.isActive &&
+        !excludeIds.includes(String(x.rider._id)),
+    )
+    .sort((a, b) => {
+      if (a.distance == null) return 1;
+      if (b.distance == null) return -1;
+      return a.distance - b.distance;
+    })
+    .slice(
+      0,
+      escalation ? count + COURIER_SEARCH_RULES.ESCALATION_EXTRA_COUNT : count,
+    );
+
+  if (!sorted.length) {
     console.log(`[courier-search] no riders found for order ${orderId}`);
     return [];
   }
@@ -70,18 +144,16 @@ export async function dispatchCourierSearch({
     : "statusTimestamps.courierSearchTimestamps.initialPushedAt";
   await Order.updateOne({ _id: orderId }, { $set: { [tsField]: new Date() } });
 
-  // Публикуем событие в шину pubsub — каждое rider-app слушает
-  // subscriptionAvailableOrders(zoneId) и получает обновлённый заказ.
-  // Также шлём целенаправленно в топик AVAILABLE_ORDERS для конкретной зоны.
+  // Бродкаст в AVAILABLE_ORDERS
   if (order.zoneId) {
     pubsub.publish(TOPICS.AVAILABLE_ORDERS(order.zoneId.toString()), {
       subscriptionAvailableOrders: order.toObject ? order.toObject() : order,
     });
   }
 
-  // In-app нотификация для конкретных курьеров
-  // (используем отдельный топик — rider-app подписывается и проверяет,
-  // входит ли он в список targetRiders)
+  // ⭐⭐⭐ ЕДИНСТВЕННОЕ объявление targetRiders (раньше дублировалось)
+  const targetRiders = sorted.map((x) => x.rider);
+
   pubsub.publish(TOPICS.COURIER_SEARCH_NOTIFY, {
     courierSearchNotify: {
       orderId: order._id.toString(),
@@ -89,7 +161,7 @@ export async function dispatchCourierSearch({
       restaurantName: restaurant?.name || "Ресторан",
       restaurantLocation,
       riderIds: targetRiders.map((r) => r._id.toString()),
-      radiusKm,
+      radiusKm: effectiveRadiusKm,
       escalation,
       fastAcceptBonus: order.fastAcceptBonus || 0,
       createdAt: new Date().toISOString(),
@@ -97,33 +169,29 @@ export async function dispatchCourierSearch({
   });
 
   console.log(
-    `[courier-search] order=${orderId} escalation=${escalation} ` +
-      `pushed=${targetRiders.length} riders`,
+    `[courier-search] order=${orderId} escalation=${escalation} pushed=${targetRiders.length} riders (radius=${effectiveRadiusKm}km)`,
   );
 
   return targetRiders.map((r) => r._id.toString());
 }
 
 /**
- * Запустить Эшелон 1: первая волна + отложенная эскалация.
- * Вызывается сразу при placeOrder и при acceptOrder.
+ * ⭐⭐⭐ Запустить Эшелон 1: первая волна + отложенная эскалация.
  */
 export async function startCourierSearchEscalation1(orderId) {
-  // 1) Мгновенная первая волна
-  const firstWave = await dispatchCourierSearch({ orderId, escalation: false });
-
-  // 2) Запланировать вторую волну через 90 сек (если заказ всё ещё ждёт)
+  const firstWave = await dispatchCourierSearch({
+    orderId,
+    escalation: false,
+  });
   setTimeout(async () => {
     try {
       const order = await Order.findById(orderId);
-      // Только если заказ всё ещё без курьера
       if (!order || order.riderId) return;
       if (!["PENDING", "ACCEPTED"].includes(order.orderStatus)) return;
-
       await dispatchCourierSearch({
         orderId,
         escalation: true,
-        excludeIds: firstWave, // чтобы не повторяться
+        excludeIds: firstWave,
       });
     } catch (e) {
       console.error(

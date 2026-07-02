@@ -13,6 +13,9 @@ export const TOPICS = {
   AVAILABLE_ORDERS: (zoneId) => `AVAILABLE_ORDERS_${zoneId || "all"}`,
   CHAT: (orderId) => `CHAT_${orderId}`,
 
-  // ⭐⭐⭐ НОВОЕ: уведомления автопоиска курьера
   COURIER_SEARCH_NOTIFY: "COURIER_SEARCH_NOTIFY",
+  ALL_DELIVERIES: "ALL_DELIVERIES",
+
+  RIDER_NEAR_DROP_OFF: (orderId) => `RIDER_NEAR_DROP_OFF_${orderId}`,
+  RIDER_NEAR_RESTAURANT: (orderId) => `RIDER_NEAR_RESTAURANT_${orderId}`,
 };

@@ -269,8 +269,12 @@ export const typeDefs = /* GraphQL */ `
   enum OrderStatus {
     PENDING
     ACCEPTED
+    PREPARING
+    READY_FOR_PICKUP
     ASSIGNED
     PICKED
+    EN_ROUTE_TO_DROP_OFF
+    ARRIVED_AT_DROP_OFF
     DELIVERED
     CANCELLED
     AWAITING_CONFIRMATION
@@ -520,6 +524,32 @@ export const typeDefs = /* GraphQL */ `
     createdAt: String!
   }
 
+  # ⭐⭐⭐ NEW: событие входа курьера в geofence "рядом с клиентом"
+  type RiderNearDropOffEvent {
+    orderId: ID!
+    riderId: ID!
+    distanceM: Int!
+    timestamp: String!
+  }
+
+  # ============================================================
+  # ⭐ Push-токены (Раздел 3 — Expo Push Notifications)
+  # ============================================================
+  type PushToken {
+    id: ID!
+    ownerType: String!
+    platform: String!
+    locale: String
+    lastUsedAt: String
+    createdAt: String!
+  }
+
+  input PushTokenInput {
+    token: String!
+    platform: String!
+    locale: String
+  }
+
   type Query {
     configuration: Configuration
     deliveryZone: DeliveryZone
@@ -549,6 +579,8 @@ export const typeDefs = /* GraphQL */ `
     zones: [Zone!]!
     zone(id: ID!): Zone
     adminDashboardMetrics: AdminDashboard!
+    currentRiderLocation(riderId: ID!): RiderLocationUpdate
+    myPushTokens: [PushToken!]!
   }
 
   type Mutation {
@@ -592,6 +624,24 @@ export const typeDefs = /* GraphQL */ `
     deleteZone(id: ID!): Boolean!
     # ⭐ НОВОЕ: обновление профиля клиента (имя / email / телефон)
     updateUser(input: UpdateUserInput!): User!
+    # Ресторан: переходы по кухн и прочее
+    markOrderPreparing(orderId: ID!): Order!
+    markOrderReady(orderId: ID!): Order!
+    # Курьер: приеять и доставлять заказ
+    acceptDelivery(orderId: ID!): Order!
+    pickupDelivery(orderId: ID!): Order!
+    arriveAtDropOff(orderId: ID!): Order!
+    markDelivered(orderId: ID!): Order!
+    stopRiderLocationStream: Boolean!
+    registerPushToken(input: PushTokenInput!): PushToken!
+    unregisterPushToken(token: String!): Boolean!
+  }
+
+  type DeliveryEvent {
+    order: Order!
+    etaToRestaurant: Int
+    etaToCustomer: Int
+    event: String!
   }
 
   type Subscription {
@@ -605,5 +655,8 @@ export const typeDefs = /* GraphQL */ `
     subscriptionRiderOrderCompleted(riderId: ID!): Order!
     newChatMessage(orderId: ID!): ChatMessage!
     courierSearchNotify: CourierSearchEvent!
+    deliveryStatusChanged(orderId: ID!): DeliveryEvent!
+    allDeliveries: Order!
+    riderNearDropOff(orderId: ID!): RiderNearDropOffEvent!
   }
 `;

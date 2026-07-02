@@ -1,3 +1,4 @@
+// dastbadast-multivendor-client/app/(app)/orders/[id].tsx
 import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   View,
@@ -17,6 +18,8 @@ import {
   GET_CHAT_MESSAGES,
   SUB_ORDER,
   SUB_CHAT,
+  SUB_RIDER_LOCATION,
+  RIDER_LOCATION_QUERY,
   CONFIRM_ORDER_RECEIVED,
   SEND_CHAT_MESSAGE,
   REFRESH_ORDER_STATUS,
@@ -24,6 +27,22 @@ import {
 import { getApolloClient } from "../../../lib/apollo-provider";
 import { StatusPill } from "../../../components/StatusPill";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+// Безопасный импорт react-native-maps — если пакета нет, MapView === null
+let MapView: any = null;
+let Marker: any = null;
+let Polyline: any = null;
+let PROVIDER_GOOGLE: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const Maps = require("react-native-maps");
+  MapView = Maps.default ?? Maps.MapView;
+  Marker = Maps.Marker;
+  Polyline = Maps.Polyline;
+  PROVIDER_GOOGLE = Maps.PROVIDER_GOOGLE;
+} catch {
+  // пакет не установлен — карта просто не покажется
+}
 
 type ChatMessage = {
   id: string;
@@ -33,6 +52,13 @@ type ChatMessage = {
   createdAt: string;
 };
 
+type RiderPos = {
+  lat: number;
+  lng: number;
+  bearing?: number | null;
+  at?: string;
+} | null;
+
 const STATUS_TIMES: Record<
   string,
   { minutes: number; title: string; sub: string; emoji: string }
@@ -40,7 +66,7 @@ const STATUS_TIMES: Record<
   PENDING: {
     minutes: 3,
     title: "Заказ отправлен на кухню",
-    sub: "Ресторан подтвердит приём в течение пары минут",
+    sub: "Ресторан подтвердит приём в течение пары минуты",
     emoji: "⏱",
   },
   ACCEPTED: {
@@ -83,6 +109,23 @@ function formatCountdown(ms: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
+function haversineKm(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number,
+): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 export default function TrackingPage() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -90,8 +133,9 @@ export default function TrackingPage() {
   const [draft, setDraft] = useState("");
   const [liveMessages, setLiveMessages] = useState<ChatMessage[]>([]);
   const [timeLeftMs, setTimeLeftMs] = useState<number | null>(null);
+  const [riderPos, setRiderPos] = useState<RiderPos>(null);
+  const [etaMin, setEtaMin] = useState<number | null>(null);
 
-  // ⭐ useQuery<any>
   const { data, loading, error, refetch } = useQuery<any>(GET_ORDER, {
     variables: { id },
     skip: !id,
@@ -133,6 +177,61 @@ export default function TrackingPage() {
     },
   });
 
+  // ⭐⭐⭐ FIX 1: явно типизируем payload подписки через any (Apollo v4 generic сложный)
+  const riderId: string | null = o?.riderId ?? null;
+  const hasRider = !!riderId && riderId.length === 24;
+
+  useSubscription<any>(SUB_RIDER_LOCATION, {
+    variables: { riderId: riderId || "" },
+    skip: !hasRider,
+    onData: (options: any) => {
+      const p: any = options?.data?.data?.subscriptionRiderLocation;
+      if (!p) return;
+      if (p.stopped) {
+        setRiderPos(null);
+        return;
+      }
+      if (p.lat && p.lng) {
+        setRiderPos({
+          lat: p.lat,
+          lng: p.lng,
+          bearing: p.bearing ?? null,
+          at: p.updatedAt,
+        });
+      }
+    },
+  });
+
+  // ⭐⭐⭐ FIX 2: используем useEffect для обработки polling-данных
+  //    вместо onCompleted (которого нет в Apollo v4 useQuery)
+  const { data: riderLocData } = useQuery<any>(RIDER_LOCATION_QUERY, {
+    variables: { id: riderId! },
+    skip: !hasRider,
+    pollInterval: 10_000,
+    fetchPolicy: "network-only",
+  });
+
+  useEffect(() => {
+    if (!riderLocData?.rider?.location?.coordinates) return;
+    const coords = riderLocData.rider.location.coordinates;
+    if (!Array.isArray(coords) || coords.length !== 2) return;
+    if (coords[0] === 0 && coords[1] === 0) return; // не обновляем если "нулевые"
+
+    setRiderPos((prev) => {
+      // Не перезаписываем если WS-событие свежее
+      if (prev?.at) {
+        const prevTime = new Date(prev.at).getTime();
+        if (Date.now() - prevTime < 5000) return prev;
+      }
+      return {
+        lat: coords[1],
+        lng: coords[0],
+        bearing: prev?.bearing ?? null,
+        at: riderLocData.rider.lastLocationAt,
+      };
+    });
+  }, [riderLocData]);
+
   useEffect(() => {
     if (!o || o.orderStatus !== "AWAITING_CONFIRMATION") return;
     const deliveredAt = o.statusTimestamps?.deliveredAt;
@@ -161,6 +260,20 @@ export default function TrackingPage() {
     }, 30_000);
     return () => clearInterval(interval);
   }, [o?.id, o?.orderStatus, refetch]);
+
+  // ⭐ Расчёт ETA на клиенте
+  useEffect(() => {
+    if (!riderPos || !o) {
+      setEtaMin(null);
+      return;
+    }
+    const destLat = o?.deliveryAddress?.location?.coordinates?.[1];
+    const destLng = o?.deliveryAddress?.location?.coordinates?.[0];
+    if (typeof destLat === "number" && typeof destLng === "number") {
+      const km = haversineKm(riderPos.lat, riderPos.lng, destLat, destLng);
+      setEtaMin(Math.max(1, Math.round((km / 25) * 60)));
+    }
+  }, [riderPos, o]);
 
   const handleConfirm = useCallback(async () => {
     if (!o) return;
@@ -233,6 +346,22 @@ export default function TrackingPage() {
     "DELIVERED",
   ].includes(o.orderStatus);
 
+  // Все координаты вычисляем ОДИН РАЗ перед JSX
+  const destCoords = o?.deliveryAddress?.location?.coordinates;
+  const pickupCoords = o?.pickupAddress?.location?.coordinates;
+  const deliveryLat: number | null =
+    destCoords && destCoords.length >= 2 ? destCoords[1] : null;
+  const deliveryLng: number | null =
+    destCoords && destCoords.length >= 2 ? destCoords[0] : null;
+  const pickupLat: number | null =
+    pickupCoords && pickupCoords.length >= 2 ? pickupCoords[1] : null;
+  const pickupLng: number | null =
+    pickupCoords && pickupCoords.length >= 2 ? pickupCoords[0] : null;
+  const canShowMap =
+    hasRider && MapView !== null && deliveryLat != null && deliveryLng != null;
+  const initialLat = deliveryLat ?? 38.574;
+  const initialLng = deliveryLng ?? 68.783;
+
   return (
     <SafeAreaView className="flex-1 bg-soft-bg">
       <View className="flex-row items-center px-5 pt-4 pb-2">
@@ -269,6 +398,97 @@ export default function TrackingPage() {
             {stage.sub}
           </Text>
         </View>
+
+        {/* ⭐ Карта курьера — безопасный рендеринг */}
+        {canShowMap && (
+          <View className="bg-soft-surface border border-border rounded-2xl p-4 mb-4 shadow-soft-sm">
+            <View className="flex-row items-center justify-between mb-3">
+              <Text className="text-base font-extrabold text-text">
+                🚴 Курьер в пути
+              </Text>
+              {etaMin !== null && (
+                <View className="bg-success-soft px-2.5 py-1 rounded-full">
+                  <Text className="text-2xs font-extrabold text-success">
+                    ⏱ ~{etaMin} мин
+                  </Text>
+                </View>
+              )}
+            </View>
+            <View
+              className="rounded-xl overflow-hidden border border-border"
+              style={{ height: 220 }}
+            >
+              <MapView
+                style={{ flex: 1 }}
+                provider={PROVIDER_GOOGLE ?? undefined}
+                initialRegion={{
+                  latitude: initialLat,
+                  longitude: initialLng,
+                  latitudeDelta: 0.05,
+                  longitudeDelta: 0.05,
+                }}
+                showsUserLocation={false}
+                showsMyLocationButton={false}
+              >
+                {pickupLat != null && pickupLng != null && (
+                  <Marker
+                    coordinate={{
+                      latitude: pickupLat,
+                      longitude: pickupLng,
+                    }}
+                    title="Ресторан"
+                  >
+                    <View className="bg-soft-surface border border-border rounded-full px-2 py-1">
+                      <Text className="text-sm">🏪</Text>
+                    </View>
+                  </Marker>
+                )}
+                <Marker
+                  coordinate={{
+                    latitude: initialLat,
+                    longitude: initialLng,
+                  }}
+                  title="Точка доставки"
+                  pinColor="#F26A4A"
+                />
+                {riderPos && (
+                  <>
+                    <Marker
+                      coordinate={{
+                        latitude: riderPos.lat,
+                        longitude: riderPos.lng,
+                      }}
+                      title="Курьер"
+                      rotation={riderPos.bearing ?? 0}
+                    >
+                      <View className="w-9 h-9 rounded-full bg-accent items-center justify-center border-2 border-white shadow-soft-sm">
+                        <Text className="text-base">🛵</Text>
+                      </View>
+                    </Marker>
+                    <Polyline
+                      coordinates={[
+                        { latitude: riderPos.lat, longitude: riderPos.lng },
+                        { latitude: initialLat, longitude: initialLng },
+                      ]}
+                      strokeColor="#F26A4A"
+                      strokeWidth={3}
+                    />
+                  </>
+                )}
+              </MapView>
+            </View>
+          </View>
+        )}
+
+        {!canShowMap && hasRider && MapView === null && (
+          <View className="bg-soft-surface-2 border border-border rounded-2xl p-4 mb-4">
+            <Text className="text-sm text-text-soft text-center">
+              🗺 Установите{" "}
+              <Text className="text-accent font-bold">react-native-maps</Text>{" "}
+              для отображения курьера на карте
+            </Text>
+          </View>
+        )}
 
         {o.orderStatus === "AWAITING_CONFIRMATION" && (
           <View className="bg-soft-surface border-2 border-accent rounded-2xl p-5 mb-4 shadow-soft-sm">
@@ -307,7 +527,7 @@ export default function TrackingPage() {
           </View>
         )}
 
-        <View className="bg-soft-surface border border-border rounded-2xl p-4 shadow-soft-sm mb-4">
+        <View className="bg-soft-surface border border-border rounded-2xl p-4 mb-4 shadow-soft-sm">
           <Text className="text-base font-extrabold text-text mb-2">
             Список заказа
           </Text>

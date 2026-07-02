@@ -1,15 +1,25 @@
+// dastbadast-multivendor-web/components/OrderTrackingMap.tsx
 "use client";
 import { useEffect, useRef } from "react";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 
-// Иконка курьера — мопед 🚴 как emoji внутри divIcon
-const riderIcon = L.divIcon({
-  html: `<div style="font-size:34px;transform:translate(-50%,-50%);filter:drop-shadow(0 2px 3px rgba(0,0,0,0.4))">🚴</div>`,
-  className: "rider-icon",
-  iconSize: [34, 34],
-  iconAnchor: [17, 17],
-});
+const riderIcon = (bearing: number | null | undefined) =>
+  L.divIcon({
+    html: `<div style="position:relative;width:38px;height:38px;transform:translate(-50%,-50%)">
+      <div style="position:absolute;inset:0;background:#F26A4A;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;font-size:20px">
+        🚴
+      </div>
+      ${
+        bearing != null
+          ? `<div style="position:absolute;top:-6px;left:50%;transform:translateX(-50%) rotate(${bearing}deg);width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:10px solid #DC5635"></div>`
+          : ""
+      }
+    </div>`,
+    className: "rider-icon",
+    iconSize: [38, 38],
+    iconAnchor: [19, 19],
+  });
 
 const destIcon = L.divIcon({
   html: `<div style="width:18px;height:18px;border-radius:50%;background:#EA7369;border:3px solid #fff;box-shadow:0 0 0 3px rgba(234,115,105,0.3);transform:translate(-50%,-50%)"></div>`,
@@ -25,38 +35,54 @@ const pickupIcon = L.divIcon({
   iconAnchor: [12, 12],
 });
 
-/** Плавно подгоняет границы карты, когда меняется набор точек. */
-function FitBounds({
+/**
+ * Плавно центрирует карту на курьере при его движении.
+ * Первый fitBounds — на все точки, далее — flyTo на курьера.
+ */
+function CameraController({
   points,
+  riderPos,
   focusRider,
 }: {
   points: [number, number][];
+  riderPos: [number, number] | null;
   focusRider?: boolean;
 }) {
   const map = useMap();
-  const prevKey = useRef("");
+  const lastFocus = useRef<[number, number] | null>(null);
+  const initialized = useRef(false);
+
   useEffect(() => {
     if (points.length === 0) return;
-    const key = points.map((p) => p.join(",")).join("|");
-    if (key === prevKey.current) {
-      // Если только rider-маркер обновился — flyTo к нему для плавности
-      if (focusRider) {
-        const last = points[points.length - 1];
-        map.flyTo(last, Math.max(map.getZoom(), 15), {
-          animate: true,
-          duration: 1.2,
-        });
+
+    if (!initialized.current) {
+      initialized.current = true;
+      if (points.length === 1) {
+        map.setView(points[0], 15);
+      } else {
+        const bounds = L.latLngBounds(points.map((p) => L.latLng(p[0], p[1])));
+        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
       }
       return;
     }
-    prevKey.current = key;
-    if (points.length === 1) {
-      map.setView(points[0], 15, { animate: true });
-    } else {
-      const bounds = L.latLngBounds(points.map((p) => L.latLng(p[0], p[1])));
-      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
+
+    // После инициализации — плавно следим за курьером
+    if (focusRider && riderPos) {
+      const last = lastFocus.current;
+      const moved =
+        !last ||
+        Math.abs(last[0] - riderPos[0]) > 0.00015 || // ~17 м
+        Math.abs(last[1] - riderPos[1]) > 0.00015;
+      if (moved) {
+        lastFocus.current = riderPos;
+        map.flyTo([riderPos[1], riderPos[0]], 16, {
+          animate: true,
+          duration: 0.8,
+        });
+      }
     }
-  }, [points, map, focusRider]);
+  }, [points, riderPos, focusRider, map]);
+
   return null;
 }
 
@@ -67,6 +93,7 @@ export function OrderTrackingMap({
   pickupLng,
   riderLat,
   riderLng,
+  riderBearing,
 }: {
   deliveryLat: number;
   deliveryLng: number;
@@ -74,11 +101,14 @@ export function OrderTrackingMap({
   pickupLng: number | null;
   riderLat: number | null;
   riderLng: number | null;
+  riderBearing?: number | null;
 }) {
   const points: [number, number][] = [[deliveryLat, deliveryLng]];
   if (pickupLat != null && pickupLng != null)
     points.push([pickupLat, pickupLng]);
-  if (riderLat != null && riderLng != null) points.push([riderLat, riderLng]);
+  const riderPos: [number, number] | null =
+    riderLat != null && riderLng != null ? [riderLat, riderLng] : null;
+  if (riderPos) points.push(riderPos);
 
   return (
     <MapContainer
@@ -99,14 +129,18 @@ export function OrderTrackingMap({
       <Marker position={[deliveryLat, deliveryLng]} icon={destIcon}>
         <Popup>Точка доставки</Popup>
       </Marker>
-      {riderLat != null && riderLng != null && (
-        <Marker position={[riderLat, riderLng]} icon={riderIcon}>
+      {riderPos && (
+        <Marker
+          position={[riderPos[1], riderPos[0]]}
+          icon={riderIcon(riderBearing)}
+        >
           <Popup>Курьер здесь</Popup>
         </Marker>
       )}
-      <FitBounds
+      <CameraController
         points={points}
-        focusRider={riderLat != null && riderLng != null}
+        riderPos={riderPos}
+        focusRider={riderPos != null}
       />
     </MapContainer>
   );

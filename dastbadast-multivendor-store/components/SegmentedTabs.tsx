@@ -31,10 +31,22 @@ export function SegmentedTabs<T extends string>({
             key={t.value}
             onPress={() => onChange(t.value)}
             activeOpacity={0.75}
-            className={cn(
-              "flex-1 flex-row items-center justify-center py-2.5 rounded-xl",
-              active && "bg-soft-surface shadow-soft-sm",
-            )}
+            // 1. Убираем "bg-soft-surface shadow-soft-sm" из утилит Tailwind
+            className="flex-1 flex-row items-center justify-center py-2.5 rounded-xl"
+            // 2. Безопасно передаем цвет фона и тень через стандартный инлайн-стиль React Native
+            style={
+              active
+                ? {
+                    backgroundColor: "#FFFFFF", // Укажите точный HEX-код вашего цвета bg-soft-surface
+                    // Стандартные нативные свойства теней, которые НЕ вызывают сбой навигации:
+                    shadowColor: "#000000",
+                    shadowOffset: { width: 0, height: 1 },
+                    shadowOpacity: 0.1,
+                    shadowRadius: 2,
+                    elevation: 2, // Для Android
+                  }
+                : null
+            }
           >
             {t.icon ? (
               <Text

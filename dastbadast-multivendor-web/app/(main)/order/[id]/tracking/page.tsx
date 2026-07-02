@@ -37,7 +37,13 @@ type ChatMessage = {
   createdAt: string;
 };
 
-type RiderPos = { lat: number; lng: number; at?: string };
+type RiderPos = {
+  lat: number;
+  lng: number;
+  bearing?: number | null;
+  speedKmh?: number | null;
+  at?: string;
+} | null;
 
 function haversineKm(
   lat1: number,
@@ -176,8 +182,19 @@ function TrackingInner() {
     skip: !hasRider,
     onData: ({ data: subData }) => {
       const p = subData?.data?.subscriptionRiderLocation;
-      if (p?.lat && p?.lng)
-        setRiderPos({ lat: p.lat, lng: p.lng, at: p.updatedAt });
+      if (!p) return;
+      if (p.stopped) {
+        setRiderPos(null);
+        return;
+      }
+      if (p.lat && p.lng) {
+        setRiderPos({
+          lat: p.lat,
+          lng: p.lng,
+          bearing: p.bearing ?? null,
+          at: p.updatedAt,
+        });
+      }
     },
   });
 
@@ -396,6 +413,7 @@ function TrackingInner() {
               pickupLng={o?.pickupAddress?.location?.coordinates?.[0] ?? null}
               riderLat={riderPos?.lat ?? null}
               riderLng={riderPos?.lng ?? null}
+              riderBearing={riderPos?.bearing ?? null}
             />
           </div>
         </div>

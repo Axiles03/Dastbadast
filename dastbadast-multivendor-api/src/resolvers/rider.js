@@ -5,6 +5,24 @@ import { Rider } from "../models/Rider.js";
 import { signRiderToken } from "../middleware/auth.js";
 import { pubsub, TOPICS } from "../pubsub.js";
 
+// ⭐⭐⭐ Константы для real-time трекинга
+const RIDER_LOCATION_THROTTLE_MS = 10_000; // минимум между обновлениями (10 сек)
+const NEAR_DROP_OFF_RADIUS_M = 500; // радиус geofence "рядом с клиентом"
+const BEARING_CHANGE_THRESHOLD_DEG = 15; // минимальное изменение направления для бродкаста
+const MIN_DISTANCE_FOR_BROADCAST_M = 25; // минимальное смещение для бродкаста
+
+// Кэш последней позиции курьера для throttling
+const lastRiderLocation = new Map(); // riderId -> { at: number, lat, lng, bearing }
+
+// ⭐⭐⭐ Helper: фильтр публичных данных о курьере
+function publicRiderProfile(rider) {
+  if (!rider) return null;
+  // Принудительно обнуляем GPS для не-админов и не-владельца
+  rider.location = { type: "Point", coordinates: [0, 0] };
+  rider.lastLocationAt = null;
+  return rider;
+}
+
 function requireRider(ctx) {
   if (!ctx.rider)
     throw new GraphQLError("Not authenticated", {
@@ -25,6 +43,125 @@ function haversineKm(lat1, lng1, lat2, lng2) {
       Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
+
+// ⭐⭐⭐ Полная замена updateRiderLocation: throttling + bearing + geofence
+export const updateRiderLocation = async (_p, { input }, ctx) => {
+  const r = requireRider(ctx);
+  const { lat, lng } = input;
+
+  // Базовая валидация
+  if (
+    typeof lat !== "number" ||
+    typeof lng !== "number" ||
+    lat < -90 ||
+    lat > 90 ||
+    lng < -180 ||
+    lng > 180
+  ) {
+    throw new GraphQLError("Некорректные координаты", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  // ⭐⭐⭐ Throttling: не чаще 1 раза в 10 сек (защита от спама)
+  const now = Date.now();
+  const prev = lastRiderLocation.get(r._id.toString());
+  if (prev && now - prev.at < RIDER_LOCATION_THROTTLE_MS) {
+    // Возвращаем текущего курьера без сохранения
+    return r;
+  }
+
+  // ⭐⭐⭐ Вычисляем bearing (направление движения) и дистанцию
+  const newBearing = prev ? bearingDeg(prev.lat, prev.lng, lat, lng) : null;
+  const distanceFromPrev = prev
+    ? haversineKm(prev.lat, prev.lng, lat, lng) * 1000 // метры
+    : Infinity;
+
+  // ⭐⭐⭐ Решаем, нужно ли бродкастить
+  const shouldBroadcast =
+    !prev || // первая точка
+    distanceFromPrev >= MIN_DISTANCE_FOR_BROADCAST_M || // значительно сместился
+    (newBearing !== null &&
+      Math.abs(newBearing - (prev.bearing ?? 0)) >=
+        BEARING_CHANGE_THRESHOLD_DEG); // резко повернул
+
+  // Сохраняем в БД (всегда — для истории)
+  r.location = { type: "Point", coordinates: [lng, lat] };
+  r.lastLocationAt = new Date();
+  await r.save();
+
+  // Обновляем кэш
+  lastRiderLocation.set(r._id.toString(), {
+    at: now,
+    lat,
+    lng,
+    bearing: newBearing ?? prev?.bearing ?? 0,
+  });
+
+  if (!shouldBroadcast) return r;
+
+  // ⭐⭐⭐ Бродкаст курьерской локации
+  const payload = {
+    riderId: r._id.toString(),
+    lat,
+    lng,
+    bearing: newBearing,
+    speedKmh: prev ? (distanceFromPrev / ((now - prev.at) / 1000)) * 3.6 : null,
+    updatedAt: new Date().toISOString(),
+  };
+  pubsub.publish(TOPICS.RIDER_LOCATION(r._id.toString()), {
+    subscriptionRiderLocation: payload,
+  });
+
+  // ⭐⭐⭐ Geofence detection: проверяем каждый активный заказ курьера
+  const activeOrders = await Order.find({
+    riderId: r._id,
+    orderStatus: { $in: ["ASSIGNED", "PICKED", "EN_ROUTE_TO_DROP_OFF"] },
+  }).lean();
+
+  for (const o of activeOrders) {
+    const destCoords = o.deliveryAddress?.location?.coordinates;
+    if (!destCoords || destCoords.length < 2) continue;
+    const [destLng, destLat] = destCoords;
+    const distanceToCustomer = haversineKm(lat, lng, destLat, destLng) * 1000;
+
+    // ⭐ Курьер в радиусе 500 м от клиента → триггер уведомления
+    if (distanceToCustomer <= NEAR_DROP_OFF_RADIUS_M) {
+      const wasAlreadyNear = prev
+        ? haversineKm(prev.lat, prev.lng, destLat, destLng) * 1000 <=
+          NEAR_DROP_OFF_RADIUS_M
+        : false;
+      if (!wasAlreadyNear) {
+        // Вход в geofence — публикуем событие (для Раздела 3)
+        pubsub.publish(TOPICS.RIDER_NEAR_DROP_OFF(o._id.toString()), {
+          riderNearDropOff: {
+            orderId: o._id.toString(),
+            riderId: r._id.toString(),
+            distanceM: Math.round(distanceToCustomer),
+            timestamp: new Date().toISOString(),
+          },
+        });
+      }
+    }
+  }
+
+  return r;
+};
+
+// ⭐⭐⭐ НОВАЯ мутация: остановка стриминга (при выходе из приложения)
+export const stopRiderLocationStream = async (_p, _a, ctx) => {
+  const r = requireRider(ctx);
+  lastRiderLocation.delete(r._id.toString());
+  // Сигнализируем клиентам, что стрим остановлен
+  pubsub.publish(TOPICS.RIDER_LOCATION(r._id.toString()), {
+    subscriptionRiderLocation: {
+      riderId: r._id.toString(),
+      stopped: true,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  return true;
+};
 
 export const riderLogin = async (_p, { input }) => {
   const r = await Rider.findOne({ username: input.username, isActive: true });
@@ -170,24 +307,6 @@ export const updateOrderStatusRider = async (_p, { input }, ctx) => {
   return order;
 };
 
-export const updateRiderLocation = async (_p, { input }, ctx) => {
-  const r = requireRider(ctx);
-  r.location = { type: "Point", coordinates: [input.lng, input.lat] };
-  r.lastLocationAt = new Date();
-  await r.save();
-
-  pubsub.publish(TOPICS.RIDER_LOCATION(r._id.toString()), {
-    subscriptionRiderLocation: {
-      riderId: r._id.toString(),
-      lat: input.lat,
-      lng: input.lng,
-      updatedAt: r.lastLocationAt?.toISOString?.() ?? new Date().toISOString(),
-    },
-  });
-
-  return r;
-};
-
 export const toggleRider = async (_p, { available }, ctx) => {
   const r = requireRider(ctx);
   r.available = !!available;
@@ -223,6 +342,7 @@ export const rider = async (_p, { id }, ctx) => {
     if (myActiveOrder) {
       return Rider.findById(id);
     }
+    return publicRiderProfile(await Rider.findById(id));
   }
 
   // 3) Всем остальным — публичный профиль без координат
