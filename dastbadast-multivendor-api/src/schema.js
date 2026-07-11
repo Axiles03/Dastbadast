@@ -2,10 +2,35 @@ export const typeDefs = /* GraphQL */ `
   scalar JSON
   scalar DateTime
 
+  type DeliveryPriceBreakdown {
+    base: Float!
+    perKm: Float!
+    distanceKm: Float!
+    total: Float!
+    isOverBase: Boolean!
+  }
+
+  # ⭐ ФИКС: тип возврата для estimateDelivery — резолвер (resolvers/cart.js)
+  # уже возвращал этот набор полей, но в схеме типа не было вовсе, из-за чего
+  # сервер падал при старте: "Query.estimateDelivery defined in resolvers,
+  # but not in schema".
+  type EstimateDeliveryResult {
+    available: Boolean!
+    deliveryPrice: Float
+    breakdown: DeliveryPriceBreakdown
+    currency: String
+    currencySymbol: String
+    error: String
+  }
+
   type Configuration {
     currency: String
     currencySymbol: String
     deliveryRate: Float
+    taxPercent: Float
+    deliveryBaseKm: Float
+    deliveryBasePrice: Float
+    deliveryPerKmPrice: Float
     skipEmailVerification: Boolean
     skipMobileVerification: Boolean
     testOtp: String
@@ -202,15 +227,46 @@ export const typeDefs = /* GraphQL */ `
     zoneId: ID
   }
 
+  type RiderRating {
+    id: ID!
+    score: Int!
+    orderId: ID
+    comment: String
+    ratedAt: String!
+  }
+
   type Rider {
     id: ID!
     username: String!
     name: String
     phone: String
+    photo: String
     available: Boolean!
     location: JSON
     lastLocationAt: String
+    bearing: Float
     zoneId: ID
+    # ⭐⭐⭐ ШАГ 1
+    balance: Float!
+    averageRating: Float!
+    totalRatings: Int!
+    totalDeliveries: Int!
+    # ratings — не возвращаем в общем списке (там могут быть тысячи).
+    # Если нужны — отдельный query.
+  }
+
+  type RiderFinancials {
+    riderId: ID!
+    riderName: String!
+    phone: String
+    # ⭐ Текущий баланс
+    balance: Float!
+    # ⭐ Заработано всего (за всё время)
+    totalEarned: Float!
+    # Доставлено всего
+    totalDeliveries: Int!
+    # Средний чек доставки
+    averageDeliveryFee: Float!
   }
 
   input AddressInput {
@@ -232,14 +288,54 @@ export const typeDefs = /* GraphQL */ `
     isAvailable: Boolean
     minimumOrder: Float
     tax: Float
+    workingHours: WorkingHours
+    isOpenNow: Boolean # computed-поле
     categories: [Category!]
   }
+
+  type WorkingHours {
+    open: String
+    close: String
+    isAlwaysOpen: Boolean
+  }
+
+  input WorkingHoursInput {
+    open: String
+    close: String
+    isAlwaysOpen: Boolean
+  }
+
+  input UpdateMyRestaurantInput {
+    minimumOrder: Float
+    isAvailable: Boolean
+    workingHours: WorkingHoursInput
+  }
+
   type Category {
     id: ID!
     title: String!
     image: String
     foods: [Food!]
   }
+
+  type FoodOption {
+    id: ID!
+    title: String!
+    price: Float!
+    isAvailable: Boolean!
+  }
+
+  type FoodOptionGroup {
+    id: ID!
+    title: String!
+    required: Boolean!
+    multiple: Boolean!
+    minSelect: Int!
+    maxSelect: Int!
+    sortOrder: Int!
+    options: [FoodOption!]!
+  }
+
   type Food {
     id: ID!
     title: String!
@@ -251,7 +347,55 @@ export const typeDefs = /* GraphQL */ `
     averageRating: Float
     reviewCount: Int
     reviews: [FoodReview!]
+    optionGroups: [FoodOptionGroup!]!
+    isVegetarian: Boolean
+    isVegan: Boolean
+    spiceLevel: Int
+    allergens: [String!]
   }
+
+  input FoodOptionInput {
+    id: ID # передайте, если редактируете существующую опцию — иначе создастся новая
+    title: String!
+    price: Float!
+    isAvailable: Boolean
+  }
+
+  input FoodOptionGroupInput {
+    id: ID
+    title: String!
+    required: Boolean
+    multiple: Boolean
+    minSelect: Int
+    maxSelect: Int
+    sortOrder: Int
+    options: [FoodOptionInput!]!
+  }
+
+  input FoodInput {
+    categoryId: ID!
+    title: String!
+    description: String
+    price: Float!
+    image: String
+    averageRating: Int
+    reviewCount: Int
+    restaurantId: ID
+    restaurantName: String
+    isVegetarian: Boolean
+    isVegan: Boolean
+    spiceLevel: Int
+    allergens: [String!]
+  }
+
+  type OrderItemOption {
+    groupId: ID!
+    groupTitle: String!
+    optionId: ID!
+    optionTitle: String!
+    price: Float!
+  }
+
   type FoodReview {
     id: ID!
     foodId: ID!
@@ -260,6 +404,48 @@ export const typeDefs = /* GraphQL */ `
     comment: String!
     createdAt: String!
   }
+
+  type CartItemOption {
+    groupId: ID!
+    groupTitle: String!
+    optionId: ID!
+    optionTitle: String!
+    price: Float!
+  }
+
+  type CartItem {
+    foodId: ID!
+    title: String!
+    image: String
+    description: String
+    # Цены — снапшот (Шаг 1)
+    basePrice: Float!
+    optionsTotal: Float!
+    price: Float!
+    # Состав
+    quantity: Int!
+    selectedOptions: [CartItemOption!]!
+    lineTotal: Float!
+  }
+
+  type Cart {
+    id: ID!
+    userId: ID!
+    restaurantId: ID
+    restaurantName: String
+    items: [CartItem!]!
+    # ⭐ Производные поля (вычисляются в resolver)
+    subtotal: Float!
+    itemCount: Int!
+    updatedAt: String!
+  }
+
+  # Inputs
+  input CartItemOptionInput {
+    groupId: ID!
+    optionId: ID!
+  }
+
   input AddFoodReviewInput {
     foodId: ID!
     rating: Int!
@@ -288,13 +474,22 @@ export const typeDefs = /* GraphQL */ `
   type OrderItem {
     foodId: ID
     title: String!
-    price: Float!
+    basePrice: Float! # ⭐ ШАГ 1: было просто price
+    optionsTotal: Float! # ⭐ ШАГ 1: Σ(надбавки) по выбранным опциям
+    price: Float! # ⭐ ШАГ 1: ИТОГО за единицу (basePrice + optionsTotal)
     quantity: Int!
     image: String
     description: String
-    variation: JSON
-    addons: [JSON!]
+    # ⭐⭐⭐ ШАГ 1: заменили variation+addons на структурированный список
+    selectedOptions: [OrderItemOption!]!
+    lineTotal: Float! # ⭐⭐⭐ ШАГ 1: price × quantity (виртуальное)
   }
+
+  input OrderItemOptionInput {
+    groupId: ID!
+    optionId: ID!
+  }
+
   type OrderAmounts {
     subtotal: Float!
     tax: Float!
@@ -350,20 +545,35 @@ export const typeDefs = /* GraphQL */ `
     cancelReason: String
     createdAt: String!
     updatedAt: String!
+    deliveryPrice: Float
+    deliveryBreakdown: DeliveryPriceBreakdown
+    routeGeometry: JSON
+    routeDistanceKm: Float
+    etaToCustomer: Int
+    riderLocation: RiderLocation
+  }
+
+  type RiderLocation {
+    lat: Float!
+    lng: Float!
+    updatedAt: String!
   }
 
   input OrderItemInput {
     foodId: ID!
     quantity: Int!
-    variation: JSON
-    addons: [JSON!]
+    # ⭐⭐⭐ ШАГ 1: выбранные опции (массив ссылок groupId+optionId)
+    selectedOptions: [OrderItemOptionInput!]
   }
+
   input PlaceOrderInput {
     restaurantId: ID!
     addressId: ID!
     items: [OrderItemInput!]!
     paymentMethod: PaymentMethod = COD
     note: String
+    idempotencyKey: String
+    deliveryPrice: Float
   }
   input AcceptOrderInput {
     orderId: ID!
@@ -387,6 +597,7 @@ export const typeDefs = /* GraphQL */ `
   input RiderLocationInput {
     lng: Float!
     lat: Float!
+    bearing: Float
   }
   input CreateRestaurantInput {
     name: String!
@@ -414,6 +625,11 @@ export const typeDefs = /* GraphQL */ `
     description: String
     image: String
     price: Float!
+    isVegetarian: Boolean
+    isVegan: Boolean
+    spiceLevel: Int
+    allergens: [String!]
+    optionGroups: [FoodOptionGroupInput!]
   }
   input UpdateFoodInput {
     categoryId: ID
@@ -423,12 +639,21 @@ export const typeDefs = /* GraphQL */ `
     price: Float
     isAvailable: Boolean
     isActive: Boolean
+    isVegetarian: Boolean
+    isVegan: Boolean
+    spiceLevel: Int
+    allergens: [String!]
+    optionGroups: [FoodOptionGroupInput!]
   }
 
   input ConfigurationInput {
     currency: String
     currencySymbol: String
     deliveryRate: Float
+    taxPercent: Float
+    deliveryBaseKm: Float
+    deliveryBasePrice: Float
+    deliveryPerKmPrice: Float
     testOtp: String
   }
 
@@ -532,6 +757,13 @@ export const typeDefs = /* GraphQL */ `
     timestamp: String!
   }
 
+  type DeliveryEvent {
+    order: Order!
+    etaToRestaurant: Int
+    etaToCustomer: Int
+    event: String!
+  }
+
   # ============================================================
   # ⭐ Push-токены (Раздел 3 — Expo Push Notifications)
   # ============================================================
@@ -550,9 +782,29 @@ export const typeDefs = /* GraphQL */ `
     locale: String
   }
 
+  input SaveCartInput {
+    restaurantId: ID
+    items: [CartItemInput!]!
+  }
+
+  input CartItemInput {
+    foodId: ID!
+    quantity: Int!
+    basePrice: Float!
+    optionsTotal: Float!
+    price: Float!
+    selectedOptions: [CartItemOptionInput!]!
+  }
+
+  input CartItemOptionInput {
+    groupId: ID!
+    optionId: ID!
+  }
+
   type Query {
     configuration: Configuration
     deliveryZone: DeliveryZone
+    restaurantPrepEta(orderId: ID!): Int
     restaurants(zoneId: ID): [Restaurant!]!
     restaurant(id: ID!): Restaurant
     foodReviews(foodId: ID!): [FoodReview!]!
@@ -581,6 +833,18 @@ export const typeDefs = /* GraphQL */ `
     adminDashboardMetrics: AdminDashboard!
     currentRiderLocation(riderId: ID!): RiderLocationUpdate
     myPushTokens: [PushToken!]!
+    calculateDeliveryPrice(fromCoords: JSON!, toCoords: JSON!): Float!
+    calculateDeliveryPriceBreakdown(
+      fromCoords: JSON!
+      toCoords: JSON!
+      basePrice: Float
+      baseKm: Float
+      perKmPrice: Float
+    ): DeliveryPriceBreakdown
+    riderFinancials(riderId: ID!): RiderFinancials!
+    getCart: Cart
+    # ⭐ ФИКС: поле объявлено в схеме (резолвер уже был подключён)
+    estimateDelivery(restaurantId: ID!, addressId: ID!): EstimateDeliveryResult!
   }
 
   type Mutation {
@@ -635,18 +899,16 @@ export const typeDefs = /* GraphQL */ `
     stopRiderLocationStream: Boolean!
     registerPushToken(input: PushTokenInput!): PushToken!
     unregisterPushToken(token: String!): Boolean!
-  }
-
-  type DeliveryEvent {
-    order: Order!
-    etaToRestaurant: Int
-    etaToCustomer: Int
-    event: String!
+    saveCart(input: SaveCartInput!): Cart!
+    updateMyRestaurant(input: UpdateMyRestaurantInput!): Restaurant!
   }
 
   type Subscription {
     orderStatusChanged(userId: ID!): Order!
     subscriptionOrder(orderId: ID!): Order!
+    # ⭐ ШАГ 4: расширенная подписка — возвращает ПОЛНЫЙ Order (а не обрезок).
+    # Это нужно, чтобы UI обновлял ETA, расстояние, чекаут одним событием.
+    # По сути, дублирует тип Order — оставляем тот же Order для GraphQL-совместимости.
     subscribePlaceOrder(restaurantId: ID!): Order!
     subscriptionAssignedRider(riderId: ID!): Order!
     subscriptionZoneOrders(zoneId: ID): Order!

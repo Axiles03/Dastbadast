@@ -2,7 +2,10 @@ import { GraphQLError } from "graphql";
 import { Order } from "../models/Order.js";
 import { Rider } from "../models/Rider.js";
 import { pubsub, TOPICS } from "../pubsub.js";
-import { startCourierSearchEscalation1 } from "./order-search.js";
+import {
+  startCourierSearchEscalation1,
+  scheduleJustInTimeDispatch,
+} from "./order-search.js";
 
 function requireRestaurant(ctx) {
   if (!ctx.restaurant)
@@ -61,12 +64,6 @@ export const acceptOrder = async (_p, { input }, ctx) => {
   pubsub.publish(TOPICS.AVAILABLE_ORDERS(order.zoneId?.toString()), {
     subscriptionAvailableOrders: order,
   });
-
-  // ⭐⭐⭐ НОВОЕ: Эшелон 1 — после принятия запускаем новую волну
-  startCourierSearchEscalation1(order._id).catch((e) =>
-    console.error("[acceptOrder] courier search error:", e?.message),
-  );
-  return order;
 };
 
 export const cancelOrder = async (_p, { input }, ctx) => {
@@ -103,5 +100,10 @@ export const cancelOrder = async (_p, { input }, ctx) => {
   pubsub.publish(TOPICS.ORDER_STATUS_CHANGED(order.userId.toString()), {
     orderStatusChanged: order,
   });
+
+  scheduleJustInTimeDispatch(
+    order._id.toString(),
+    order.statusTimestamps.prepTime,
+  );
   return order;
 };

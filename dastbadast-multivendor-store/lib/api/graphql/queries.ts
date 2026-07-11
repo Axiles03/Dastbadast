@@ -31,9 +31,6 @@ export const RESTAURANT_ORDERS = gql`
       }
       amounts {
         subtotal
-        tax
-        deliveryFee
-        total
       }
       deliveryAddress {
         address
@@ -92,11 +89,20 @@ export const SUB_PLACE_ORDER = gql`
         quantity
       }
       amounts {
-        total
+        subtotal
       }
       deliveryAddress {
         address
       }
+    }
+  }
+`;
+
+export const MARK_ORDER_READY = gql`
+  mutation MarkOrderReady($orderId: ID!) {
+    markOrderReady(orderId: $orderId) {
+      id
+      orderStatus
     }
   }
 `;
@@ -106,6 +112,14 @@ export const MY_MENU = gql`
     meRestaurant {
       id
       name
+      minimumOrder
+      isAvailable
+      isOpenNow
+      workingHours {
+        open
+        close
+        isAlwaysOpen
+      }
       categories {
         id
         title
@@ -118,6 +132,25 @@ export const MY_MENU = gql`
           image
           isAvailable
           isActive
+          isVegetarian
+          isVegan
+          spiceLevel
+          allergens
+          optionGroups {
+            id
+            title
+            required
+            multiple
+            minSelect
+            maxSelect
+            sortOrder
+            options {
+              id
+              title
+              price
+              isAvailable
+            }
+          }
         }
       }
     }
@@ -155,6 +188,18 @@ export const CREATE_FOOD = gql`
       title
       price
       isAvailable
+      isVegetarian
+      spiceLevel
+      allergens
+      optionGroups {
+        id
+        title
+        options {
+          id
+          title
+          price
+        }
+      }
     }
   }
 `;
@@ -166,6 +211,33 @@ export const UPDATE_FOOD = gql`
       title
       price
       isAvailable
+      isVegetarian
+      spiceLevel
+      allergens
+      optionGroups {
+        id
+        title
+        options {
+          id
+          title
+          price
+        }
+      }
+    }
+  }
+`;
+
+export const UPDATE_MY_RESTAURANT = gql`
+  mutation UpdateMyRestaurant($input: UpdateMyRestaurantInput!) {
+    updateMyRestaurant(input: $input) {
+      id
+      minimumOrder
+      isAvailable
+      workingHours {
+        open
+        close
+        isAlwaysOpen
+      }
     }
   }
 `;

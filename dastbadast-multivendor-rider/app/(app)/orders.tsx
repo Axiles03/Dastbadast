@@ -1,13 +1,18 @@
-import { useEffect, useState, useCallback } from "react";
+// dastbadast-multivendor-rider/app/(app)/orders.tsx
+
+import { useEffect, useState, useCallback, useMemo } from "react";
 import {
   View,
   Text,
   FlatList,
-  Pressable,
   ActivityIndicator,
+  Pressable,
   Switch,
   Alert,
   Vibration,
+  ToastAndroid,
+  Platform,
+  Linking,
 } from "react-native";
 import {
   useQuery,
@@ -24,60 +29,56 @@ import {
   SUB_ASSIGNED,
   SUB_AVAILABLE,
   SUB_RIDER_ORDER_COMPLETED,
+  SUB_RIDER_LOCATION,
   COURIER_SEARCH_NOTIFY,
 } from "../../lib/api/queries";
 import { useAuth } from "../../lib/auth-context";
-import Toast from "react-native-toast-message";
 import { useRouter, useFocusEffect } from "expo-router";
-import { startGpsLoop, stopGpsLoop } from "../../lib/gps";
+import { startGpsLoop, stopGpsLoop, getPermissionStatus } from "../../lib/gps";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { cn } from "../../lib/cn"; // ⭐ ИМПОРТ РЕАЛЬНОЙ cn (НЕ локальной заглушки)
+import { cn } from "../../lib/cn";
+import { haversineKm } from "../../lib/mapConfig";
+import { ScreenHeader } from "../../components/ScreenHeader";
+import { MapPlaceholder } from "../../components/MapPlaceholder";
+import { OrderCard, getUrgency, type Order } from "../../components/OrderCard";
+import { ProfileModal } from "../../components/ProfileModal";
+import { MapTabContent } from "../../components/MapTabContent";
 
-function AddressBlock({
-  label,
-  name,
-  city,
-  address,
-}: {
-  label: string;
-  name?: string;
-  city?: string;
-  address?: string;
-}) {
-  const line = [city, address].filter(Boolean).join(", ");
-  return (
-    <View className="mt-2.5">
-      <Text className="text-[10px] font-bold text-text-muted uppercase tracking-wider">
-        {label}
-      </Text>
-      {name ? (
-        <Text className="text-sm font-bold text-text mt-0.5">{name}</Text>
-      ) : null}
-      <Text className="text-sm text-text-soft mt-0.5">{line || "—"}</Text>
-    </View>
-  );
+function showToast(msg: string) {
+  if (Platform.OS === "android") {
+    ToastAndroid.show(msg, ToastAndroid.SHORT);
+  } else {
+    console.log("🍞", msg);
+  }
 }
 
 export default function OrdersScreen() {
+  // ===== ALL HOOKS AT TOP — RULES OF HOOKS =====
   const { rider, token, logout } = useAuth();
   const router = useRouter();
   const client = useApolloClient();
   const [available, setAvailable] = useState(true);
   const [tab, setTab] = useState<"pool" | "mine">("pool");
-
+  const [listMode, setListMode] = useState<boolean>(true);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [showProfile, setShowProfile] = useState(false);
+  const [permissionModalOpen, setPermissionModalOpen] = useState(false);
   const [now, setNow] = useState(Date.now());
+
+  // ⭐⭐⭐ FIX: вынес на верхний уровень — был внутри useEffect в шаге 5
+  const [latestRiderPos, setLatestRiderPos] = useState<{
+    lat: number;
+    lng: number;
+    bearing?: number | null;
+    at: string;
+  } | null>(null);
+
   useEffect(() => {
     const i = setInterval(() => setNow(Date.now()), 10_000);
     return () => clearInterval(i);
   }, []);
 
-  // // GPS lifecycle
-  // useEffect(( ) => {
-  //   if (!token || !rider) return;
-  //   startGpsLoop(client);
-  //   return () => stopGpsLoop();
-  // }, [client, token, rider]);
-
+  // ===== QUERIES =====
   const {
     data: poolData,
     loading: poolLoading,
@@ -95,33 +96,132 @@ export default function OrdersScreen() {
     variables: { status: null },
     pollInterval: 8_000,
     skip: !token,
-  }) as any;
+  });
 
-  // Если мы среди targetRiders, обновляем список
+  // ⭐⭐⭐ FIX: вынес на верхний уровень — был внутри useCallback/renderItem
+  const myOrders = useMemo<Order[]>(
+    () =>
+      ((myData?.riderOrders ?? []) as any[]).filter(
+        (o: any) => !["DELIVERED", "CANCELLED"].includes(o.orderStatus),
+      ) as Order[],
+    [myData],
+  );
+
+  const pool = useMemo<Order[]>(
+    () => (poolData?.availableOrdersForRiders ?? []) as Order[],
+    [poolData],
+  );
+
+  // ⭐⭐⭐ FIX: вынес на верхний уровень, чтобы был до `renderPoolItem` и `renderMyItem`
+  const myOrderWithEta = useMemo<{
+    order: Order;
+    etaMin: number;
+    distanceKm: number;
+    target: "pickup" | "delivery";
+  } | null>(() => {
+    if (!latestRiderPos) return null;
+    const priority: Record<string, number> = {
+      AWAITING_CONFIRMATION: 4,
+      PICKED: 3,
+      ASSIGNED: 2,
+    };
+    const sorted = [...myOrders].sort(
+      (a, b) => (priority[b.orderStatus] ?? 0) - (priority[a.orderStatus] ?? 0),
+    );
+    for (const o of sorted) {
+      const target: "pickup" | "delivery" =
+        o.orderStatus === "PICKED" || o.orderStatus === "AWAITING_CONFIRMATION"
+          ? "delivery"
+          : "pickup";
+      const targetCoords =
+        target === "delivery"
+          ? o.deliveryAddress?.location?.coordinates
+          : o.pickupAddress?.location?.coordinates;
+      if (
+        !Array.isArray(targetCoords) ||
+        targetCoords.length !== 2 ||
+        typeof targetCoords[0] !== "number" ||
+        typeof targetCoords[1] !== "number"
+      ) {
+        continue;
+      }
+      const [lng, lat] = targetCoords;
+      // ✅ FIXED: Changed latestRiderPos.latitude to latestRiderPos.lat
+      const km = haversineKm(latestRiderPos.lat, latestRiderPos.lng, lat, lng);
+      const etaMin = Math.max(1, Math.round((km / 25) * 60));
+      return { order: o, etaMin, distanceKm: km, target };
+    }
+    return null;
+  }, [myOrders, latestRiderPos]);
+
+  // ===== MUTATIONS =====
+  const [claimOrder, { loading: claiming }] = useMutation(CLAIM_ORDER);
+  const [updateStatus, { loading: updating }] = useMutation(UPDATE_STATUS);
+  const [toggleRider] = useMutation(TOGGLE);
+
+  // ===== EFFECTS (GPS, permission check) =====
+  useEffect(() => {
+    if (!token || !rider || !available) {
+      void stopGpsLoop();
+      return;
+    }
+    (async () => {
+      const result = await startGpsLoop(client);
+      if (!result.ok && result.reason === "denied") {
+        setAvailable(false);
+      }
+    })();
+    return () => {
+      void stopGpsLoop();
+    };
+  }, [client, token, rider, available]);
+
+  useEffect(() => {
+    if (!rider) return;
+    (async () => {
+      const status = await getPermissionStatus();
+      if (status.foreground === "denied") {
+        setPermissionModalOpen(true);
+      }
+    })();
+  }, [rider]);
+
+  // ===== SUBSCRIPTIONS =====
+  useSubscription(SUB_RIDER_LOCATION, {
+    variables: { riderId: rider?.id },
+    skip: !rider?.id,
+    onData: ({ data }: any) => {
+      const p = data?.data?.subscriptionRiderLocation;
+      if (!p || p.stopped) return;
+      setLatestRiderPos({
+        lat: p.lat,
+        lng: p.lng,
+        bearing: p.bearing ?? null,
+        at: p.updatedAt,
+      });
+    },
+  });
+
   useSubscription(COURIER_SEARCH_NOTIFY, {
     onData: ({ data: subData }: any) => {
       const ev = subData?.courierSearchNotify;
-      if (!ev) return;
-      if (!rider?.id) return;
+      if (!ev || !rider?.id) return;
       if (ev.riderIds?.includes(String(rider.id))) {
-        Toast.show({
-          type: "info",
-          text1: ev.escalation
+        showToast(
+          ev.escalation
             ? "⚡ Срочно: эскалация поиска"
             : "🔔 Новый заказ рядом",
-          text2: ev.restaurantName,
-          visibilityTime: 3000,
-        });
-        // Вибрация
+        );
         try {
           Vibration.vibrate(ev.escalation ? [0, 200, 100, 200] : 100);
-        } catch {}
+        } catch {
+          /* ignore */
+        }
         refetchPool();
       }
     },
   });
 
-  // Refetch только один раз при mount, дальше работают подписки
   useFocusEffect(
     useCallback(() => {
       if (!token) return;
@@ -158,42 +258,20 @@ export default function OrdersScreen() {
       if (payload?.subscriptionRiderOrderCompleted) {
         refetchMine();
         refetchPool();
-        Toast.show({
-          type: "success",
-          text1: "✅ Заказ подтверждён клиентом",
-          text2: `#${payload.subscriptionRiderOrderCompleted.orderId.substring(0, 8)} ушёл в историю`,
-          visibilityTime: 4000,
-        });
+        showToast(
+          `✅ Заказ #${payload.subscriptionRiderOrderCompleted.orderId.substring(0, 8)} подтверждён`,
+        );
       }
     },
   });
 
-  // ⭐ Вычислить urgency для заказа
-  const getUrgency = (order: any): "normal" | "warning" | "urgent" | null => {
-    if (!order) return null;
-    if (order.orderStatus !== "PENDING" && order.orderStatus !== "ACCEPTED") {
-      return null;
-    }
-    const pendingAt = order.statusTimestamps?.pendingAt;
-    if (!pendingAt) return null;
-    const ageMs = now - new Date(pendingAt).getTime();
-    const escalated =
-      !!order.statusTimestamps?.courierSearchTimestamps?.escalationPushedAt;
-    if (ageMs > 90 * 1000 || escalated) return "urgent";
-    if (ageMs > 45 * 1000) return "warning";
-    return "normal";
-  };
-
-  const [claimOrder, { loading: claiming }] = useMutation(CLAIM_ORDER);
-  const [updateStatus, { loading: updating }] = useMutation(UPDATE_STATUS);
-  const [toggleRider] = useMutation(TOGGLE);
-
-  // ⭐ РЕАЛЬНАЯ реализация (была заглушка)
+  // ===== CALLBACKS (все useCallback — после всех useEffect/useState) =====
   const onClaim = useCallback(
     async (orderId: string) => {
       try {
         await claimOrder({ variables: { orderId } });
         setTab("mine");
+        setListMode(true);
         refetchMine();
         refetchPool();
         Alert.alert("Готово", "Заказ ваш — заберите в ресторане");
@@ -205,118 +283,30 @@ export default function OrdersScreen() {
     [claimOrder, refetchMine, refetchPool],
   );
 
-  // ⭐⭐⭐ FIX Bug #3: renderPoolItem — убрана заглушка cn()
-  const renderPoolItem = useCallback(
-    ({ item }: any) => {
-      const urgency = getUrgency(item);
-
-      return (
-        <View
-          className={cn(
-            "bg-soft-surface border rounded-2xl p-4 mb-3 shadow-soft-sm",
-            urgency === "urgent"
-              ? "border-red border-2 bg-red-soft"
-              : urgency === "warning"
-                ? "border-warning border-2"
-                : "border-border",
-          )}
-        >
-          <View className="flex-row justify-between items-center border-b border-border pb-2">
-            <Text className="text-base font-extrabold text-text">
-              📦 #{item.orderId.substring(0, 8)}
-            </Text>
-            <View className="flex-row gap-1">
-              {urgency === "urgent" && (
-                <View className="bg-red rounded-full px-2 py-0.5">
-                  <Text className="text-text-inverse text-2xs font-extrabold">
-                    ⚡ Срочно
-                  </Text>
-                </View>
-              )}
-              {urgency === "warning" && (
-                <View className="bg-warning-soft rounded-full px-2 py-0.5">
-                  <Text className="text-warning-dark text-2xs font-extrabold">
-                    ⏳ Ждём
-                  </Text>
-                </View>
-              )}
-              <Text className="text-xs font-bold text-accent-dark bg-accent-soft px-2.5 py-1 rounded-lg">
-                Ждёт курьера
-              </Text>
-            </View>
-          </View>
-
-          <AddressBlock
-            label="Откуда"
-            name={item.pickupAddress?.name}
-            address={item.pickupAddress?.address}
-          />
-          <AddressBlock
-            label="Куда"
-            city={item.deliveryAddress?.city}
-            address={item.deliveryAddress?.address}
-          />
-
-          {item.note ? (
-            <View className="bg-soft-surface-2 p-2.5 rounded-xl mt-3 border border-border/40">
-              <Text className="text-xs italic text-text-soft">
-                💬 {item.note}
-              </Text>
-            </View>
-          ) : null}
-
-          <View className="mt-3 pt-2 border-t border-border/30 space-y-0.5">
-            {item.items.map((i: any) => (
-              <Text
-                key={i.foodId}
-                className="text-xs text-text-soft font-medium"
-              >
-                • {i.title}{" "}
-                <Text className="text-text font-bold">×{i.quantity}</Text>
-              </Text>
-            ))}
-          </View>
-
-          <View className="flex-row items-center justify-between mt-4 pt-2 border-t border-border">
-            <Text className="text-lg font-black text-success">
-              {item.amounts?.total} сом.
-            </Text>
-            <Pressable
-              disabled={claiming || !available}
-              onPress={() => onClaim(item.id)}
-              className={cn(
-                "px-6 h-11 rounded-xl items-center justify-center active:scale-[0.98]",
-                available ? "bg-accent" : "bg-border opacity-40",
-              )}
-            >
-              <Text className="text-text-inverse font-bold text-sm">
-                {claiming
-                  ? "..."
-                  : urgency === "urgent"
-                    ? "⚡ Взять срочно"
-                    : "Взять заказ"}
-              </Text>
-            </Pressable>
-          </View>
-        </View>
-      );
-    },
-    [claiming, available, now, onClaim],
-  );
-
-  // ⭐ РЕАЛЬНАЯ реализация toggle (была заглушка в исходнике, теперь без throw)
   const onAvailableChange = useCallback(
     async (v: boolean) => {
       setAvailable(v);
       try {
         await toggleRider({ variables: { available: v } });
-        if (v) refetchPool();
+        if (v) {
+          refetchPool();
+          const result = await startGpsLoop(client);
+          if (!result.ok) {
+            setAvailable(false);
+            await toggleRider({ variables: { available: false } });
+            if (result.reason === "denied") {
+              setPermissionModalOpen(true);
+            }
+          }
+        } else {
+          await stopGpsLoop();
+        }
       } catch (e: any) {
         Alert.alert("Ошибка", e?.message ?? "");
         setAvailable(!v);
       }
     },
-    [toggleRider, refetchPool],
+    [toggleRider, refetchPool, client],
   );
 
   const setStatus = useCallback(
@@ -327,7 +317,7 @@ export default function OrdersScreen() {
         if (status === "AWAITING_CONFIRMATION") {
           Alert.alert(
             "✅ Отмечено как доставленное",
-            "Заказ ожидает подтверждения клиентом. Как только клиент подтвердит — он уйдёт в историю, и вы получите новые заказы.",
+            "Заказ ожидает подтверждения клиентом.",
             [{ text: "Понятно" }],
           );
         }
@@ -338,261 +328,282 @@ export default function OrdersScreen() {
     [updateStatus, refetchMine],
   );
 
-  const pool = poolData?.availableOrdersForRiders || [];
-  const myOrders = (myData?.riderOrders || []).filter(
-    (o: any) => !["DELIVERED", "CANCELLED"].includes(o.orderStatus),
+  const onOpenChat = useCallback(
+    (orderId: string) => {
+      try {
+        router.push(`/chat/${orderId}`);
+      } catch {
+        Alert.alert("Чат временно недоступен");
+      }
+    },
+    [router],
   );
 
-  const loading = tab === "pool" ? poolLoading : myLoading;
+  // ===== RENDER HELPERS (useCallback — все хуки выше!) =====
+  const isLoading = tab === "pool" ? poolLoading : myLoading;
+  const busy = claiming || updating;
 
-  const renderMyItem = useCallback(
-    ({ item }: any) => {
-      const isAwaiting = item.orderStatus === "AWAITING_CONFIRMATION";
-      const isDelivering = item.orderStatus === "PICKED";
+  const renderPoolItem = useCallback(
+    ({ item }: { item: Order }) => {
+      const urgency = getUrgency(item, now);
       return (
-        <View
-          className={cn(
-            "bg-soft-surface border rounded-2xl p-4 mb-3 shadow-soft-sm",
-            isAwaiting
-              ? "border-warning"
-              : isDelivering
-                ? "border-info"
-                : "border-border",
-          )}
-        >
-          <View className="flex-row justify-between items-center border-b border-border pb-2">
-            <Text className="text-base font-extrabold text-text">
-              📦 #{item.orderId.substring(0, 8)}
-            </Text>
-            <Text
-              className={cn(
-                "text-xs font-bold px-2.5 py-1 rounded-lg border",
-                isDelivering
-                  ? "bg-info-soft text-info-dark border-info/30"
-                  : isAwaiting
-                    ? "bg-warning-soft text-warning-dark border-warning/30"
-                    : "bg-soft-surface-2 text-text-soft border-border",
-              )}
-            >
-              {isDelivering
-                ? "🛵 Доставляется"
-                : isAwaiting
-                  ? "⏳ Ждём подтверждения"
-                  : item.orderStatus}
-            </Text>
-          </View>
-
-          <AddressBlock
-            label="Откуда"
-            name={item.pickupAddress?.name}
-            address={item.pickupAddress?.address}
-          />
-          <AddressBlock
-            label="Куда"
-            city={item.deliveryAddress?.city}
-            address={item.deliveryAddress?.address}
-          />
-
-          {item.note ? (
-            <View className="bg-soft-surface-2 p-2.5 rounded-xl mt-3 border border-border/40">
-              <Text className="text-xs italic text-text-soft">
-                💬 {item.note}
-              </Text>
-            </View>
-          ) : null}
-
-          <View className="mt-3 pt-2 border-t border-border/30 space-y-0.5">
-            {item.items.map((i: any) => (
-              <Text
-                key={i.foodId}
-                className="text-xs text-text-soft font-medium"
-              >
-                • {i.title}{" "}
-                <Text className="text-text font-bold">×{i.quantity}</Text>
-              </Text>
-            ))}
-          </View>
-
-          <View className="mt-4 pt-3 border-t border-border flex-row items-center justify-between gap-2 flex-wrap">
-            <Text className="text-lg font-black text-success">
-              {item.amounts?.total} сом.
-            </Text>
-            <View className="flex-row gap-2 flex-wrap">
-              {(item.orderStatus === "ASSIGNED" ||
-                item.orderStatus === "PICKED" ||
-                item.orderStatus === "AWAITING_CONFIRMATION") && (
-                <Pressable
-                  onPress={() => {
-                    try {
-                      router.push(`/chat/${item.id}?orderCode=${item.orderId}`);
-                    } catch {
-                      Alert.alert("Чат временно недоступен");
-                    }
-                  }}
-                  className="bg-soft-surface-2 border border-text-muted/30 px-4 h-11 rounded-xl items-center justify-center active:scale-[0.98]"
-                >
-                  <Text className="text-text font-bold text-xs">💬 Чат</Text>
-                </Pressable>
-              )}
-
-              {item.orderStatus === "ASSIGNED" && (
-                <Pressable
-                  disabled={updating}
-                  onPress={() => setStatus(item.id, "PICKED")}
-                  className="bg-info px-4 h-11 rounded-xl items-center justify-center active:scale-[0.98]"
-                >
-                  <Text className="text-text-inverse font-bold text-xs">
-                    Забрал из ресторана
-                  </Text>
-                </Pressable>
-              )}
-
-              {item.orderStatus === "PICKED" && (
-                <Pressable
-                  disabled={updating}
-                  onPress={() => setStatus(item.id, "AWAITING_CONFIRMATION")}
-                  className="bg-success px-5 h-11 rounded-xl items-center justify-center active:scale-[0.98]"
-                >
-                  <Text className="text-text-inverse font-bold text-xs">
-                    Доставлен ✓
-                  </Text>
-                </Pressable>
-              )}
-
-              {item.orderStatus === "AWAITING_CONFIRMATION" && (
-                <View className="bg-warning-soft border border-warning/30 px-3 h-11 rounded-xl items-center justify-center">
-                  <Text className="text-warning-dark text-xs font-bold">
-                    ⏳ Ждём подтверждения
-                  </Text>
-                </View>
-              )}
-            </View>
-          </View>
-        </View>
+        <OrderCard
+          order={item}
+          mode="pool"
+          urgency={urgency}
+          primaryAction={{
+            label: "✅ Взять заказ",
+            loading: busy,
+            disabled: !available || busy,
+            onPress: () => onClaim(item.id),
+          }}
+        />
       );
     },
-    [updating, setStatus, router],
+    [busy, available, now, onClaim],
+  );
+
+  const renderMyItem = useCallback(
+    ({ item }: { item: Order }) => {
+      const isAwaiting = item.orderStatus === "AWAITING_CONFIRMATION";
+      const isDelivering = item.orderStatus === "PICKED";
+      const isAssigned = item.orderStatus === "ASSIGNED";
+      const canChat = isAssigned || isDelivering || isAwaiting;
+
+      const eta =
+        myOrderWithEta && myOrderWithEta.order.id === item.id
+          ? myOrderWithEta
+          : null;
+
+      return (
+        <OrderCard
+          order={item}
+          mode="mine"
+          urgency={null}
+          secondaryAction={
+            canChat
+              ? { label: "💬 Чат", onPress: () => onOpenChat(item.id) }
+              : null
+          }
+          primaryAction={
+            isAssigned
+              ? {
+                  label: "Забрал из ресторана",
+                  loading: updating,
+                  onPress: () => setStatus(item.id, "PICKED"),
+                }
+              : isDelivering
+                ? {
+                    label: "Доставлен ✓",
+                    loading: updating,
+                    onPress: () => setStatus(item.id, "AWAITING_CONFIRMATION"),
+                  }
+                : null
+          }
+          etaMin={eta?.etaMin ?? null}
+          etaTarget={eta?.target ?? undefined}
+        />
+      );
+    },
+    [updating, onOpenChat, setStatus, myOrderWithEta],
   );
 
   return (
-    <SafeAreaView className="flex-1 bg-soft-bg pt-2">
-      {/* Header */}
-      <View className="bg-soft-surface border-b border-border px-4 py-3 flex-row justify-between items-center shadow-soft-sm">
-        <View className="flex-row items-center gap-2">
-          <View
-            className={cn(
-              "w-2.5 h-2.5 rounded-full",
-              available ? "bg-success" : "bg-accent",
-            )}
-          />
-          <Text className="text-xl font-black text-text tracking-wide">
-            Курьер
-          </Text>
-        </View>
+    <SafeAreaView className="flex-1 bg-soft-bg" edges={["bottom"]}>
+      <ScreenHeader
+        title="Курьер"
+        subtitle="Dastbadast · Доставка"
+        showBack={false}
+        online={available}
+        listMode={listMode}
+        onListModeChange={setListMode}
+        rightSlot={
+          <View className="flex-row items-center gap-1.5">
+            <Pressable
+              onPress={() => router.push("/history")}
+              className="w-9 h-9 rounded-full bg-soft-surface-2 border border-border items-center justify-center active:scale-95"
+              accessibilityLabel="История доставок"
+            >
+              <Text className="text-base">📦</Text>
+            </Pressable>
 
-        <View className="flex-row items-center gap-3">
-          <Text className="text-xs font-semibold text-text-soft">В сети</Text>
-          <Switch
-            value={available}
-            onValueChange={onAvailableChange}
-            trackColor={{ false: "#ECE6DA", true: "#16A34A" }}
-            thumbColor={available ? "#FFFFFF" : "#9A9388"}
-          />
+            <View
+              className={cn(
+                "w-9 h-9 rounded-full border items-center justify-center",
+                available
+                  ? "bg-success-soft border-success/30"
+                  : "bg-soft-surface-2 border-border",
+              )}
+              accessibilityLabel={available ? "В сети" : "Оффлайн"}
+            >
+              <View
+                className={cn(
+                  "w-3 h-3 rounded-full",
+                  available ? "bg-success" : "bg-text-muted",
+                )}
+              />
+            </View>
+
+            <Pressable
+              onPress={() => router.push("./profile")}
+              className="w-9 h-9 rounded-full bg-accent-soft border border-accent/20 items-center justify-center active:scale-95"
+              accessibilityLabel="Открыть профиль"
+            >
+              <Text className="text-accent text-base">⚙</Text>
+            </Pressable>
+          </View>
+        }
+      />
+
+      {listMode && (
+        <View className="flex-row bg-soft-surface border-b border-border">
           <Pressable
-            onPress={() => router.push("/history")}
-            className="bg-soft-surface-2 border border-border h-9 px-3 rounded-xl items-center justify-center active:opacity-80"
+            onPress={() => setTab("pool")}
+            className={cn(
+              "flex-1 py-3.5 items-center border-b-2",
+              tab === "pool" ? "border-accent" : "border-transparent",
+            )}
           >
-            <Text className="text-text text-xs font-bold">📦 История</Text>
+            <Text
+              className={cn(
+                "text-sm font-extrabold",
+                tab === "pool" ? "text-accent" : "text-text-soft",
+              )}
+            >
+              🔔 Доступные ({pool.length})
+            </Text>
           </Pressable>
           <Pressable
-            onPress={async () => {
-              await logout();
-              router.replace("/login");
+            onPress={() => setTab("mine")}
+            className={cn(
+              "flex-1 py-3.5 items-center border-b-2",
+              tab === "mine" ? "border-accent" : "border-transparent",
+            )}
+          >
+            <Text
+              className={cn(
+                "text-sm font-extrabold",
+                tab === "mine" ? "text-accent" : "text-text-soft",
+              )}
+            >
+              🛵 Мои ({myOrders.length})
+            </Text>
+          </Pressable>
+        </View>
+      )}
+
+      {listMode ? (
+        isLoading &&
+        (tab === "pool" ? pool.length === 0 : myOrders.length === 0) ? (
+          <ActivityIndicator color="#F26A4A" className="mt-6" />
+        ) : (
+          <FlatList
+            data={tab === "pool" ? pool : myOrders}
+            keyExtractor={(o: Order) => o.id}
+            contentContainerStyle={{
+              padding: 12,
+              paddingBottom: 24,
             }}
-            className="bg-accent-soft border border-accent/20 h-9 px-3 rounded-xl items-center justify-center active:opacity-80"
-          >
-            <Text className="text-accent-dark text-xs font-bold">Выйти</Text>
-          </Pressable>
-        </View>
-      </View>
-
-      {/* Tabs */}
-      <View className="flex-row bg-soft-surface border-b border-border">
-        <Pressable
-          onPress={() => setTab("pool")}
-          className={cn(
-            "flex-1 py-3.5 items-center border-b-2",
-            tab === "pool" ? "border-accent" : "border-transparent",
-          )}
-        >
-          <Text
-            className={cn(
-              "text-sm font-bold",
-              tab === "pool" ? "text-accent" : "text-text-soft",
-            )}
-          >
-            Доступные ({pool.length})
-          </Text>
-        </Pressable>
-        <Pressable
-          onPress={() => setTab("mine")}
-          className={cn(
-            "flex-1 py-3.5 items-center border-b-2",
-            tab === "mine" ? "border-accent" : "border-transparent",
-          )}
-        >
-          <Text
-            className={cn(
-              "text-sm font-bold",
-              tab === "mine" ? "text-accent" : "text-text-soft",
-            )}
-          >
-            Мои заказы ({myOrders.length})
-          </Text>
-        </Pressable>
-      </View>
-
-      {loading ? <ActivityIndicator color="#F26A4A" className="mt-6" /> : null}
-
-      {tab === "pool" ? (
-        <FlatList
-          data={pool}
-          keyExtractor={(o: any) => o.id}
-          contentContainerStyle={{ padding: 12, paddingBottom: 30 }}
-          ListEmptyComponent={
-            !poolLoading ? (
+            ListEmptyComponent={
               <View className="items-center py-12 px-6">
                 <Text className="text-base font-bold text-text-soft text-center">
-                  Нет доступных заказов
+                  {tab === "pool"
+                    ? "Нет доступных заказов"
+                    : "У вас нет активных заказов"}
                 </Text>
                 <Text className="text-xs text-text-muted text-center mt-2.5 leading-5">
-                  Новые заказы появятся сразу, как только их подтвердят
-                  рестораны. Включите тумблер «В сети» для возможности подбора.
+                  {tab === "pool"
+                    ? "Новые заказы появятся автоматически. Включите тумблер «В сети»."
+                    : "Перейдите во вкладку «Доступные», чтобы взять заказ."}
                 </Text>
               </View>
-            ) : null
-          }
-          renderItem={renderPoolItem}
-        />
+            }
+            renderItem={tab === "pool" ? renderPoolItem : renderMyItem}
+          />
+        )
       ) : (
-        <FlatList
-          data={myOrders}
-          keyExtractor={(o: any) => o.id}
-          contentContainerStyle={{ padding: 12, paddingBottom: 30 }}
-          ListEmptyComponent={
-            !myLoading ? (
-              <View className="items-center py-12 px-6">
-                <Text className="text-base font-bold text-text-soft text-center">
-                  У вас нет активных заказов
-                </Text>
-                <Text className="text-xs text-text-muted text-center mt-2.5">
-                  Перейдите во вкладку «Доступные», чтобы взять заказ в работу.
-                </Text>
-              </View>
-            ) : null
+        <MapTabContent
+          available={available}
+          onTab={setTab}
+          pool={pool}
+          myOrders={myOrders}
+          selectedId={selectedId}
+          setSelectedId={setSelectedId}
+          onClaim={onClaim}
+          onPickUp={(orderId) => setStatus(orderId, "PICKED")}
+          onDeliver={(orderId) => setStatus(orderId, "AWAITING_CONFIRMATION")}
+          onOpenChat={onOpenChat}
+          riderPos={
+            latestRiderPos
+              ? {
+                  latitude: latestRiderPos.lat,
+                  longitude: latestRiderPos.lng,
+                  bearing: latestRiderPos.bearing ?? null,
+                }
+              : null
           }
-          renderItem={renderMyItem}
+          onSwitchToList={() => setListMode(true)}
         />
+      )}
+
+      <ProfileModal
+        visible={showProfile}
+        onClose={() => setShowProfile(false)}
+        available={available}
+        onToggleAvailable={onAvailableChange}
+        riderName={rider?.name || rider?.username || ""}
+        username={rider?.username || ""}
+        onLogout={async () => {
+          await logout();
+          setShowProfile(false);
+          router.replace("/login");
+        }}
+        onHistory={() => {
+          setShowProfile(false);
+          router.push("/history");
+        }}
+      />
+
+      {permissionModalOpen && (
+        <View className="absolute inset-0 z-50 items-center justify-center px-5">
+          <Pressable
+            className="absolute inset-0 bg-soft-dark-2/60 backdrop-blur-sm"
+            onPress={() => setPermissionModalOpen(false)}
+          />
+          <View className="bg-soft-surface border border-border rounded-3xl p-6 w-full max-w-sm shadow-soft-xl z-10">
+            <Text className="text-2xl mb-2 text-center">📍</Text>
+            <Text className="text-base font-extrabold text-text text-center mb-2">
+              Доступ к геолокации закрыт
+            </Text>
+            <Text className="text-sm text-text-soft text-center leading-5 mb-5">
+              Чтобы показывать заказчикам ваше положение и принимать новые
+              заказы, разрешите доступ к геолокации в настройках устройства.
+            </Text>
+            <View className="flex-row gap-2">
+              <Pressable
+                onPress={() => setPermissionModalOpen(false)}
+                className="flex-1 h-12 bg-soft-surface-2 border border-border rounded-2xl items-center justify-center active:opacity-90"
+              >
+                <Text className="text-text-soft font-bold text-sm">Позже</Text>
+              </Pressable>
+              <Pressable
+                onPress={async () => {
+                  setPermissionModalOpen(false);
+                  try {
+                    await Linking.openSettings();
+                  } catch {
+                    Alert.alert("Не удалось открыть настройки");
+                  }
+                }}
+                className="flex-1 h-12 bg-accent rounded-2xl items-center justify-center active:opacity-90"
+              >
+                <Text className="text-text-inverse font-extrabold text-sm">
+                  Открыть настройки
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
       )}
     </SafeAreaView>
   );

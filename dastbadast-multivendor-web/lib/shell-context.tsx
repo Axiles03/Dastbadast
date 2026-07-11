@@ -10,6 +10,14 @@ import {
   ReactNode,
 } from "react";
 
+type DeliveryBreakdown = {
+  base: number;
+  perKm: number;
+  distanceKm: number;
+  total: number;
+  isOverBase: boolean;
+};
+
 type Ctx = {
   collapsed: boolean;
   setCollapsed: (v: boolean) => void;
@@ -22,6 +30,25 @@ type Ctx = {
   // ✅ NEW: мобильное меню-сайдбар
   mobileMenuOpen: boolean;
   setMobileMenuOpen: (v: boolean) => void;
+  // ⭐ ШАГ 5: цена доставки (синхронизируется с cart-page → cart-drawer)
+  deliveryFee: number;
+  setDeliveryFee: (v: number) => void;
+  deliveryBreakdown: DeliveryBreakdown | null;
+  setDeliveryBreakdown: (v: DeliveryBreakdown | null) => void;
+  restaurantFilters: RestaurantFilters;
+  setRestaurantFilters: (v: RestaurantFilters) => void;
+};
+
+export type RestaurantFilters = {
+  sortBy: "rating" | "deliveryTime" | "minimumOrder";
+  maxMinimumOrder: number | null; // null = любой
+  maxDeliveryTime: number | null; // в минутах, null = не важно
+};
+
+export const DEFAULT_RESTAURANT_FILTERS: RestaurantFilters = {
+  sortBy: "rating",
+  maxMinimumOrder: null,
+  maxDeliveryTime: null,
 };
 
 const ShellCtx = createContext<Ctx | null>(null);
@@ -33,7 +60,13 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   const [cartExpanded, setCartExpanded] = useState(true);
   // ✅ NEW: state для мобильного меню
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-
+  // ⭐ ШАГ 5: цена доставки и разбивка (рассчитывается в cart-page, отображается в drawer)
+  const [deliveryFee, setDeliveryFee] = useState(0);
+  const [deliveryBreakdown, setDeliveryBreakdown] =
+    useState<DeliveryBreakdown | null>(null);
+  const [restaurantFilters, setRestaurantFilters] = useState<RestaurantFilters>(
+    DEFAULT_RESTAURANT_FILTERS,
+  );
   const v = useMemo(
     () => ({
       collapsed,
@@ -46,8 +79,23 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       setCartExpanded,
       mobileMenuOpen,
       setMobileMenuOpen,
+      deliveryFee,
+      setDeliveryFee,
+      deliveryBreakdown,
+      setDeliveryBreakdown,
+      restaurantFilters,
+      setRestaurantFilters,
     }),
-    [collapsed, cartOpen, filtersOpen, cartExpanded, mobileMenuOpen],
+    [
+      collapsed,
+      cartOpen,
+      filtersOpen,
+      cartExpanded,
+      mobileMenuOpen,
+      deliveryFee,
+      deliveryBreakdown,
+      restaurantFilters,
+    ],
   );
 
   return <ShellCtx.Provider value={v}>{children}</ShellCtx.Provider>;

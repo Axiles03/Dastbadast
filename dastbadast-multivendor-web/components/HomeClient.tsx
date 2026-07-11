@@ -45,7 +45,7 @@ export function HomeClient({
   pastaFoods?: any[];
   featuredRestaurantId?: string;
 }) {
-  const { setFiltersOpen } = useShell();
+  const { setFiltersOpen, restaurantFilters } = useShell();
   const { items } = useCart();
   const [search, setSearch] = useState("");
   const [chip, setChip] = useState<ChipId>("all");
@@ -90,8 +90,26 @@ export function HomeClient({
           (r.address || "").toLowerCase().includes(q),
       );
     if (chip === "popular") list = list.filter((r) => r.isPopular);
+
+    if (restaurantFilters.maxMinimumOrder != null) {
+      list = list.filter(
+        (r) => r.minimumOrder <= restaurantFilters.maxMinimumOrder!,
+      );
+    }
+    if (restaurantFilters.maxDeliveryTime != null) {
+      list = list.filter(
+        (r) => r.deliveryTime <= restaurantFilters.maxDeliveryTime!,
+      );
+    }
+    list.sort((a, b) => {
+      if (restaurantFilters.sortBy === "rating") return b.rating - a.rating;
+      if (restaurantFilters.sortBy === "deliveryTime")
+        return a.deliveryTime - b.deliveryTime;
+      return a.minimumOrder - b.minimumOrder;
+    });
+
     return list;
-  }, [decorated, search, chip]);
+  }, [decorated, search, chip, restaurantFilters]);
 
   // Набор блюд по выбранному чипу
   const visibleFoods = useMemo(() => {

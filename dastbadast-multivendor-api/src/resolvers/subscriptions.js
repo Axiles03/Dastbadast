@@ -1,26 +1,85 @@
 // dastbadast-multivendor-api/src/resolvers/subscriptions.js
 import { GraphQLError } from "graphql";
 import { pubsub, TOPICS } from "../pubsub.js";
+import { Order } from "../models/Order.js";
+import { trackSubscription } from "../middleware/health.js";
 
 export const orderStatusChanged = {
   subscribe: (_p, { userId }) =>
     pubsub.asyncIterator(TOPICS.ORDER_STATUS_CHANGED(userId)),
   resolve: (p) => p.orderStatusChanged,
 };
+
+// Обёртка: каждая подписка инкрементит счётчик
+function wrapSubscribe(subscribeFn) {
+  return async (...args) => {
+    trackSubscription("open");
+    const iter = await subscribeFn(...args);
+    const originalReturn = iter.return?.bind(iter);
+    if (originalReturn) {
+      iter.return = async () => {
+        trackSubscription("close");
+        return originalReturn();
+      };
+    }
+    return iter;
+  };
+}
 export const subscriptionOrder = {
-  subscribe: (_p, { orderId }) =>
+  subscribe: wrapSubscribe((_, { orderId }) =>
     pubsub.asyncIterator(TOPICS.ORDER_TRACK(orderId)),
-  resolve: (p) => p.subscriptionOrder,
+  ),
+  resolve: async (payload, { orderId }) => {
+    try {
+      // ⭐ Двойная страховка: если pubsub передал полный Order — берём его,
+      // но всё равно ВАЛИДИРУЕМ через .toObject() и мерджим со свежим из БД.
+      // Если в pubsub только обрезок — берём целиком из БД.
+      let order = payload?.subscriptionOrder;
+      if (!order || !order._id) {
+        order = await Order.findById(orderId);
+      } else {
+        // Подтягиваем свежее состояние из БД (могли обновиться координаты, статусы, timestamps)
+        const fresh = await Order.findById(orderId).lean();
+        if (fresh) {
+          // Мерджим: свежее из БД имеет приоритет
+          order = { ...order, ...fresh };
+        }
+      }
+      return order;
+    } catch (e) {
+      console.error("[subscriptionOrder] resolve error:", e?.message);
+      return payload?.subscriptionOrder ?? null;
+    }
+  },
 };
 export const subscribePlaceOrder = {
   subscribe: (_p, { restaurantId }) =>
     pubsub.asyncIterator(TOPICS.PLACE_ORDER(restaurantId)),
-  resolve: (p) => p.subscribePlaceOrder,
+  resolve: async (payload, { restaurantId }) => {
+    // ⭐ ШАГ 4: аналогично — обновляем из БД
+    let order = payload?.subscribePlaceOrder;
+    if (!order || !order._id) {
+      order = await Order.findById(restaurantId);
+    } else {
+      const fresh = await Order.findById(order._id).lean();
+      if (fresh) order = { ...order, ...fresh };
+    }
+    return order;
+  },
 };
 export const subscriptionAssignedRider = {
   subscribe: (_p, { riderId }) =>
     pubsub.asyncIterator(TOPICS.RIDER_ASSIGNED(riderId)),
-  resolve: (p) => p.subscriptionAssignedRider,
+  resolve: async (payload, { riderId }) => {
+    let order = payload?.subscriptionAssignedRider;
+    if (!order || !order._id) {
+      order = await Order.findOne({ riderId }).sort({ createdAt: -1 });
+    } else {
+      const fresh = await Order.findById(order._id).lean();
+      if (fresh) order = { ...order, ...fresh };
+    }
+    return order;
+  },
 };
 export const subscriptionZoneOrders = {
   subscribe: (_p, { zoneId }) =>
@@ -33,14 +92,14 @@ export const subscriptionAvailableOrders = {
   resolve: (p) => p.subscriptionAvailableOrders,
 };
 export const subscriptionRiderLocation = {
-  subscribe: (_p, { riderId }) => {
+  subscribe: wrapSubscribe((_, { riderId }) => {
     if (!riderId) {
       throw new GraphQLError("riderId обязателен", {
         extensions: { code: "BAD_USER_INPUT" },
       });
     }
     return pubsub.asyncIterator(TOPICS.RIDER_LOCATION(riderId));
-  },
+  }),
   resolve: (p) => p.subscriptionRiderLocation,
 };
 

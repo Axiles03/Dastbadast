@@ -1,6 +1,13 @@
+// dastbadast-multivendor-web/components/FiltersDrawer.tsx
 "use client";
 
 import { X, RotateCcw } from "lucide-react";
+import { useState, useEffect } from "react";
+import {
+  useShell,
+  DEFAULT_RESTAURANT_FILTERS,
+  RestaurantFilters,
+} from "@/lib/shell-context";
 
 export function FiltersDrawer({
   open,
@@ -9,7 +16,26 @@ export function FiltersDrawer({
   open: boolean;
   onClose: () => void;
 }) {
+  const { restaurantFilters, setRestaurantFilters } = useShell();
+  // локальный черновик — применяется только по кнопке "Применить"
+  const [draft, setDraft] = useState<RestaurantFilters>(restaurantFilters);
+
+  useEffect(() => {
+    if (open) setDraft(restaurantFilters);
+  }, [open, restaurantFilters]);
+
   if (!open) return null;
+
+  const apply = () => {
+    setRestaurantFilters(draft);
+    onClose();
+  };
+
+  const reset = () => {
+    setDraft(DEFAULT_RESTAURANT_FILTERS);
+    setRestaurantFilters(DEFAULT_RESTAURANT_FILTERS);
+    onClose();
+  };
 
   return (
     <>
@@ -32,41 +58,75 @@ export function FiltersDrawer({
 
         <div className="flex-1 overflow-y-auto p-5 space-y-6">
           <Group title="Сортировка">
-            <Option label="По рейтингу" active />
-            <Option label="По времени доставки" />
-            <Option label="По минимальному заказу" />
-          </Group>
-
-          <Group title="Тип">
-            <Option label="🍴 Рестораны" active />
-            <Option label="🛒 Супермаркеты" />
-            <Option label="☕ Кафе" />
+            <Option
+              label="По рейтингу"
+              active={draft.sortBy === "rating"}
+              onClick={() => setDraft((d) => ({ ...d, sortBy: "rating" }))}
+            />
+            <Option
+              label="По времени доставки"
+              active={draft.sortBy === "deliveryTime"}
+              onClick={() =>
+                setDraft((d) => ({ ...d, sortBy: "deliveryTime" }))
+              }
+            />
+            <Option
+              label="По минимальному заказу"
+              active={draft.sortBy === "minimumOrder"}
+              onClick={() =>
+                setDraft((d) => ({ ...d, sortBy: "minimumOrder" }))
+              }
+            />
           </Group>
 
           <Group title="Минимальный заказ">
-            <Option label="до 50 сом." />
-            <Option label="до 100 сом." active />
-            <Option label="Любой" />
+            <Option
+              label="до 50 сом."
+              active={draft.maxMinimumOrder === 50}
+              onClick={() => setDraft((d) => ({ ...d, maxMinimumOrder: 50 }))}
+            />
+            <Option
+              label="до 100 сом."
+              active={draft.maxMinimumOrder === 100}
+              onClick={() => setDraft((d) => ({ ...d, maxMinimumOrder: 100 }))}
+            />
+            <Option
+              label="Любой"
+              active={draft.maxMinimumOrder === null}
+              onClick={() => setDraft((d) => ({ ...d, maxMinimumOrder: null }))}
+            />
           </Group>
 
           <Group title="Время доставки">
-            <Option label="до 30 мин" />
-            <Option label="до 60 мин" />
-            <Option label="Не важно" active />
+            <Option
+              label="до 30 мин"
+              active={draft.maxDeliveryTime === 30}
+              onClick={() => setDraft((d) => ({ ...d, maxDeliveryTime: 30 }))}
+            />
+            <Option
+              label="до 60 мин"
+              active={draft.maxDeliveryTime === 60}
+              onClick={() => setDraft((d) => ({ ...d, maxDeliveryTime: 60 }))}
+            />
+            <Option
+              label="Не важно"
+              active={draft.maxDeliveryTime === null}
+              onClick={() => setDraft((d) => ({ ...d, maxDeliveryTime: null }))}
+            />
           </Group>
         </div>
 
         <div className="p-5 border-t border-soft-border flex gap-2">
           <button
             type="button"
-            onClick={onClose}
+            onClick={reset}
             className="flex-1 py-3.5 border border-soft-border text-soft-text-soft font-bold rounded-2xl hover:bg-soft-surface-2 flex items-center justify-center gap-1.5"
           >
             <RotateCcw className="w-4 h-4" /> Сбросить
           </button>
           <button
             type="button"
-            onClick={onClose}
+            onClick={apply}
             className="flex-1 py-3.5 bg-soft-accent hover:bg-soft-accent-dark text-white font-extrabold rounded-2xl"
           >
             Применить
@@ -94,9 +154,18 @@ function Group({
   );
 }
 
-function Option({ label, active }: { label: string; active?: boolean }) {
+function Option({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active?: boolean;
+  onClick: () => void;
+}) {
   return (
     <label
+      onClick={onClick}
       className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
         active
           ? "border-soft-accent bg-soft-accent-soft"

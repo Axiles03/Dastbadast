@@ -9,15 +9,13 @@
   },
   "dependencies": {
     "@apollo/client": "^3.11.8",
-    "@types/leaflet": "^1.9.21",
     "graphql": "^16.9.0",
     "graphql-ws": "^6.0.8",
-    "leaflet": "^1.9.4",
     "lucide-react": "^1.17.0",
+    "maplibre-gl": "^4.7.1",
     "next": "^14.2.35",
     "react": "18.3.1",
-    "react-dom": "^18.3.1",
-    "react-leaflet": "^4.2.1"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/node": "20.14.10",

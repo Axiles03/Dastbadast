@@ -71,7 +71,11 @@ export default function TabsLayout() {
             title: "Новые заказы",
             tabBarLabel: "Новые",
             tabBarIcon: ({ color, size }) => (
-              <Ionicons name="notifications-outline" color={color} size={size} />
+              <Ionicons
+                name="notifications-outline"
+                color={color}
+                size={size}
+              />
             ),
           }}
         />
@@ -92,6 +96,16 @@ export default function TabsLayout() {
             tabBarLabel: "Меню",
             tabBarIcon: ({ color, size }) => (
               <Ionicons name="fast-food-outline" color={color} size={size} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="profile"
+          options={{
+            title: "Профиль",
+            tabBarLabel: "Профиль",
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="storefront-outline" color={color} size={size} />
             ),
           }}
         />

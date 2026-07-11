@@ -15,6 +15,7 @@ import {
   ACCEPT_ORDER,
   CANCEL_ORDER,
   SUB_PLACE_ORDER,
+  MARK_ORDER_READY,
 } from "../../lib/api/graphql/queries";
 import { useAuth } from "../../lib/auth-context";
 import Toast from "react-native-toast-message";
@@ -60,7 +61,7 @@ export default function NewOrders() {
       Toast.show({
         type: "success",
         text1: "🔔 Новый заказ!",
-        text2: `Сумма: ${order.amounts?.total} сом.`,
+        text2: `Сумма: ${order.amounts?.subtotal} сом.`,
         visibilityTime: 5000,
       });
       client.refetchQueries({ include: [RESTAURANT_ORDERS] });
@@ -147,7 +148,7 @@ export default function NewOrders() {
   const stats = useMemo(() => {
     const total = orders.length;
     const totalAmount = orders.reduce(
-      (s: number, o: any) => s + (o.amounts?.total ?? 0),
+      (s: number, o: any) => s + (o.amounts?.subtotal ?? 0),
       0,
     );
     return { total, totalAmount };
@@ -161,6 +162,8 @@ export default function NewOrders() {
       </View>
     );
   }
+
+  const [markReady, { loading: markingReady }] = useMutation(MARK_ORDER_READY);
 
   return (
     <SafeAreaView className="flex-1 bg-soft-bg">
@@ -243,7 +246,7 @@ export default function NewOrders() {
                 </View>
                 <View className="items-end">
                   <Text className="text-lg font-extrabold text-accent tracking-tight">
-                    {item.amounts?.total} сом.
+                    {item.amounts?.subtotal} сом.
                   </Text>
                   <Text className="text-2xs text-text-muted font-bold mt-0.5">
                     {formatItemsCount(item.items?.length || 0)}
@@ -311,6 +314,25 @@ export default function NewOrders() {
                   </Text>
                 </TouchableOpacity>
               </View>
+              {(item.orderStatus === "ACCEPTED" ||
+                item.orderStatus === "PREPARING") && (
+                <TouchableOpacity
+                  onPress={async () => {
+                    try {
+                      await markReady({ variables: { orderId: item.id } });
+                      await refetch();
+                    } catch (e: any) {
+                      Alert.alert("Ошибка", e?.message ?? "Не удалось");
+                    }
+                  }}
+                  disabled={markingReady}
+                  className="mt-3 h-12 rounded-2xl bg-accent items-center justify-center active:opacity-85"
+                >
+                  <Text className="text-text-inverse font-extrabold text-base">
+                    ✅ Готово — отдать курьеру
+                  </Text>
+                </TouchableOpacity>
+              )}
             </View>
           );
         }}
@@ -380,7 +402,7 @@ function PrepTimeModal({
             <View className="flex-row justify-between mt-1.5">
               <Text className="text-xs text-text-muted">Сумма</Text>
               <Text className="text-sm font-extrabold text-accent">
-                {order.amounts?.total} сом.
+                {order.amounts?.subtotal} сом.
               </Text>
             </View>
             <View className="flex-row justify-between mt-1">

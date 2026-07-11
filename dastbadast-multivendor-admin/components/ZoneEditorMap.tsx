@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { X, MapPin, Pencil } from "lucide-react";
+import { GEOAPIFY_TILE_URL, GEOAPIFY_ATTRIBUTION } from "@/lib/map-providers";
 
 type ZoneRing = number[][]; // [[lng, lat], ...]
 type Zone = { id: string; name: string; isActive: boolean; ring: ZoneRing };
@@ -51,8 +52,9 @@ export function ZoneEditorMap({
       scrollWheelZoom: true,
     });
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "&copy; OpenStreetMap",
+    L.tileLayer(GEOAPIFY_TILE_URL, {
+      attribution: GEOAPIFY_ATTRIBUTION,
+      maxZoom: 19,
     }).addTo(map);
 
     // Клик по карте — добавляем точку в полигон (только в режиме рисования)

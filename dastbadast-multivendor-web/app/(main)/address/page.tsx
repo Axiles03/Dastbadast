@@ -25,8 +25,16 @@ import { RequireAuth } from "@/components/RequireAuth";
 
 const AddressPicker = dynamic(
   () => import("@/components/AddressPicker").then((m) => m.AddressPicker),
-  { ssr: false },
+  { ssr: false, loading: () => <MapSkeleton /> },
 );
+
+function MapSkeleton() {
+  return (
+    <div className="w-full h-[300px] rounded-2xl border border-soft-border bg-soft-surface-2 flex items-center justify-center text-soft-text-muted text-sm">
+      Загрузка карты…
+    </div>
+  );
+}
 
 export default function AddressPage() {
   return (
@@ -38,7 +46,29 @@ export default function AddressPage() {
 
 function AddressInner() {
   const { user } = useAuth();
+  const [notice, setNotice] = useState<{
+    text: string;
+    type: "success" | "error";
+  } | null>(null);
 
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 3000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  const [selectAddress] = useMutation(SELECT_ADDRESS, {
+    refetchQueries: [{ query: GET_ADDRESSES }],
+    awaitRefetchQueries: true,
+    onError: (e) => setNotice({ text: e.message, type: "error" }),
+  });
+
+  const [deleteAddress] = useMutation(DELETE_ADDRESS, {
+    refetchQueries: [{ query: GET_ADDRESSES }],
+    awaitRefetchQueries: true,
+    onCompleted: () => setNotice({ text: "Адрес удалён", type: "success" }),
+    onError: (e) => setNotice({ text: e.message, type: "error" }),
+  });
   const [form, setForm] = useState({
     label: "Дом",
     address: "",
@@ -57,8 +87,6 @@ function AddressInner() {
   const { data, refetch } = useQuery(GET_ADDRESSES, { skip: !user });
   const [createAddress, { loading: creating, error: cErr }] =
     useMutation(CREATE_ADDRESS);
-  const [selectAddress] = useMutation(SELECT_ADDRESS);
-  const [deleteAddress] = useMutation(DELETE_ADDRESS);
 
   const [pointInZone, setPointInZone] = useState(true);
 
@@ -157,6 +185,18 @@ function AddressInner() {
           {showForm ? "Скрыть" : "Добавить"}
         </button>
       </div>
+
+      {notice && (
+        <div
+          className={`rounded-2xl px-4 py-3 text-sm font-semibold border ${
+            notice.type === "success"
+              ? "bg-soft-success-soft text-soft-success border-soft-success/30"
+              : "bg-soft-accent-soft text-soft-accent border-soft-accent/20"
+          }`}
+        >
+          {notice.text}
+        </div>
+      )}
 
       {showForm && (
         <form

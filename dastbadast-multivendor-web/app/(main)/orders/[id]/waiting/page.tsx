@@ -4,14 +4,19 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useSubscription } from "@apollo/client/react";
-import { GET_ORDER, SUB_ORDER } from "@/lib/queries";
+import {
+  GET_ORDER,
+  GET_ORDERS,
+  ORDER_LIST_ITEM,
+  SUB_ORDER,
+  SUB_USER_ORDERS,
+} from "@/lib/queries";
 import {
   PENDING_TIMEOUT_MS,
   formatCountdown,
   getPendingRemainingMs,
   getPrepRemainingMs,
   isLocallyPendingExpired,
-  useNow,
 } from "@/lib/order-timers";
 import { RequireAuth } from "@/components/RequireAuth";
 import {
@@ -25,6 +30,8 @@ import {
   Store,
   XCircle,
 } from "lucide-react";
+import { gql } from "@apollo/client";
+import { useAuth } from "@/lib/auth-context";
 
 export default function WaitingPage() {
   return (
@@ -39,6 +46,7 @@ function WaitingInner() {
   const router = useRouter();
   const orderId = params?.id || "";
 
+  const { user } = useAuth();
   // ⭐ Тикаем каждую секунду — для динамического обратного отсчёта.
   // Время НЕ сбрасывается при reload — оно вычисляется из серверных timestamps.
   const now = useNow(1000);
@@ -46,8 +54,36 @@ function WaitingInner() {
   const { data, loading, error, refetch } = useQuery(GET_ORDER, {
     variables: { id: orderId },
     skip: !orderId,
-    fetchPolicy: "cache-and-network",
+    fetchPolicy: "network-only", // ⭐ КЛЮЧЕВОЙ ФИКС
+    notifyOnNetworkStatusChange: true,
   });
+
+  const { subscribeToMore } = useQuery(GET_ORDER, {
+    variables: { id: orderId },
+    skip: !orderId,
+  });
+
+  useEffect(() => {
+    if (!orderId || !subscribeToMore) return;
+    const unsubscribe = subscribeToMore({
+      document: SUB_ORDER,
+      variables: { orderId },
+      updateQuery: (prev, { subscriptionData }) => {
+        if (!subscriptionData?.data?.subscriptionOrder) return prev;
+        const updated = subscriptionData.data.subscriptionOrder;
+        const orders = prev?.orders ?? [];
+        const idx = orders.findIndex((o: any) => o.id === updated.id);
+        const next =
+          idx >= 0
+            ? orders.map((o: any, i: number) =>
+                i === idx ? { ...o, ...updated } : o,
+              )
+            : [updated, ...orders];
+        return { orders: next };
+      },
+    });
+    return () => unsubscribe();
+  }, [user?.id, subscribeToMore]);
 
   // ⭐ WebSocket-подписка для мгновенной синхронизации статуса
   useSubscription(SUB_ORDER, {
@@ -58,23 +94,13 @@ function WaitingInner() {
     },
   });
 
-  const o = data?.order;
-
-  // ⭐ Авто-редирект на полное отслеживание, когда курьер назначен/едет
   useEffect(() => {
-    if (!o) return;
-    if (
-      ["ASSIGNED", "PICKED", "AWAITING_CONFIRMATION", "DELIVERED"].includes(
-        o.orderStatus,
-      )
-    ) {
-      const t = setTimeout(
-        () => router.replace(`/order/${o.id}/tracking`),
-        1500,
-      );
-      return () => clearTimeout(t);
+    if (orderId) {
+      refetch();
     }
-  }, [o?.orderStatus, o?.id, router]);
+  }, [orderId, refetch]);
+  
+  const o = data?.order;
 
   if (loading) {
     return (
@@ -92,6 +118,9 @@ function WaitingInner() {
         <h2 className="text-lg font-extrabold text-soft-text mt-3">
           Заказ не найден
         </h2>
+        {error && (
+          <p className="text-xs text-soft-text-muted mt-1">{error.message}</p>
+        )}
         <Link
           href="/orders"
           className="mt-4 px-5 py-2.5 bg-soft-surface border border-soft-border rounded-2xl text-sm font-bold text-soft-text-soft hover:border-soft-accent"
@@ -326,6 +355,15 @@ function WaitingInner() {
       </section>
     </div>
   );
+}
+
+function useNow(intervalMs: number = 1000): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const i = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(i);
+  }, [intervalMs]);
+  return now;
 }
 
 function Centered({ children }: { children: React.ReactNode }) {

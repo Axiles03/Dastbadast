@@ -1,3 +1,4 @@
+// dastbadast-multivendor-api/src/resolvers/restaurant.js
 import { Restaurant } from "../models/Restaurant.js";
 
 export const restaurants = async (_p, { zoneId }) => {
@@ -15,7 +16,6 @@ export const restaurant = async (_p, { id }) => {
   const key = String(id).trim();
   if (!key) return null;
 
-  // 1) Валидный ObjectId → ищем по _id (под try/catch от CastError)
   if (isObjectId(key)) {
     try {
       const byId = await Restaurant.findById(key);
@@ -25,10 +25,24 @@ export const restaurant = async (_p, { id }) => {
     }
   }
 
-  // 2) Слаг (для URL вида /restaurant/chayhana-1)
   const bySlug = await Restaurant.findOne({ slug: key });
   if (bySlug) return bySlug;
 
-  // 3) Ничего — null без выброса
   return null;
 };
+
+// ⭐ NEW: чистая функция, переиспользуется в type-резолвере Restaurant.isOpenNow
+// (подключается в resolvers/index.js, см. ниже)
+export function isRestaurantOpenNow(r) {
+  if (r.workingHours?.isAlwaysOpen) return true;
+  if (!r.workingHours?.open || !r.workingHours?.close) return true;
+  const now = new Date();
+  const [oh, om] = r.workingHours.open.split(":").map(Number);
+  const [ch, cm] = r.workingHours.close.split(":").map(Number);
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const openMin = oh * 60 + om;
+  const closeMin = ch * 60 + cm;
+  return closeMin > openMin
+    ? nowMin >= openMin && nowMin < closeMin
+    : nowMin >= openMin || nowMin < closeMin; // ночная смена через полночь
+}

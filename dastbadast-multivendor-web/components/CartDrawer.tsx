@@ -5,12 +5,26 @@ import { X, ChevronUp, ChevronDown, Plus, Minus, Trash2 } from "lucide-react";
 import { useCart } from "@/lib/cart-context";
 import { useShell } from "@/lib/shell-context";
 
+type DeliveryBreakdown = {
+  base: number;
+  perKm: number;
+  distanceKm: number;
+  total: number;
+  isOverBase: boolean;
+};
+
 export function CartDrawer({
   open,
   onClose,
+  deliveryFee = 0,
+  deliveryBreakdown = null,
 }: {
   open: boolean;
   onClose: () => void;
+  /** ⭐ ШАГ 4: цена доставки (рассчитывается в CartInner) */
+  deliveryFee?: number;
+  /** ⭐ ШАГ 5: разбивка цены (для UI-чека в drawer) */
+  deliveryBreakdown?: DeliveryBreakdown | null;
 }) {
   const { cartExpanded, setCartExpanded } = useShell();
   const { items, setQty, remove, subtotal, restaurantName } = useCart();
@@ -155,13 +169,41 @@ export function CartDrawer({
             {/* Подвал с суммами и CTA */}
             <div className="p-5 border-t border-soft-border space-y-2">
               <Row label="Подытог" value={`${subtotal} сом.`} />
-              <Row label="Доставка" value="0 сом." muted />
+              {/* ⭐⭐⭐ ШАГ 5: доставка — из props (синхронизировано с cart-page через ShellContext).
+              Если разбивка доступна — показываем детализацию. */}
+              <Row
+                label="Доставка"
+                value={deliveryFee ? `${deliveryFee} сом` : "…"}
+              />
+              {deliveryBreakdown && (
+                <div className="text-2xs text-soft-text-muted bg-soft-surface-2 px-2 py-1.5 rounded-lg">
+                  <div className="flex justify-between">
+                    <span>
+                      База (≤{" "}
+                      {deliveryBreakdown.isOverBase
+                        ? `${(deliveryBreakdown.distanceKm - deliveryBreakdown.perKm / 3).toFixed(1)}`
+                        : "3"}{" "}
+                      км)
+                    </span>
+                    <span>{deliveryBreakdown.base} сом</span>
+                  </div>
+                  {deliveryBreakdown.isOverBase && (
+                    <div className="flex justify-between">
+                      <span>
+                        Сверх: {deliveryBreakdown.distanceKm.toFixed(1)} км
+                      </span>
+                      <span>+{deliveryBreakdown.perKm} сом</span>
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="pt-2 border-t border-soft-border flex justify-between items-center">
                 <span className="font-extrabold text-soft-text">Итого</span>
                 <span className="font-extrabold text-soft-accent text-lg">
-                  {subtotal} сом.
+                  {subtotal + (deliveryFee || 0)} сом.
                 </span>
               </div>
+
               <Link
                 href="/cart"
                 onClick={onClose}

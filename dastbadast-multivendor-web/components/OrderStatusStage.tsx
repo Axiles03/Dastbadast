@@ -1,3 +1,4 @@
+// dastbadast-multivendor-web/components/OrderStatusStage.tsx
 "use client";
 
 import {
@@ -102,40 +103,54 @@ export function OrderStatusStage({
   status,
   acceptedAt,
   prepTime,
+  etaMin,
   onAsk,
 }: {
   status: keyof typeof STATUS_LABELS;
   acceptedAt?: string | null;
   prepTime?: number | null;
+  /** ⭐ ШАГ 3: ETA курьера (мин) — вычисляется в tracking page из riderPos */
+  etaMin?: number | null;
   onAsk?: () => void;
 }) {
   const s = STAGES[status] ?? STAGES.PENDING;
   const Icon = s.icon;
 
-  // ⭐ Тикаем раз в секунду — используется только если нужен живой таймер
   const now = useNow(1000);
 
-  // ⭐⭐⭐ УСИЛЕННАЯ ПРОВЕРКА: живой режим только если ВСЁ есть
+  // ⭐ УСИЛЕННАЯ ПРОВЕРКА: живой режим только если ВСЁ есть
   const useLive =
     s.liveTimer === true &&
     status === "ACCEPTED" &&
     !!acceptedAt &&
     !!prepTime &&
-    Number(prepTime) > 0; // защита от 0/NaN
+    Number(prepTime) > 0;
 
   const liveRemainingSec = useLive
     ? getPrepRemainingSeconds(acceptedAt!, prepTime!, now)
     : -1;
   const liveTotalSec = useLive ? getPrepTotalSeconds(prepTime!) : -1;
 
+  // ⭐⭐⭐ ШАГ 3: живой режим для статусов курьера в пути (PICKED / EN_ROUTE_TO_DROP_OFF / ARRIVED_AT_DROP_OFF)
+  const isRiderEnRoute =
+    status === "PICKED" ||
+    status === "EN_ROUTE_TO_DROP_OFF" ||
+    status === "ARRIVED_AT_DROP_OFF";
+  const useRiderEta = isRiderEnRoute && etaMin != null && etaMin > 0;
+
   // Что показывать в блоке «X минут»
   const minutesToShow = useLive
     ? Math.max(0, Math.ceil(liveRemainingSec / 60))
-    : s.minutes;
+    : useRiderEta
+      ? Math.max(0, Math.floor(etaMin!))
+      : s.minutes;
 
+  // Подпись под числом
   const sublineText = useLive
     ? `Шеф-повар готовит. Срок: ${prepTime} мин. с момента принятия.`
-    : s.subline;
+    : useRiderEta
+      ? "Курьер уже в пути к вам. ETA обновляется в реальном времени."
+      : s.subline;
 
   // Прогресс готовки (0–100%), если есть динамика
   const progressPct =
@@ -149,16 +164,21 @@ export function OrderStatusStage({
         )
       : null;
 
+  // ⭐ ШАГ 3: header label меняется в зависимости от того, ETA до готовки или до доставки
+  const headerLabel = useLive
+    ? "Заказ будет готов через"
+    : useRiderEta
+      ? "Заказ будет доставлен через"
+      : "Ваш заказ будет готов через";
+
   return (
     <div className="bg-soft-surface border border-soft-border rounded-3xl p-6 sm:p-10 text-center shadow-soft-sm">
-      <div className="text-sm text-soft-text-soft">
-        {useLive ? "Заказ будет готов через" : "Ваш заказ будет готов через"}
-      </div>
+      <div className="text-sm text-soft-text-soft">{headerLabel}</div>
       <div className="text-3xl sm:text-4xl font-extrabold text-soft-accent mt-1">
         {minutesToShow} {minutesWord(minutesToShow)}
       </div>
 
-      {/* ⭐ Если живой режим — показываем точный таймер MM:SS + прогресс-бар */}
+      {/* Если живой режим — показываем точный таймер MM:SS + прогресс-бар */}
       {useLive && liveRemainingSec > 0 && (
         <div className="mt-3 flex flex-col items-center gap-2">
           <div className="text-3xl font-extrabold font-mono text-soft-text tabular-nums tracking-widest">
@@ -172,6 +192,18 @@ export function OrderStatusStage({
               />
             </div>
           )}
+        </div>
+      )}
+
+      {/* ⭐⭐⭐ ШАГ 3: для курьера в пути — показываем ETA (если есть) */}
+      {useRiderEta && !useLive && (
+        <div className="mt-3 flex flex-col items-center gap-2">
+          <div className="text-2xl font-extrabold text-soft-success-dark">
+            ⏱ {Math.round(etaMin!)} {minutesWord(Math.round(etaMin!))}
+          </div>
+          <div className="text-2xs text-soft-text-muted font-medium">
+            от текущего положения курьера до вас
+          </div>
         </div>
       )}
 

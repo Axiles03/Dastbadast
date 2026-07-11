@@ -11,11 +11,15 @@ import {
   ChevronRight,
   ArrowLeft,
   RefreshCw,
+  RotateCcw,
 } from "lucide-react";
+
 import { GET_ORDERS, GET_CONFIGURATION, SUB_USER_ORDERS } from "@/lib/queries";
 import { useAuth } from "@/lib/auth-context";
 import { STATUS_LABELS, STATUS_STEPS } from "@/lib/order-status";
 import { RequireAuth } from "@/components/RequireAuth";
+import { useCart } from "@/lib/cart-context";
+import { useRouter } from "next/navigation"; // ⭐ FIX: App Router, не Pages Router
 
 type Tab = "active" | "history";
 
@@ -108,6 +112,34 @@ function OrdersInner() {
   );
   const visible = tab === "active" ? activeOrders : historyOrders;
 
+  const { add, clear, restaurantId: cartRestaurantId } = useCart();
+  const router = useRouter();
+
+  function repeatOrder(o: any) {
+    if (!o.items?.length) return;
+    if (cartRestaurantId && cartRestaurantId !== o.restaurantId) {
+      if (
+        !confirm(
+          "В корзине блюда из другого ресторана. Заменить корзину этим заказом?",
+        )
+      )
+        return;
+    }
+    clear();
+    o.items.forEach((i: any) =>
+      add({
+        foodId: i.foodId,
+        title: i.title,
+        price: i.price,
+        quantity: i.quantity,
+        restaurantId: o.restaurantId,
+        restaurantName: o.restaurantName ?? "",
+        selectedOptions: i.selectedOptions,
+      }),
+    );
+    router.push("/cart");
+  }
+
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       <Link
@@ -193,7 +225,6 @@ function OrdersInner() {
       ) : (
         <ul className="space-y-3">
           {visible.map((o: any) => {
-            // ⭐ TASK 2.2: Smart routing в зависимости от статуса
             const isPending = o.orderStatus === "PENDING";
             const detailHref = isPending
               ? `/orders/${o.id}/waiting`
@@ -238,7 +269,6 @@ function OrdersInner() {
 
                 <div className="mt-3 pt-3 border-t border-soft-border flex items-center justify-between flex-wrap gap-2">
                   <StatusBadge status={o.orderStatus} />
-                  {/* ⭐ NEW: Визуальный бейдж для PENDING */}
                   {isPending && (
                     <span className="inline-flex items-center gap-1 bg-soft-warning-soft text-soft-warning-dark border border-soft-warning/30 text-[10px] px-2 py-0.5 rounded-full font-extrabold">
                       <Clock className="w-2.5 h-2.5" /> Ожидает подтверждения
@@ -246,6 +276,17 @@ function OrdersInner() {
                   )}
                 </div>
                 <StatusPills status={o.orderStatus} />
+
+                {/* ⭐ NEW: «Заказать снова» — только для истории (доставлен/отменён) */}
+                {tab === "history" && o.items?.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => repeatOrder(o)}
+                    className="mt-3 w-full inline-flex items-center justify-center gap-1.5 bg-soft-surface-2 hover:bg-soft-accent-soft border border-soft-border hover:border-soft-accent text-soft-text-soft hover:text-soft-accent px-3 py-2 rounded-xl text-xs font-extrabold transition-all"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" /> Заказать снова
+                  </button>
+                )}
               </li>
             );
           })}

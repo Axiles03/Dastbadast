@@ -2,6 +2,7 @@
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import { GraphQLError } from "graphql";
+import { Configuration } from "../models/Configuration.js";
 import { Order } from "../models/Order.js";
 import { Rider } from "../models/Rider.js";
 import { Restaurant } from "../models/Restaurant.js";
@@ -11,6 +12,7 @@ import { Owner } from "../models/Owner.js";
 import { signOwnerToken } from "../middleware/auth.js";
 import { requireRole, requireOwner } from "../middleware/rbac.js";
 import { pubsub, TOPICS } from "../pubsub.js";
+import { invalidateCache } from "../middleware/cache.js";
 
 const VALID_OWNER_ROLES = [
   "SUPER_ADMIN",
@@ -132,6 +134,7 @@ export const createRestaurant = async (_p, { input }, ctx) => {
     location: { type: "Point", coordinates: [input.lng, input.lat] },
     isAvailable: true,
   });
+  await invalidateCache("restaurants");
   return r;
 };
 
@@ -194,13 +197,21 @@ export const assignRider = async (_p, { input }, ctx) => {
 export const adminAccounting = async (_p, _a, ctx) => {
   requireRole(["SUPER_ADMIN", "FINANCE", "ANALYST"])(ctx);
 
+  const cfgDoc = await Configuration.findById("singleton")
+    .select("taxPercent")
+    .lean();
+  const taxPercent = Number(
+    typeof cfgDoc?.taxPercent === "number" ? cfgDoc.taxPercent : 10,
+  );
+
   const restaurantRows = await Order.aggregate([
     { $match: { orderStatus: "DELIVERED" } },
     {
       $group: {
         _id: "$restaurantId",
         orderCount: { $sum: 1 },
-        revenue: { $sum: "$amounts.total" },
+        // ⭐ ШАГ 2 FIX: было $amounts.total (с доставкой), стало $amounts.subtotal
+        revenue: { $sum: "$amounts.subtotal" },
       },
     },
   ]);
@@ -212,19 +223,28 @@ export const adminAccounting = async (_p, _a, ctx) => {
   const restMap = new Map(restaurants.map((r) => [r._id.toString(), r]));
 
   const restaurantStats = restaurantRows.map((row) => {
-    const r = restMap.get(row._id.toString());
-    const taxRate = (r?.tax ?? 0) / 100;
     const revenue = +Number(row.revenue || 0).toFixed(2);
-    const commission = +(revenue * taxRate).toFixed(2);
+    const commission = +(revenue * (taxPercent / 100)).toFixed(2);
     return {
       restaurantId: row._id.toString(),
-      restaurantName: r?.name ?? "Без названия",
+      restaurantName: restMap.get(row._id.toString())?.name ?? "Без названия",
       orderCount: row.orderCount,
-      revenue,
-      commission,
-      payout: +(revenue - commission).toFixed(2),
+      revenue, // ⭐ теперь это subtotal (выручка ресторана за еду)
+      commission, // ⭐ комиссия платформы (НЕ видна клиенту)
+      payout: +(revenue - commission).toFixed(2), // ⭐ к выплате ресторану
     };
   });
+
+  const totalDelivered = restaurantStats.reduce((s, r) => s + r.orderCount, 0);
+  const totalCommission = +restaurantStats
+    .reduce((s, r) => s + r.commission, 0)
+    .toFixed(2);
+
+  const totalRevenueAgg = await Order.aggregate([
+    { $match: { orderStatus: "DELIVERED" } },
+    { $group: { _id: null, total: { $sum: "$amounts.total" } } },
+  ]);
+  const totalRevenue = +(totalRevenueAgg[0]?.total ?? 0).toFixed(2);
 
   const riderRows = await Order.aggregate([
     { $match: { orderStatus: "DELIVERED", riderId: { $ne: null } } },
@@ -254,18 +274,10 @@ export const adminAccounting = async (_p, _a, ctx) => {
     };
   });
 
-  const totalDelivered = restaurantStats.reduce((s, r) => s + r.orderCount, 0);
-  const totalRevenue = +restaurantStats
-    .reduce((s, r) => s + r.revenue, 0)
-    .toFixed(2);
-  const totalCommission = +restaurantStats
-    .reduce((s, r) => s + r.commission, 0)
-    .toFixed(2);
-
   return {
-    totalRevenue,
+    totalRevenue, // Оборот (subtotal + deliveryFee по всем доставленным)
     totalDelivered,
-    totalCommission,
+    totalCommission, // Комиссия платформы = sum(subtotals) * taxPercent/100
     restaurants: restaurantStats.sort((a, b) => b.revenue - a.revenue),
     riders: riderStats.sort((a, b) => b.totalEarnings - a.totalEarnings),
   };
@@ -568,6 +580,7 @@ export const createZone = async (_p, { input }, ctx) => {
     isActive: input.isActive !== false,
   });
 
+  await invalidateCache("restaurants"); // зоны входят в homepage
   return zone;
 };
 

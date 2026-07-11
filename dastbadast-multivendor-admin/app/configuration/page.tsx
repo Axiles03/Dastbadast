@@ -12,7 +12,7 @@ import {
   Info,
   Hash,
   DollarSign,
-  Truck,
+  Percent,
   KeyRound,
   Globe,
   Smartphone,
@@ -58,7 +58,7 @@ function ConfigurationInner() {
   const [form, setForm] = useState({
     currency: "TJS",
     currencySymbol: "сом.",
-    deliveryRate: 0,
+    taxPercent: 10,
     testOtp: "123456",
   });
 
@@ -68,7 +68,7 @@ function ConfigurationInner() {
       setForm({
         currency: c.currency ?? "TJS",
         currencySymbol: c.currencySymbol ?? "сом.",
-        deliveryRate: c.deliveryRate ?? 0,
+        taxPercent: typeof c.taxPercent === "number" ? c.taxPercent : 10,
         testOtp: c.testOtp ?? "123456",
       });
     }
@@ -83,7 +83,7 @@ function ConfigurationInner() {
         input: {
           currency: form.currency,
           currencySymbol: form.currencySymbol,
-          deliveryRate: Number(form.deliveryRate),
+          taxPercent: Number(form.taxPercent),
           testOtp: form.testOtp,
         },
       },
@@ -142,16 +142,39 @@ function ConfigurationInner() {
               </div>
             </SectionGroup>
 
-            {/* Доставка */}
-            <SectionGroup title="Доставка" icon={<Truck className="w-4 h-4" />}>
+            {/* ⭐ ШАГ 2: НОВАЯ секция "Финансы" — комиссия платформы */}
+            <SectionGroup
+              title="Финансы"
+              icon={<Percent className="w-4 h-4" />}
+            >
               <FormField
-                icon={<Truck className="w-3.5 h-3.5" />}
+                icon={<Percent className="w-3.5 h-3.5" />}
+                label="Налог / Комиссия платформы (%)"
+                hint="Внутренняя комиссия. НЕ начисляется клиенту в чеке. Удерживается из выплат ресторану (subtotal × percent). Рекомендуемое значение 10%."
+                type="number"
+                value={String(form.taxPercent)}
+                onChange={(v) =>
+                  setForm({
+                    ...form,
+                    taxPercent: Math.max(
+                      0,
+                      Math.min(100, parseFloat(v || "10")),
+                    ),
+                  })
+                }
+              />
+            </SectionGroup>
+
+            {/* Доставка */}
+            <SectionGroup title="Доставка" icon={<Percent className="w-4 h-4" />}>
+              <FormField
+                icon={<Percent className="w-3.5 h-3.5" />}
                 label="Базовая стоимость доставки"
                 hint="Фиксированная ставка за доставку заказа курьером"
                 type="number"
-                value={String(form.deliveryRate)}
+                value={String(form.taxPercent)}
                 onChange={(v) =>
-                  setForm({ ...form, deliveryRate: parseFloat(v || "0") })
+                  setForm({ ...form, taxPercent: parseFloat(v || "0") })
                 }
               />
             </SectionGroup>

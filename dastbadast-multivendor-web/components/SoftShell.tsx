@@ -44,6 +44,8 @@ function ShellLayout({
     setCartOpen,
     setFiltersOpen,
     setMobileMenuOpen,
+    deliveryFee,
+    deliveryBreakdown,
   } = useShell();
 
   const pathname = usePathname();
@@ -74,7 +76,15 @@ function ShellLayout({
         </main>
       </div>
 
-      <CartDrawer open={cartOpen} onClose={() => setCartOpen(false)} />
+      {/* ⭐ ШАГ 5: deliveryFee берётся из ShellContext (синхронизируется с cart-page).
+          Внутри drawer — детализация через deliveryBreakdown. */}
+      <CartDrawer
+        open={cartOpen}
+        onClose={() => setCartOpen(false)}
+        deliveryFee={deliveryFee}
+        deliveryBreakdown={deliveryBreakdown}
+      />
+
       <FiltersDrawer open={filtersOpen} onClose={() => setFiltersOpen(false)} />
     </div>
   );

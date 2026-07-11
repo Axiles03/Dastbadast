@@ -1,7 +1,17 @@
 import { useMemo, useState, useEffect } from "react";
-import { View, Text, FlatList, ActivityIndicator } from "react-native";
-import { useQuery } from "@apollo/client/react";
-import { RESTAURANT_ORDERS } from "../../lib/api/graphql/queries";
+import {
+  View,
+  Text,
+  FlatList,
+  ActivityIndicator,
+  TouchableOpacity,
+  Alert,
+} from "react-native";
+import { useQuery, useMutation } from "@apollo/client/react";
+import {
+  RESTAURANT_ORDERS,
+  MARK_ORDER_READY,
+} from "../../lib/api/graphql/queries";
 import { useAuth } from "../../lib/auth-context";
 import { SegmentedTabs } from "../../components/SegmentedTabs";
 import { EmptyState } from "../../components/EmptyState";
@@ -29,6 +39,18 @@ export default function Processing() {
     pollInterval: 15_000,
     skip: !restaurant?.id,
   }) as any;
+
+  const [markOrderReady, { loading: markingReady }] =
+    useMutation(MARK_ORDER_READY);
+
+  const handleMarkReady = async (orderId: string) => {
+    try {
+      await markOrderReady({ variables: { orderId } });
+      await refetch();
+    } catch (e: any) {
+      Alert.alert("Ошибка", e?.message ?? "Не удалось отметить заказ готовым");
+    }
+  };
 
   const {
     data: histAll,
@@ -183,7 +205,7 @@ export default function Processing() {
             </Text>
           </View>
           <Text className="text-lg font-extrabold text-accent tracking-tight">
-            {item.amounts?.total} сом.
+            {item.amounts?.subtotal} сом.
           </Text>
         </View>
 
@@ -216,6 +238,19 @@ export default function Processing() {
             💡 Курьер увидит заказ и сам приедет в ресторан
           </Text>
         </View>
+
+        {(item.orderStatus === "ACCEPTED" ||
+          item.orderStatus === "PREPARING") && (
+          <TouchableOpacity
+            onPress={() => handleMarkReady(item.id)}
+            disabled={markingReady}
+            className="mt-3 h-12 rounded-2xl bg-accent items-center justify-center active:opacity-85"
+          >
+            <Text className="text-text-inverse font-extrabold text-base">
+              ✅ Готово — отдать курьеру
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
   };
@@ -231,6 +266,29 @@ export default function Processing() {
       ?.slice(0, 3)
       .map((it: any) => `${it.title} ×${it.quantity}`)
       .join(", ");
+
+    // ⭐ ШАГ 5: для заказов в PREPARING/READY_FOR_PICKUP показываем ETA
+    const isPrep =
+      item.orderStatus === "ACCEPTED" ||
+      item.orderStatus === "PREPARING" ||
+      item.orderStatus === "READY_FOR_PICKUP";
+    let prepRemaining: number | null = null;
+    if (
+      isPrep &&
+      item.statusTimestamps?.acceptedAt &&
+      item.statusTimestamps?.prepTime
+    ) {
+      const elapsedMin =
+        (Date.now() - new Date(item.statusTimestamps.acceptedAt).getTime()) /
+        60_000;
+      prepRemaining = Math.max(
+        0,
+        Math.ceil(item.statusTimestamps.prepTime - elapsedMin),
+      );
+    }
+
+    const [markReady, { loading: markingReady }] =
+      useMutation(MARK_ORDER_READY);
 
     return (
       <View
@@ -259,10 +317,9 @@ export default function Processing() {
               isDelivered ? "text-text" : "text-text-muted line-through",
             )}
           >
-            {item.amounts?.total} сом.
+            {item.amounts?.subtotal} сом.
           </Text>
         </View>
-
         <View className="bg-soft-surface-2 rounded-xl p-2.5 mb-2.5">
           <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
             📍 Доставлено
@@ -272,7 +329,15 @@ export default function Processing() {
             {item.deliveryAddress?.address}
           </Text>
         </View>
-
+        {/* ⭐ ШАГ 5: live ETA countdown для готовящихся заказов */}
+        {prepRemaining != null && prepRemaining > 0 && (
+          <View className="mt-2 bg-warning-soft border border-warning/30 rounded-lg px-2.5 py-1.5 flex-row items-center gap-1.5">
+            <Text className="text-sm">⏱</Text>
+            <Text className="text-xs text-warning-dark font-extrabold">
+              Осталось готовить: {prepRemaining} мин
+            </Text>
+          </View>
+        )}
         {dishesSummary && (
           <View className="pt-2 border-t border-border">
             <Text
@@ -287,7 +352,6 @@ export default function Processing() {
             </Text>
           </View>
         )}
-
         {!isDelivered && item.cancelReason && (
           <View className="mt-2 bg-red-soft rounded-lg px-2.5 py-1.5">
             <Text className="text-2xs text-red-dark font-semibold">
@@ -295,12 +359,30 @@ export default function Processing() {
             </Text>
           </View>
         )}
-
         {isDelivered && item.riderId && (
           <View className="mt-2 flex-row items-center gap-1.5">
             <Text className="text-2xs text-text-muted">🛵 Курьер выполнил</Text>
           </View>
         )}
+        (item.orderStatus === "ACCEPTED" || item.orderStatus === "PREPARING") &&
+        (
+        <TouchableOpacity
+          onPress={async () => {
+            try {
+              await markReady({ variables: { orderId: item.id } });
+              await refetch();
+            } catch (e: any) {
+              Alert.alert("Ошибка", e?.message ?? "Не удалось");
+            }
+          }}
+          disabled={markingReady}
+          className="mt-3 h-12 rounded-2xl bg-accent items-center justify-center active:opacity-85"
+        >
+          <Text className="text-text-inverse font-extrabold text-base">
+            ✅ Готово — отдать курьеру
+          </Text>
+        </TouchableOpacity>
+        );
       </View>
     );
   };
@@ -352,7 +434,10 @@ export default function Processing() {
             <Text className="text-2xl font-black text-success mt-0.5">
               {history
                 .filter((o: any) => o.orderStatus === "DELIVERED")
-                .reduce((s: number, o: any) => s + (o.amounts?.total ?? 0), 0)
+                .reduce(
+                  (s: number, o: any) => s + (o.amounts?.subtotal ?? 0),
+                  0,
+                )
                 .toLocaleString("ru")}{" "}
               сом.
             </Text>

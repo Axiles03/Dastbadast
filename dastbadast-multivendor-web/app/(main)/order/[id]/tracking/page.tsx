@@ -14,6 +14,9 @@ import {
   CONFIRM_ORDER_RECEIVED,
   SEND_CHAT_MESSAGE,
   REFRESH_ORDER_STATUS,
+  ORDER_FRAGMENT,
+  SUB_ORDER_UPDATED,
+  GET_ORDER_FULL,
 } from "@/lib/queries";
 import { getApolloClient } from "@/lib/apollo-provider";
 import { useParams, useRouter } from "next/navigation";
@@ -90,10 +93,43 @@ function TrackingInner() {
   const { setCartOpen } = useShell();
   const [cartExpanded, setCartExpanded] = useState(true);
 
-  const { data, loading, error, refetch } = useQuery(GET_ORDER, {
-    variables: { id },
-    skip: !id,
-  });
+  const { data, loading, error, refetch, subscribeToMore } = useQuery(
+    GET_ORDER_FULL,
+    {
+      variables: { id },
+      skip: !id,
+    },
+  );
+
+  useEffect(() => {
+    if (!id || !subscribeToMore) return;
+    // Импортируем SUB_ORDER
+    import("@/lib/queries").then(({ SUB_ORDER }) => {
+      const unsubscribe = subscribeToMore({
+        document: SUB_ORDER,
+        variables: { orderId: id },
+        updateQuery: (prev: any, { subscriptionData }: any) => {
+          if (!subscriptionData?.data?.subscriptionOrder) return prev;
+          const updated = subscriptionData.data.subscriptionOrder;
+          return {
+            order: {
+              ...prev?.order,
+              ...updated,
+              items: updated.items ?? prev?.order?.items,
+              amounts: updated.amounts ?? prev?.order?.amounts,
+              deliveryAddress:
+                updated.deliveryAddress ?? prev?.order?.deliveryAddress,
+              pickupAddress:
+                updated.pickupAddress ?? prev?.order?.pickupAddress,
+            },
+          };
+        },
+        onError: (err) => console.error("[SUB_ORDER] error:", err?.message),
+      });
+      return unsubscribe;
+    });
+  }, [id, subscribeToMore]);
+  
   const { data: cfg } = useQuery(GET_CONFIGURATION);
   const { data: chatData } = useQuery<{ chatMessages: ChatMessage[] }>(
     GET_CHAT_MESSAGES,
@@ -132,35 +168,6 @@ function TrackingInner() {
   // ⭐⭐⭐ FIX: riderId безопасно извлекается
   const riderId: string | null = o?.riderId ?? null;
   const hasRider = !!riderId && riderId.length === 24;
-
-  useSubscription(SUB_ORDER, {
-    variables: { orderId: id },
-    skip: !id,
-    onData: (options) => {
-      const updated = (
-        options.data?.data as { subscriptionOrder?: any } | undefined
-      )?.subscriptionOrder;
-      if (updated) {
-        try {
-          const cache = (getApolloClient() as any).cache;
-          const existing = cache.readQuery({
-            query: GET_ORDER,
-            variables: { id },
-          });
-          if (existing) {
-            cache.writeQuery({
-              query: GET_ORDER,
-              variables: { id },
-              data: { order: { ...existing.order, ...updated } },
-            });
-          }
-        } catch {
-          /* ignore */
-        }
-        refetch();
-      }
-    },
-  });
 
   useSubscription(SUB_CHAT, {
     variables: { orderId: id },
@@ -243,14 +250,32 @@ function TrackingInner() {
     }
   }, [riderLocData]);
 
+  // ⭐⭐⭐ ШАГ 3 FIX: ETA считается от правильной точки в зависимости от статуса.
+  //   - ASSIGNED: курьер едет к ресторану → ETA от riderPos до pickupAddress
+  //   - PICKED / EN_ROUTE_TO_DROP_OFF / ARRIVED_AT_DROP_OFF: курьер едет к клиенту → ETA от riderPos до deliveryAddress
+  // До фикса — всегда считался только до deliveryAddress, что для ASSIGNED было некорректно.
   useEffect(() => {
     if (!riderPos || !o) return;
-    const destLat = o?.deliveryAddress?.location?.coordinates?.[1];
-    const destLng = o?.deliveryAddress?.location?.coordinates?.[0];
-    if (typeof destLat === "number" && typeof destLng === "number") {
-      const km = haversineKm(riderPos.lat, riderPos.lng, destLat, destLng);
-      setEtaMin(Math.max(1, Math.round((km / 25) * 60)));
+
+    // Определяем точку назначения по статусу
+    let destCoords: number[] | null = null;
+    if (
+      o.orderStatus === "PICKED" ||
+      o.orderStatus === "EN_ROUTE_TO_DROP_OFF" ||
+      o.orderStatus === "ARRIVED_AT_DROP_OFF"
+    ) {
+      destCoords = o?.deliveryAddress?.location?.coordinates ?? null;
+    } else if (o.orderStatus === "ASSIGNED") {
+      destCoords = o?.pickupAddress?.location?.coordinates ?? null;
     }
+
+    if (!destCoords || destCoords.length < 2) return;
+    const destLat = destCoords[1];
+    const destLng = destCoords[0];
+    if (typeof destLat !== "number" || typeof destLng !== "number") return;
+
+    const km = haversineKm(riderPos.lat, riderPos.lng, destLat, destLng);
+    setEtaMin(Math.max(1, Math.round((km / 25) * 60)));
   }, [riderPos, o]);
 
   useEffect(() => {
@@ -355,6 +380,7 @@ function TrackingInner() {
         status={o.orderStatus as any}
         acceptedAt={o?.statusTimestamps?.acceptedAt ?? null}
         prepTime={o?.statusTimestamps?.prepTime ?? null}
+        etaMin={etaMin}
       />
 
       {isSearchingRider && (
@@ -414,6 +440,8 @@ function TrackingInner() {
               riderLat={riderPos?.lat ?? null}
               riderLng={riderPos?.lng ?? null}
               riderBearing={riderPos?.bearing ?? null}
+              deliveryPrice={o?.deliveryPrice ?? null}
+              etaMin={etaMin}
             />
           </div>
         </div>
@@ -476,8 +504,10 @@ function TrackingInner() {
             </button>
             <div className="p-4 border-t border-soft-border space-y-2 text-sm">
               <Row label="Подытог" value={`${itemsTotal} ${sym}`} />
-              <Row label="Налог" value={`${tax} ${sym}`} />
-              <Row label="Доставка" value={`${deliveryFee} ${sym}`} />
+              <Row
+                label="Доставка"
+                value={`${typeof o?.deliveryPrice === "number" ? o.deliveryPrice : deliveryFee} ${sym}`}
+              />
               <div className="pt-2 border-t border-soft-border flex justify-between items-center">
                 <span className="font-extrabold text-soft-text">
                   Итого к оплате

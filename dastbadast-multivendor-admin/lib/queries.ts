@@ -114,6 +114,7 @@ export const GET_CONFIGURATION = gql`
     configuration {
       currency
       currencySymbol
+      taxPercent
       deliveryRate
       skipEmailVerification
       skipMobileVerification
@@ -127,6 +128,7 @@ export const UPDATE_CONFIGURATION = gql`
     updateConfiguration(input: $input) {
       currency
       currencySymbol
+      taxPercent
       deliveryRate
       testOtp
     }

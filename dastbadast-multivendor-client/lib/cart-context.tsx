@@ -17,6 +17,23 @@ export type CartItem = {
   description?: string;
   restaurantId: string;
   restaurantName: string;
+  basePrice?: number;
+  optionsTotal?: number;
+  selectedOptions?: Array<{
+    groupId: string;
+    groupTitle: string;
+    optionId: string;
+    optionTitle: string;
+    price: number;
+  }>;
+};
+
+type DeliveryBreakdown = {
+  base: number;
+  perKm: number;
+  distanceKm: number;
+  total: number;
+  isOverBase: boolean;
 };
 
 type CartState = {
@@ -30,6 +47,10 @@ type CartState = {
   restaurantName: string | null;
   subtotal: number;
   itemCount: number;
+  // ⭐ ШАГ 5: цена доставки (синхронизируется с API, показывается в cart и tracking)
+  deliveryFee: number;
+  deliveryBreakdown: DeliveryBreakdown | null;
+  setDelivery: (fee: number, breakdown: DeliveryBreakdown | null) => void;
 };
 
 const Ctx = createContext<CartState | null>(null);
@@ -93,6 +114,18 @@ export function CartProvider({ children }: { children: ReactNode }) {
   const restaurantName = items[0]?.restaurantName ?? null;
   const subtotal = items.reduce((s, i) => s + i.price * i.quantity, 0);
   const itemCount = items.reduce((s, i) => s + i.quantity, 0);
+  // ⭐ ШАГ 5: цена доставки (рассчитывается через API, обновляется в cart-page)
+  const [deliveryFee, setDeliveryFee] = useState(0);
+  const [deliveryBreakdown, setDeliveryBreakdown] =
+    useState<DeliveryBreakdown | null>(null);
+
+  const setDelivery = useCallback(
+    (fee: number, breakdown: DeliveryBreakdown | null) => {
+      setDeliveryFee(fee);
+      setDeliveryBreakdown(breakdown);
+    },
+    [],
+  );
 
   const add = useCallback((i: CartItem): boolean => {
     const item = normalizeItem(i);
@@ -133,6 +166,14 @@ export function CartProvider({ children }: { children: ReactNode }) {
     AsyncStorage.removeItem(KEY).catch(() => {});
   }, []);
 
+  const newKey = (item: CartItem) => {
+    const optIds = (item.selectedOptions || [])
+      .map((o) => String(o.optionId))
+      .sort()
+      .join(",");
+    return `${item.foodId}:${optIds}`;
+  };
+
   return (
     <Ctx.Provider
       value={{
@@ -146,6 +187,9 @@ export function CartProvider({ children }: { children: ReactNode }) {
         restaurantName,
         subtotal,
         itemCount,
+        deliveryFee,
+        deliveryBreakdown,
+        setDelivery,
       }}
     >
       {children}

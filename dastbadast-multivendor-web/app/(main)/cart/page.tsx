@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useMutation, useQuery } from "@apollo/client";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useApolloClient, useMutation, useQuery } from "@apollo/client";
 import { useCart } from "@/lib/cart-context";
 import { useAuth } from "@/lib/auth-context";
 import {
@@ -9,7 +9,9 @@ import {
   GET_ADDRESSES,
   GET_CONFIGURATION,
   GET_RESTAURANT_CHECK,
+  GET_ORDERS,
 } from "@/lib/queries";
+import { useShell } from "@/lib/shell-context";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -20,6 +22,10 @@ import {
   MapPin,
   ChevronRight,
 } from "lucide-react";
+import {
+  CALCULATE_DELIVERY_PRICE_BREAKDOWN,
+  CALCULATE_DELIVERY_PRICE,
+} from "@/lib/queries";
 import { debugLog, debugError } from "@/lib/debug-log";
 import { RequireAuth } from "@/components/RequireAuth";
 
@@ -38,6 +44,9 @@ export default function CartPage() {
 
 function CartInner() {
   const { user, loading: aLoading } = useAuth();
+  const apolloClient = useApolloClient();
+  const idempotencyKeyRef = useRef<string>(crypto.randomUUID());
+
   const {
     items,
     hydrated,
@@ -49,6 +58,13 @@ function CartInner() {
     restaurantName,
   } = useCart();
   const router = useRouter();
+  // ⭐ ШАГ 5: один useShell() — здесь же деструктурируем deliveryFee/breakdown
+  const {
+    setCartOpen,
+    deliveryFee: shellDeliveryFee,
+    setDeliveryFee,
+    setDeliveryBreakdown,
+  } = useShell();
   const { data: addrData } = useQuery(GET_ADDRESSES, { skip: !user });
   const { data: cfg } = useQuery(GET_CONFIGURATION);
   const {
@@ -59,6 +75,7 @@ function CartInner() {
     variables: { id: restaurantId },
     skip: !restaurantId || !hydrated,
   });
+
   const [addressId, setAddressId] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -88,50 +105,65 @@ function CartInner() {
   }
 
   const sym = cfg?.configuration?.currencySymbol ?? "сом.";
-  const deliveryFee = cfg?.configuration?.deliveryRate ?? 0;
   const minimumOrder = restData?.restaurant?.minimumOrder ?? 0;
+
+  const restaurantCoords = restData?.restaurant?.location?.coordinates ?? null;
+  const selectedAddress = addrData?.addresses?.find(
+    (a: any) => a.id === addressId,
+  );
+  const addressCoords = selectedAddress?.location?.coordinates ?? null;
+  const { data: deliveryData, loading: deliveryLoading } = useQuery(
+    CALCULATE_DELIVERY_PRICE_BREAKDOWN,
+    {
+      variables: {
+        fromCoords: restaurantCoords,
+        toCoords: addressCoords,
+        basePrice: cfg?.configuration?.deliveryBasePrice,
+        baseKm: cfg?.configuration?.deliveryBaseKm,
+        perKmPrice: cfg?.configuration?.deliveryPerKmPrice,
+      },
+      skip: !restaurantCoords || !addressCoords,
+    },
+  );
+  const deliveryBreakdown =
+    deliveryData?.calculateDeliveryPriceBreakdown ?? null;
+  const deliveryFee = deliveryBreakdown?.total ?? 0;
+  const deliveryDistance = deliveryBreakdown?.distanceKm ?? null;
+  const calculatedDelivery = deliveryBreakdown;
   const total = +(subtotal + deliveryFee).toFixed(2);
 
+  useEffect(() => {
+    setDeliveryFee(deliveryFee);
+    setDeliveryBreakdown(deliveryBreakdown);
+  }, [deliveryFee, deliveryBreakdown, setDeliveryFee, setDeliveryBreakdown]);
+
   const blockReasons: string[] = [];
-  if (!addressId) blockReasons.push("📍 Выберите адрес доставки ниже");
-  if (restLoading) blockReasons.push("⏳ Проверяем доступность ресторана…");
+  if (!addressId) blockReasons.push("📍 Выберите адрес доставки");
+  if (restaurantCoords && addressCoords && deliveryLoading)
+    blockReasons.push("⏳ Считаем стоимость доставки…");
+  if (restLoading) blockReasons.push("⏳ Проверяем ресторан…");
   else if (restError)
     blockReasons.push(
-      `🛑 API недоступен: ${restError.message}. Запущен ли бэкенд на ${API_URL}?`,
+      `🛑 API недоступен: ${restError.message}. Запущен ли бэкенд на http://localhost:8001/graphql?`,
     );
   else if (!restData?.restaurant)
-    blockReasons.push(
-      "🚫 Ресторан из корзины больше не существует. Очистите корзину и выберите заново.",
-    );
+    blockReasons.push("🚫 Ресторан из корзины больше не существует.");
   else if (restData.restaurant.isAvailable === false)
     blockReasons.push("🚫 Ресторан временно не принимает заказы.");
+  else if (restData.restaurant.isOpenNow === false)
+    blockReasons.push(
+      `🕐 Ресторан закрыт · откроется в ${restData.restaurant.workingHours?.open ?? ""}`,
+    );
   else if (minimumOrder > 0 && subtotal < minimumOrder)
     blockReasons.push(
       `💰 Минимальная сумма заказа: ${minimumOrder} ${sym}. Добавьте ещё на ${(minimumOrder - subtotal).toFixed(0)} ${sym}.`,
     );
+  if (!restaurantCoords || !addressCoords)
+    blockReasons.push("📍 Выберите адрес в зоне доставки");
   const canOrder = blockReasons.length === 0;
 
   if (items.length === 0) {
-    return (
-      <div className="max-w-3xl mx-auto">
-        <h1 className="text-2xl font-extrabold text-soft-text tracking-tight">
-          Корзина
-        </h1>
-        <div className="bg-soft-surface border border-soft-border rounded-3xl p-10 text-center mt-6 shadow-soft-sm">
-          <div className="text-5xl mb-3">🛒</div>
-          <h3 className="font-extrabold text-soft-text">Корзина пуста</h3>
-          <p className="text-sm text-soft-text-soft mt-1">
-            Добавьте блюда из меню ресторана
-          </p>
-          <Link
-            href="/"
-            className="inline-block mt-4 bg-soft-accent text-white px-5 py-2.5 rounded-2xl text-sm font-extrabold hover:bg-soft-accent-dark transition-colors"
-          >
-            Выбрать ресторан
-          </Link>
-        </div>
-      </div>
-    );
+    return <div>Корзина пуста</div>;
   }
 
   return (
@@ -288,17 +320,71 @@ function CartInner() {
       {/* === Итог === */}
       <section className="bg-soft-surface border border-soft-border rounded-3xl p-5 text-sm space-y-2 shadow-soft-sm">
         <div className="flex justify-between text-soft-text-soft">
-          <span>Подытог</span>
+          <span>Подытог {`${subtotal} ${sym}`}</span>
           <span className="text-soft-text font-bold">
             {subtotal} {sym}
           </span>
         </div>
-        <div className="flex justify-between text-soft-text-soft">
-          <span>Доставка</span>
+        {/* ⭐⭐⭐ ШАГ 4: блок "Доставка" с детализацией (base + perKm = total).
+            Использует deliveryBreakdown из API. Если адрес не выбран — показываем
+            прочерк (цена вычислится после выбора адреса). */}
+        <button
+          type="button"
+          onClick={() => {
+            // Разворачиваем подсказку с разбивкой
+            const el = document.getElementById("delivery-breakdown");
+            if (el) el.classList.toggle("hidden");
+          }}
+          className="w-full flex justify-between text-soft-text-soft hover:text-soft-text transition-colors"
+        >
+          <span className="text-left">
+            Доставка{" "}
+            {!addressId ? (
+              <span className="text-soft-text-muted text-xs">
+                (выберите адрес)
+              </span>
+            ) : calculatedDelivery ? (
+              <span className="text-soft-text-muted text-xs">
+                {calculatedDelivery.isOverBase
+                  ? `📏 ${calculatedDelivery.distanceKm.toFixed(1)} км`
+                  : "≤ базового радиуса"}
+              </span>
+            ) : null}
+          </span>
           <span className="text-soft-text font-bold">
             {deliveryFee} {sym}
           </span>
-        </div>
+        </button>
+        {calculatedDelivery && addressId && (
+          <div
+            id="delivery-breakdown"
+            className="text-xs text-soft-text-muted bg-soft-surface-2 px-3 py-2 rounded-lg"
+          >
+            <div className="flex justify-between">
+              <span>
+                Базовая ставка (≤ {cfg?.configuration?.deliveryBaseKm ?? 3} км)
+              </span>
+              <span className="font-bold text-soft-text-soft">
+                {calculatedDelivery.base} {sym}
+              </span>
+            </div>
+            {calculatedDelivery.isOverBase && (
+              <div className="flex justify-between">
+                <span>
+                  Сверх базы: {calculatedDelivery.distanceKm.toFixed(2)} км ×{" "}
+                  {cfg?.configuration?.deliveryPerKmPrice ?? 3} {sym}/км
+                </span>
+                <span className="font-bold text-soft-text-soft">
+                  +{calculatedDelivery.perKm} {sym}
+                </span>
+              </div>
+            )}
+            <div className="text-2xs mt-1 italic">
+              Расчёт по формуле: base + perKm × (distance − baseKm)
+            </div>
+          </div>
+        )}
+
         <div className="border-t border-soft-border pt-2 flex justify-between font-extrabold text-base">
           <span className="text-soft-text">Итого к оплате</span>
           <span className="text-soft-accent text-lg">
@@ -330,6 +416,12 @@ function CartInner() {
               addressId,
               items: items.length,
             });
+            // ⭐ ФИКС: `refetchQueries` / `awaitRefetchQueries` — это опции
+            // вызова placeOrder(...) в Apollo, а НЕ поля GraphQL-типа
+            // PlaceOrderInput. Раньше они лежали внутри variables.input,
+            // из-за чего сервер отклонял запрос на этапе валидации
+            // ("Field \"refetchQueries\" is not defined by type
+            // \"PlaceOrderInput\"") — заказ никогда не создавался.
             const res = await placeOrder({
               variables: {
                 input: {
@@ -337,12 +429,20 @@ function CartInner() {
                   addressId,
                   paymentMethod: "COD",
                   note: note.trim() || undefined,
+                  idempotencyKey: idempotencyKeyRef.current,
+                  deliveryPrice: deliveryFee,
                   items: items.map((i) => ({
                     foodId: i.foodId,
                     quantity: i.quantity,
+                    selectedOptions: i.selectedOptions?.map((o) => ({
+                      groupId: o.groupId,
+                      optionId: o.optionId,
+                    })),
                   })),
                 },
               },
+              refetchQueries: [{ query: GET_ORDERS }],
+              awaitRefetchQueries: true,
             });
             const orderId = res.data?.placeOrder?.id;
             if (!orderId) {
@@ -350,6 +450,8 @@ function CartInner() {
               return;
             }
             clear();
+            await apolloClient.resetStore();
+            idempotencyKeyRef.current = crypto.randomUUID();
             router.push(`/orders/${orderId}/waiting`);
           } catch (e: any) {
             debugError("Cart", "placeOrder failed", e.message);

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -17,7 +17,10 @@ import {
   GET_CONFIGURATION,
   GET_RESTAURANT_CHECK,
   PLACE_ORDER,
+  CALCULATE_DELIVERY_PRICE_BREAKDOWN,
+  GET_ORDERS,
 } from "../../lib/api/queries";
+
 import { getApolloClient } from "../../lib/apollo-provider";
 import { GRAPHQL_HTTP } from "../../lib/config/api";
 import { EmptyState } from "../../components/EmptyState";
@@ -34,6 +37,7 @@ export default function CartPage() {
     subtotal,
     restaurantId,
     restaurantName,
+    setDelivery,
   } = useCart();
 
   // ⭐ useQuery<any> — фикс типов
@@ -77,8 +81,50 @@ export default function CartPage() {
   }
 
   const sym = cfg?.configuration?.currencySymbol ?? "сом.";
-  const deliveryFee = cfg?.configuration?.deliveryRate ?? 0;
   const minimumOrder = restData?.restaurant?.minimumOrder ?? 0;
+
+  const restaurantCoords: number[] | null =
+    restData?.restaurant?.location?.coordinates &&
+    Array.isArray(restData.restaurant.location.coordinates) &&
+    restData.restaurant.location.coordinates.length === 2
+      ? restData.restaurant.location.coordinates
+      : null;
+
+  const addressCoords: number[] | null = (() => {
+    const a = addrData?.addresses?.find((a: any) => a.id === addressId);
+    if (!a?.location?.coordinates) return null;
+    if (
+      !Array.isArray(a.location.coordinates) ||
+      a.location.coordinates.length !== 2
+    )
+      return null;
+    return a.location.coordinates;
+  })();
+
+  const {
+    data: deliveryCalc,
+    loading: deliveryCalcLoading,
+    refetch: refetchDelivery,
+  } = useQuery<any>(CALCULATE_DELIVERY_PRICE_BREAKDOWN, {
+    variables:
+      restaurantCoords && addressCoords
+        ? {
+            fromCoords: restaurantCoords,
+            toCoords: addressCoords,
+          }
+        : { fromCoords: [0, 0], toCoords: [0, 0] },
+    // ⭐ ШАГ 4 FIX: skip-условие — нужен и адрес, и валидные координаты ресторана
+    skip: !addressId || !restaurantCoords || !addressCoords,
+  });
+
+  // ⭐⭐⭐ ШАГ 4 FIX: доставка — из API расчёта (приоритет),
+  // fallback на базовую ставку из Configuration (если расчёт не пришёл).
+  // НЕ на 0 — это убирает проблему "доставка всегда 0".
+  const basePrice = cfg?.configuration?.deliveryBasePrice ?? 0;
+  const calculatedFee = deliveryCalc?.calculateDeliveryPriceBreakdown?.total;
+  // ⭐ ШАГ 5: записать цену в cart-context (для других мест, где
+  // корзина показывается — например, в будущем mini-cart в bottom-tab).
+  const deliveryFee = deliveryCalc?.calculateDeliveryPriceBreakdown?.total ?? 0;
   const total = +(subtotal + deliveryFee).toFixed(2);
 
   const blocks: string[] = [];
@@ -98,7 +144,14 @@ export default function CartPage() {
     blocks.push(
       `💰 Минимальная сумма заказа: ${minimumOrder} ${sym}. Добавьте ещё на ${(minimumOrder - subtotal).toFixed(0)} ${sym}.`,
     );
-
+  // ⭐ ШАГ 4: проверка расчёта цены доставки
+  if (
+    addressId &&
+    !deliveryCalcLoading &&
+    deliveryCalc?.calculateDeliveryPriceBreakdown == null &&
+    restData?.restaurant?.location?.coordinates
+  )
+    blocks.push("⏳ Рассчитываем стоимость доставки…");
   const canOrder = blocks.length === 0;
 
   const onPlaceOrder = async () => {
@@ -118,7 +171,14 @@ export default function CartPage() {
             items: items.map((i) => ({
               foodId: i.foodId,
               quantity: i.quantity,
+              selectedOptions: i.selectedOptions?.map((o) => ({
+                groupId: o.groupId,
+                optionId: o.optionId,
+              })),
             })),
+            refetchQueries: [{ query: GET_ORDERS }],
+            deliveryPrice: deliveryFee,
+            awaitRefetchQueries: true,
           },
         },
       });
@@ -292,13 +352,52 @@ export default function CartPage() {
         {/* Totals */}
         <View className="mx-5 mt-3 bg-soft-surface border border-border rounded-2xl p-4 shadow-soft-sm">
           <Row label="Подытог" value={`${subtotal} ${sym}`} />
-          <Row label="Доставка" value={`${deliveryFee} ${sym}`} />
-          <View className="border-t border-border pt-2 mt-2 flex-row justify-between">
-            <Text className="font-extrabold text-text">Итого к оплате</Text>
+          {/* ⭐⭐⭐ ШАГ 4 FIX: доставка из API + детализация разворачивается по тапу.
+            Показываем "от X сом" если только базовая ставка, точную — после расчёта. */}
+          <Pressable
+            onPress={() => {
+              if (deliveryCalc?.calculateDeliveryPriceBreakdown) {
+                const b = deliveryCalc.calculateDeliveryPriceBreakdown;
+                Alert.alert(
+                  `📏 Расстояние: ${b.distanceKm.toFixed(2)} км\n\n` +
+                    `Базовая ставка (≤ ${cfg?.configuration?.deliveryBaseKm ?? 3} км): ${b.base} ${sym}\n` +
+                    (b.isOverBase ? `Сверх: +${b.perKm} ${sym}\n` : "") +
+                    `\nФормула: base + perKm × (distance − baseKm)`,
+                );
+              } else {
+                Alert.alert(
+                  `Доставка`,
+                  `Базовая ставка: ${basePrice} ${sym}\n` +
+                    `Выберите адрес для точного расчёта по расстоянию.`,
+                );
+              }
+            }}
+            className="flex-row justify-between"
+          >
+            <Text className="text-sm text-text-soft">
+              Доставка{" "}
+              {!addressId
+                ? "(выберите адрес)"
+                : calculatedFee
+                  ? "📏"
+                  : `(базовая, ≤ ${cfg?.configuration?.deliveryBaseKm ?? 3} км)`}
+            </Text>
+            <Text className="text-sm text-text font-bold">
+              {deliveryCalcLoading && addressId
+                ? "…"
+                : calculatedFee
+                  ? `${deliveryFee} ${sym}`
+                  : `от ${basePrice} ${sym}`}
+            </Text>
+          </Pressable>
+
+          <View className="pt-2 border-t border-border flex-row justify-between">
+            <Text className="font-extrabold text-text">Итого</Text>
             <Text className="font-extrabold text-accent text-lg">
               {total} {sym}
             </Text>
           </View>
+
           <Text className="text-2xs text-text-muted mt-1.5">
             Оплата наличными при получении.
           </Text>

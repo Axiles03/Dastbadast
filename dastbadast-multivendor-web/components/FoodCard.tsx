@@ -34,7 +34,9 @@ function hash(s: string) {
   return Math.abs(h);
 }
 
-function coverFor(name: string, image?: string | null) {
+// ⭐ ФИКС: экспортируем, чтобы AddToCartButton.tsx мог переиспользовать
+// эту (единственную рабочую) реализацию вместо собственной пустой заглушки.
+export function coverFor(name: string, image?: string | null) {
   if (image && image.trim()) return image;
   return FOOD_IMAGES[hash(name) % FOOD_IMAGES.length];
 }
@@ -48,6 +50,10 @@ export function FoodCard({
 }) {
   const { add, items } = useCart();
   const inCart = items.find((i) => i.foodId === food.id);
+
+  function setFlash(arg0: boolean) {
+    throw new Error("Function not implemented.");
+  }
 
   return (
     <article className="snap-start shrink-0 w-[200px] sm:w-[220px] bg-soft-surface border border-soft-border rounded-2xl p-3 hover:border-soft-accent hover:shadow-soft transition-all group flex flex-col">
@@ -103,7 +109,7 @@ export function FoodCard({
           aria-label="Добавить в корзину"
           onClick={(e) => {
             e.stopPropagation();
-            add({
+            const result = add({
               foodId: food.id,
               title: food.title,
               price: food.price,
@@ -113,6 +119,10 @@ export function FoodCard({
               restaurantId: food.restaurantId,
               restaurantName: food.restaurantName,
             });
+            if (result !== "invalid") {
+              setFlash(true);
+              setTimeout(() => setFlash(false), 1200);
+            }
           }}
           className="w-9 h-9 rounded-full bg-soft-accent hover:bg-soft-accent-dark text-white flex items-center justify-center shadow-soft-sm active:scale-95 transition-all shrink-0"
         >

@@ -7,10 +7,9 @@ import {
   useState,
   ReactNode,
   useCallback,
-  useRef,
 } from "react";
 import { storage } from "./security";
-import { debugLog, debugWarn } from "./debug-log";
+import { debugLog } from "./debug-log";
 
 export type CartItem = {
   foodId: string;
@@ -21,12 +20,25 @@ export type CartItem = {
   description?: string;
   restaurantId: string;
   restaurantName: string;
+
+  basePrice?: number;
+  optionsTotal?: number;
+  selectedOptions?: Array<{
+    groupId: string;
+    groupTitle?: string;
+    optionId: string;
+    optionTitle?: string;
+    price?: number;
+  }>;
 };
+
+// ⭐ NEW: результат add() — чтобы UI мог показать разное сообщение
+export type AddResult = "added" | "replaced" | "invalid";
 
 type CartState = {
   items: CartItem[];
   hydrated: boolean;
-  add: (i: CartItem) => boolean;
+  add: (i: CartItem) => AddResult;
   remove: (foodId: string) => void;
   setQty: (foodId: string, qty: number) => void;
   clear: () => void;
@@ -34,6 +46,17 @@ type CartState = {
   restaurantName: string | null;
   subtotal: number;
 };
+
+function cartItemKey(item: {
+  foodId: string;
+  selectedOptions?: Array<{ optionId: string | number }>;
+}) {
+  const optIds = (item.selectedOptions || [])
+    .map((o) => String(o.optionId))
+    .sort()
+    .join(",");
+  return `${item.foodId}:${optIds}`;
+}
 
 const Ctx = createContext<CartState | null>(null);
 const KEY = "db_cart_v4";
@@ -54,6 +77,17 @@ function normalizeItem(raw: Partial<CartItem>): CartItem | null {
     quantity: Math.max(1, Number(raw.quantity) || 1),
     image: raw.image,
     description: raw.description,
+    // ⭐ FIX: раньше эти поля терялись при нормализации — модификаторы
+    // пропадали после перезагрузки страницы / чтения из localStorage
+    basePrice: Number.isFinite(Number(raw.basePrice))
+      ? Number(raw.basePrice)
+      : undefined,
+    optionsTotal: Number.isFinite(Number(raw.optionsTotal))
+      ? Number(raw.optionsTotal)
+      : undefined,
+    selectedOptions: Array.isArray(raw.selectedOptions)
+      ? raw.selectedOptions
+      : undefined,
   };
 }
 
@@ -80,25 +114,16 @@ function readStoredCart(): CartItem[] {
   }
 }
 
-/**
- * ГИДРАЦИЯ В MVP:
- * - В браузере сразу читаем localStorage синхронно
- * - SSR тоже работает: на сервере вернётся [], клиент подхватит в useEffect
- * - ВАЖНО: hydrated ВСЕГДА true после первого рендера — это убирает race
- */
 function getInitialItems(): CartItem[] {
   if (typeof window === "undefined") return [];
   return readStoredCart();
 }
 
 export function CartProvider({ children }: { children: ReactNode }) {
-  // 🔧 FIX B2: lazy useState — инициализируется синхронно на клиенте
   const [items, setItems] = useState<CartItem[]>(getInitialItems);
-  // В dev React.StrictMode вызывает двойной рендер, но это OK — getInitialItems детерминирован
   const [hydrated, setHydrated] = useState(() => typeof window !== "undefined");
 
   useEffect(() => {
-    // Гарантируем, что флаг выставлен (для SSR-сценария)
     if (!hydrated) setHydrated(true);
   }, [hydrated]);
 
@@ -115,33 +140,30 @@ export function CartProvider({ children }: { children: ReactNode }) {
   const restaurantName = items[0]?.restaurantName ?? null;
   const subtotal = items.reduce((s, i) => s + i.price * i.quantity, 0);
 
-  const add = useCallback((i: CartItem): boolean => {
+  const add = useCallback((i: CartItem): AddResult => {
     const item = normalizeItem(i);
-    if (!item) {
-      debugWarn("Cart", "add rejected — invalid item", i);
-      return false;
-    }
-    debugLog("Cart", "add item", {
-      foodId: item.foodId,
-      restaurantId: item.restaurantId,
-      title: item.title,
-    });
+    if (!item) return "invalid";
+
+    let replaced = false;
     setItems((prev) => {
-      if (prev.length > 0 && prev[0].restaurantId !== item.restaurantId) {
-        debugLog("Cart", "switched restaurant — cart replaced");
-        return [item];
-      }
-      const found = prev.find((p) => p.foodId === item.foodId);
+      const conflict =
+        prev.length > 0 && prev[0].restaurantId !== item.restaurantId;
+      if (conflict) replaced = true;
+      const base = conflict ? [] : prev;
+
+      const newKey = cartItemKey(item);
+      const found = base.find((p) => cartItemKey(p) === newKey);
       if (found) {
-        return prev.map((p) =>
-          p.foodId === item.foodId
+        return base.map((p) =>
+          cartItemKey(p) === newKey
             ? { ...p, quantity: p.quantity + item.quantity }
             : p,
         );
       }
-      return [...prev, item];
+      return [...base, item];
     });
-    return true;
+
+    return replaced ? "replaced" : "added";
   }, []);
 
   const remove = useCallback((foodId: string) => {

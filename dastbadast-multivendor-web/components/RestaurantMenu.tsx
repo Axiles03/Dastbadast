@@ -24,6 +24,10 @@ type Food = {
   averageRating?: number;
   reviewCount?: number;
   reviews?: Review[];
+  isVegetarian?: boolean;
+  isVegan?: boolean;
+  spiceLevel?: number;
+  allergens?: string[];
 };
 
 type Category = {
@@ -37,15 +41,21 @@ export function RestaurantMenu({
   restaurantName,
   categories,
   currencySymbol,
+  disabled,
 }: {
   restaurantId: string;
   restaurantName: string;
   categories: Category[];
   currencySymbol: string;
+  disabled?: boolean;
 }) {
   const [activeId, setActiveId] = useState(categories[0]?.id ?? "");
   const [search, setSearch] = useState("");
   const [detailFood, setDetailFood] = useState<Food | null>(null);
+  const [onlyVeg, setOnlyVeg] = useState(false);
+  const [maxSpice, setMaxSpice] = useState<number | null>(null);
+  const [excludeAllergens, setExcludeAllergens] = useState<string[]>([]);
+
   const { add, items } = useCart();
 
   const activeCategory =
@@ -54,13 +64,22 @@ export function RestaurantMenu({
   const foods = useMemo(() => {
     const list = activeCategory?.foods ?? [];
     const q = search.trim().toLowerCase();
-    if (!q) return list;
-    return list.filter(
-      (f) =>
-        f.title.toLowerCase().includes(q) ||
-        (f.description || "").toLowerCase().includes(q),
-    );
-  }, [activeCategory, search]);
+    let result = q
+      ? list.filter(
+          (f) =>
+            f.title.toLowerCase().includes(q) ||
+            (f.description || "").toLowerCase().includes(q),
+        )
+      : list;
+    if (onlyVeg) result = result.filter((f) => f.isVegetarian);
+    if (maxSpice != null)
+      result = result.filter((f) => (f.spiceLevel ?? 0) <= maxSpice);
+    if (excludeAllergens.length > 0)
+      result = result.filter(
+        (f) => !(f.allergens || []).some((a) => excludeAllergens.includes(a)),
+      );
+    return result;
+  }, [activeCategory, search, onlyVeg, maxSpice, excludeAllergens]);
 
   if (!categories.length) {
     return (
@@ -114,6 +133,34 @@ export function RestaurantMenu({
         })}
       </div>
 
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          type="button"
+          onClick={() => setOnlyVeg((v) => !v)}
+          className={`text-xs font-bold px-3 py-1.5 rounded-full border transition-colors ${
+            onlyVeg
+              ? "bg-soft-accent text-white border-soft-accent"
+              : "bg-soft-surface-2 border-soft-border text-soft-text-soft"
+          }`}
+        >
+          🥦 Вегетарианское
+        </button>
+        {[1, 2, 3].map((lvl) => (
+          <button
+            key={lvl}
+            type="button"
+            onClick={() => setMaxSpice(maxSpice === lvl ? null : lvl)}
+            className={`text-xs font-bold px-3 py-1.5 rounded-full border transition-colors ${
+              maxSpice === lvl
+                ? "bg-soft-accent text-white border-soft-accent"
+                : "bg-soft-surface-2 border-soft-border text-soft-text-soft"
+            }`}
+          >
+            {"🌶️".repeat(lvl)} не острее
+          </button>
+        ))}
+      </div>
+
       <h2 className="text-lg font-extrabold text-soft-text">
         {activeCategory?.title}
       </h2>
@@ -151,6 +198,11 @@ export function RestaurantMenu({
                     <p className="text-soft-accent font-extrabold text-sm sm:text-base whitespace-nowrap">
                       {f.price} {currencySymbol}
                     </p>
+                    {(f.spiceLevel ?? 0) > 0 && (
+                      <span title={`Острота ${f.spiceLevel}/3`}>
+                        {"🌶️".repeat(f.spiceLevel ?? 0)}
+                      </span>
+                    )}
                     <p className="text-[10px] text-soft-text-muted mt-0.5 whitespace-nowrap flex items-center gap-0.5">
                       <Star className="w-3 h-3 fill-current text-soft-rating" />{" "}
                       {f.averageRating ? f.averageRating.toFixed(1) : "—"} ·{" "}
@@ -165,7 +217,8 @@ export function RestaurantMenu({
                       food={f}
                       restaurantId={restaurantId}
                       restaurantName={restaurantName}
-                      compact
+                      compact={true}
+                      disabled={disabled}
                     />
                   </div>
                 </div>

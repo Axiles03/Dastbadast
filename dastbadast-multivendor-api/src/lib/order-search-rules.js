@@ -1,78 +1,103 @@
 // dastbadast-multivendor-api/src/lib/order-search-rules.js
 //
-// Единое место настройки правил агрессивного автопоиска курьера.
-// Чтобы изменить — правим ТОЛЬКО эти константы.
+// ⭐⭐⭐ ШАГ 3: конфигурация алгоритма диспетчеризации курьеров.
+// UberEats-style: первая волна ближайших + эскалация с задержкой +
+// hot zone boost + TTL по локации + лимит активных заказов.
+//
+// Все параметры — ОДНО место. Не размазываем по resolvers.
 
 export const COURIER_SEARCH_RULES = {
-  /** Начальный радиус поиска курьеров (в км) */
+  /** Максимальный радиус первой волны (км) */
   INITIAL_PUSH_RADIUS_KM: 5,
 
-  /** Сколько ближайших курьеров уведомляем при первой волне */
+  /** Сколько ближайших курьеров получают пуш в первой волне */
   INITIAL_PUSH_COUNT: 5,
 
-  /** Сколько дополнительных курьеров уведомляем при эскалации */
+  /** Дополнительно при эскалации */
   ESCALATION_EXTRA_COUNT: 2,
 
-  /** Через сколько секунд отправляем вторую волну пушей */
-  ESCALATION_DELAY_MS: 90 * 1000, // 90 секунд
+  /** Задержка до эскалации (мс). 90 сек = стандарт UberEats */
+  ESCALATION_DELAY_MS: 90 * 1000,
 
-  /** Через сколько секунд после PENDING отправляем первую волну курьерам */
-  PENDING_PUSH_DELAY_MS: 0, // сразу
+  /** TTL для GPS-координат курьера (мс). Если lastLocationAt старше — исключаем. */
+  RIDER_LOCATION_TTL_MS: 5 * 60 * 1000,
 
-  /** Бонус курьеру за быстрый прием заказа (% от deliveryRate) */
-  FAST_ACCEPT_BONUS_PCT: 0.05, // +5%
+  /** Максимальное количество активных заказов у одного курьера. Больше — перегрузка. */
+  MAX_ACTIVE_ORDERS_PER_RIDER: 2,
+
+  /** Максимум волн поиска (включая эскалацию). После лимита → CANCELLED или ручной. */
+  MAX_PUSH_WAVES: 3,
+
+  /** Hot zone: если у ресторана >=N заказов за последний час, расширяем радиус */
+  HOT_ZONE_THRESHOLD: 5,
+  HOT_ZONE_RADIUS_BOOST: 1.5, // множитель
+  HOT_ZONE_MAX_RADIUS_KM: 12,
+
+  /** ⭐⭐⭐ TTL exclude-списка (для защиты от повторных пушей по эскалациям) */
+  RIDER_EXCLUDE_TTL_MS: 60 * 60 * 1000, // 1 час
 };
 
 /**
- * Вычислить список курьеров для пуша:
- * - находит всех доступных курьеров
- * - сортирует по близости к ресторану (если есть координаты)
- * - лимитирует top-N
- * - помечает "повторная" волна, чтобы не слать дубли тем же
+ * Ключ exclude-списка для заказа: "cart:exclude:{orderId}"
+ * @param {string} orderId
  */
-export function buildPushList({
-  riders,
-  restaurantLocation, // [lng, lat] | null
-  count,
-  excludeIds = [],
-}) {
-  if (!ridgers || !ridgers.length) return [];
+export function excludeKey(orderId) {
+  return `cart:exclude:${String(orderId)}`;
+}
 
-  // Расчёт дистанции (Haversine, км)
-  const haversineKm = (lat1, lng1, lat2, lng2) => {
-    if (lat1 == null || lng1 == null || lat2 == null || lng2 == null)
-      return Number.POSITIVE_INFINITY;
-    const R = 6371;
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLng = ((lng2 - lng1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) ** 2 +
-      Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLng / 2) ** 2;
-    return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  };
-
-  const [restLng, restLat] = restaurantLocation || [null, null];
-
-  const filtered = riders.filter(
-    (r) => r.available && r.isActive && !excludeIds.includes(String(r._id)),
+/**
+ * ⭐ Helper: вычислить эффективный радиус с учётом hot zone.
+ */
+export function effectiveRadius(isHotZone) {
+  if (!isHotZone) return COURIER_SEARCH_RULES.INITIAL_PUSH_RADIUS_KM;
+  return Math.min(
+    COURIER_SEARCH_RULES.INITIAL_PUSH_RADIUS_KM *
+      COURIER_SEARCH_RULES.HOT_ZONE_RADIUS_BOOST,
+    COURIER_SEARCH_RULES.HOT_ZONE_MAX_RADIUS_KM,
   );
+}
 
-  const sorted = filtered
-    .map((r) => {
-      const coords = r.location?.coordinates || [null, null];
-      const [lng, lat] = coords;
-      const distance =
-        restLat != null ? haversineKm(restLat, restLng, lat, lng) : null;
-      return { rider: r, distance };
-    })
-    .sort((a, b) => {
-      if (a.distance == null) return 1;
-      if (b.distance == null) return -1;
-      return a.distance - b.distance;
-    })
-    .slice(0, count);
+/**
+ * ⭐ Helper: отсортировать курьеров по дистанции до точки.
+ * Использует Haversine (in-memory), потому что GeoJSON-точка
+ * курьера может быть [0,0] (fallback) — такие сортируем в конец.
+ */
+export function rankRidersByDistance(riders, restaurantLat, restaurantLng) {
+  const out = [];
+  for (const r of riders) {
+    const coords = r.location?.coordinates;
+    if (!Array.isArray(coords) || coords.length !== 2) {
+      out.push({ rider: r, distance: Infinity, stale: true });
+      continue;
+    }
+    const [lng, lat] = coords;
+    if (lat === 0 && lng === 0) {
+      // "нулевые" координаты = нет реального GPS-сигнала
+      out.push({ rider: r, distance: Infinity, stale: true });
+      continue;
+    }
+    out.push({
+      rider: r,
+      distance: haversineKm(lat, lng, restaurantLat, restaurantLng),
+      stale: false,
+    });
+  }
+  out.sort((a, b) => {
+    if (a.distance === Infinity && b.distance === Infinity) return 0;
+    if (a.distance === Infinity) return 1;
+    if (b.distance === Infinity) return -1;
+    return a.distance - b.distance;
+  });
+  return out;
+}
 
-  return sorted.map((x) => x.rider);
+function haversineKm(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }

@@ -129,6 +129,11 @@ export const createAddress = async (_p, { input }, ctx) => {
   const u = requireUser(ctx);
   const { lng, lat } = await validatePoint(input.location);
   const user = await User.findById(u._id);
+  if ((user.addresses?.length || 0) >= 3) {
+    throw new GraphQLError("Можно сохранить не более 3 адресов", {
+      extensions: { code: "ADDRESS_LIMIT" },
+    });
+  }
   const makeSelected = !user.addresses || user.addresses.length === 0;
   if (makeSelected) {
     user.addresses.forEach((a) => (a.isSelected = false));

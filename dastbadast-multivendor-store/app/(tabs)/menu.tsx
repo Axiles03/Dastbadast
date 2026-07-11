@@ -14,6 +14,7 @@ import {
   Image,
   TouchableOpacity,
 } from "react-native";
+import { cn } from "../../lib/cn";
 import { useQuery, useMutation } from "@apollo/client/react";
 import {
   MY_MENU,
@@ -68,6 +69,17 @@ export default function MenuScreen() {
     image: "",
     categoryId: "",
     isAvailable: true,
+    isVegetarian: false,
+    spiceLevel: 0,
+    allergensText: "", // вводим через запятую, конвертим в массив при сохранении
+    optionGroups: [] as Array<{
+      title: string;
+      required: boolean;
+      multiple: boolean;
+      minSelect: number;
+      maxSelect: number;
+      options: Array<{ title: string; price: string }>;
+    }>,
   });
   const [busy, setBusy] = useState(false);
 
@@ -141,6 +153,10 @@ export default function MenuScreen() {
       image: "",
       categoryId: defaultCat,
       isAvailable: true,
+      isVegetarian: false,
+      spiceLevel: 0,
+      allergensText: "",
+      optionGroups: [],
     });
     setEditFoodId(null);
     setFoodModal("add");
@@ -154,6 +170,20 @@ export default function MenuScreen() {
       image: (food as any).image || "",
       categoryId,
       isAvailable: food.isAvailable,
+      isVegetarian: !!(food as any).isVegetarian,
+      spiceLevel: (food as any).spiceLevel ?? 0,
+      allergensText: ((food as any).allergens || []).join(", "),
+      optionGroups: ((food as any).optionGroups || []).map((g: any) => ({
+        title: g.title,
+        required: g.required,
+        multiple: g.multiple,
+        minSelect: g.minSelect,
+        maxSelect: g.maxSelect,
+        options: (g.options || []).map((o: any) => ({
+          title: o.title,
+          price: String(o.price),
+        })),
+      })),
     });
     setEditFoodId(food.id);
     setFoodModal("edit");
@@ -173,6 +203,26 @@ export default function MenuScreen() {
       Alert.alert("Ошибка", "Укажите корректную цену");
       return;
     }
+    const optionGroupsPayload = foodForm.optionGroups
+      .filter((g) => g.title.trim() && g.options.length > 0)
+      .map((g) => ({
+        title: g.title.trim(),
+        required: g.required,
+        multiple: g.multiple,
+        minSelect: g.minSelect,
+        maxSelect: g.maxSelect,
+        options: g.options
+          .filter((o) => o.title.trim())
+          .map((o) => ({
+            title: o.title.trim(),
+            price: parseFloat(o.price.replace(",", ".")) || 0,
+          })),
+      }));
+    const allergensPayload = foodForm.allergensText
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
     setBusy(true);
     try {
       if (foodModal === "add") {
@@ -184,6 +234,10 @@ export default function MenuScreen() {
               description: foodForm.description.trim(),
               image: foodForm.image.trim() || undefined,
               price,
+              isVegetarian: foodForm.isVegetarian,
+              spiceLevel: foodForm.spiceLevel,
+              allergens: allergensPayload,
+              optionGroups: optionGroupsPayload,
             },
           },
         });
@@ -198,6 +252,10 @@ export default function MenuScreen() {
               image: foodForm.image.trim() || undefined,
               price,
               isAvailable: foodForm.isAvailable,
+              isVegetarian: foodForm.isVegetarian,
+              spiceLevel: foodForm.spiceLevel,
+              allergens: allergensPayload,
+              optionGroups: optionGroupsPayload,
             },
           },
         });
@@ -421,7 +479,10 @@ export default function MenuScreen() {
           className="flex-1 bg-black/50 justify-end"
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
-          <TouchableOpacity className="flex-1" onPress={() => setCatModal(null)} />
+          <TouchableOpacity
+            className="flex-1"
+            onPress={() => setCatModal(null)}
+          />
           <View className="bg-soft-surface rounded-t-3xl p-5 pb-8">
             <Text className="text-lg font-extrabold text-text mb-4 tracking-tight">
               {catModal === "add" ? "Новая категория" : "Изменить категорию"}
@@ -473,7 +534,10 @@ export default function MenuScreen() {
           className="flex-1 bg-black/50 justify-end"
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
-          <TouchableOpacity className="flex-1" onPress={() => setFoodModal(null)} />
+          <TouchableOpacity
+            className="flex-1"
+            onPress={() => setFoodModal(null)}
+          />
           <ScrollView
             style={{ maxHeight: "92%" }}
             keyboardShouldPersistTaps="handled"
@@ -568,6 +632,221 @@ export default function MenuScreen() {
               placeholder="65"
               placeholderTextColor="#9A9388"
             />
+            <Text className="text-xs text-text-muted font-bold mb-1.5 uppercase tracking-wider">
+              Вегетарианское
+            </Text>
+            <View className="flex-row items-center justify-between mb-3.5 py-1">
+              <Text className="text-sm font-bold text-text">Без мяса</Text>
+              <Switch
+                value={foodForm.isVegetarian}
+                onValueChange={(v) =>
+                  setFoodForm((f) => ({ ...f, isVegetarian: v }))
+                }
+                trackColor={{ true: "#F26A4A", false: "#ECE6DA" }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <Text className="text-xs text-text-muted font-bold mb-1.5 uppercase tracking-wider">
+              Острота
+            </Text>
+            <View className="flex-row gap-2 mb-3.5">
+              {[0, 1, 2, 3].map((lvl) => (
+                <TouchableOpacity
+                  key={lvl}
+                  onPress={() =>
+                    setFoodForm((f) => ({ ...f, spiceLevel: lvl }))
+                  }
+                  className={`flex-1 py-2.5 rounded-xl border items-center ${
+                    foodForm.spiceLevel === lvl
+                      ? "bg-accent border-accent"
+                      : "bg-soft-surface border-border"
+                  }`}
+                >
+                  <Text
+                    className={`text-sm font-bold ${
+                      foodForm.spiceLevel === lvl
+                        ? "text-text-inverse"
+                        : "text-text"
+                    }`}
+                  >
+                    {lvl === 0 ? "Нет" : "🌶️".repeat(lvl)}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text className="text-xs text-text-muted font-bold mb-1.5 uppercase tracking-wider">
+              Аллергены (через запятую)
+            </Text>
+            <TextInput
+              className="border border-border rounded-xl px-3.5 py-3 text-base bg-soft-surface-2 text-text placeholder-text-muted mb-3.5"
+              value={foodForm.allergensText}
+              onChangeText={(t) =>
+                setFoodForm((f) => ({ ...f, allergensText: t }))
+              }
+              placeholder="орехи, молоко, глютен"
+              placeholderTextColor="#9A9388"
+            />
+
+            {/* ⭐ Модификаторы (группы опций) — простой редактор */}
+            <Text className="text-xs text-text-muted font-bold mb-1.5 uppercase tracking-wider">
+              Модификаторы
+            </Text>
+            {foodForm.optionGroups.map((g, gi) => (
+              <View
+                key={gi}
+                className="border border-border rounded-xl p-3 mb-2.5 bg-soft-surface-2"
+              >
+                <View className="flex-row items-center gap-2 mb-2">
+                  <TextInput
+                    className="flex-1 border border-border rounded-lg px-3 py-2 text-sm bg-white text-text"
+                    value={g.title}
+                    onChangeText={(t) =>
+                      setFoodForm((f) => {
+                        const groups = [...f.optionGroups];
+                        groups[gi] = { ...groups[gi], title: t };
+                        return { ...f, optionGroups: groups };
+                      })
+                    }
+                    placeholder="Название группы (напр. Размер)"
+                  />
+                  <TouchableOpacity
+                    onPress={() =>
+                      setFoodForm((f) => ({
+                        ...f,
+                        optionGroups: f.optionGroups.filter((_, i) => i !== gi),
+                      }))
+                    }
+                  >
+                    <Text className="text-red-500 font-bold text-xs px-2">
+                      ✕
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View className="flex-row items-center gap-3 mb-2">
+                  <Text className="text-xs text-text-muted">Обязательно</Text>
+                  <Switch
+                    value={g.required}
+                    onValueChange={(v) =>
+                      setFoodForm((f) => {
+                        const groups = [...f.optionGroups];
+                        groups[gi] = { ...groups[gi], required: v };
+                        return { ...f, optionGroups: groups };
+                      })
+                    }
+                  />
+                  <Text className="text-xs text-text-muted ml-3">
+                    Несколько вариантов
+                  </Text>
+                  <Switch
+                    value={g.multiple}
+                    onValueChange={(v) =>
+                      setFoodForm((f) => {
+                        const groups = [...f.optionGroups];
+                        groups[gi] = { ...groups[gi], multiple: v };
+                        return { ...f, optionGroups: groups };
+                      })
+                    }
+                  />
+                </View>
+
+                {g.options.map((o, oi) => (
+                  <View key={oi} className="flex-row items-center gap-2 mb-1.5">
+                    <TextInput
+                      className="flex-1 border border-border rounded-lg px-3 py-1.5 text-sm bg-white text-text"
+                      value={o.title}
+                      onChangeText={(t) =>
+                        setFoodForm((f) => {
+                          const groups = [...f.optionGroups];
+                          const options = [...groups[gi].options];
+                          options[oi] = { ...options[oi], title: t };
+                          groups[gi] = { ...groups[gi], options };
+                          return { ...f, optionGroups: groups };
+                        })
+                      }
+                      placeholder="Опция (напр. Большая)"
+                    />
+                    <TextInput
+                      className="w-20 border border-border rounded-lg px-3 py-1.5 text-sm bg-white text-text"
+                      value={o.price}
+                      onChangeText={(t) =>
+                        setFoodForm((f) => {
+                          const groups = [...f.optionGroups];
+                          const options = [...groups[gi].options];
+                          options[oi] = { ...options[oi], price: t };
+                          groups[gi] = { ...groups[gi], options };
+                          return { ...f, optionGroups: groups };
+                        })
+                      }
+                      keyboardType="decimal-pad"
+                      placeholder="+0"
+                    />
+                    <TouchableOpacity
+                      onPress={() =>
+                        setFoodForm((f) => {
+                          const groups = [...f.optionGroups];
+                          groups[gi] = {
+                            ...groups[gi],
+                            options: groups[gi].options.filter(
+                              (_, i) => i !== oi,
+                            ),
+                          };
+                          return { ...f, optionGroups: groups };
+                        })
+                      }
+                    >
+                      <Text className="text-red-500 text-xs px-1">✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+
+                <TouchableOpacity
+                  onPress={() =>
+                    setFoodForm((f) => {
+                      const groups = [...f.optionGroups];
+                      groups[gi] = {
+                        ...groups[gi],
+                        options: [
+                          ...groups[gi].options,
+                          { title: "", price: "0" },
+                        ],
+                      };
+                      return { ...f, optionGroups: groups };
+                    })
+                  }
+                  className="mt-1"
+                >
+                  <Text className="text-accent text-xs font-bold">
+                    + Добавить опцию
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+            <TouchableOpacity
+              onPress={() =>
+                setFoodForm((f) => ({
+                  ...f,
+                  optionGroups: [
+                    ...f.optionGroups,
+                    {
+                      title: "",
+                      required: false,
+                      multiple: false,
+                      minSelect: 0,
+                      maxSelect: 1,
+                      options: [],
+                    },
+                  ],
+                }))
+              }
+              className="mb-3.5"
+            >
+              <Text className="text-accent text-sm font-bold">
+                + Добавить группу модификаторов
+              </Text>
+            </TouchableOpacity>
 
             {foodModal === "edit" && (
               <View className="flex-row items-center justify-between mb-3.5 py-1">

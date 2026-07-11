@@ -1,13 +1,28 @@
 import { Configuration } from "../models/Configuration.js";
 import { GraphQLError } from "graphql";
 import { requireRole } from "../middleware/rbac.js";
+import { invalidateCache } from "../middleware/cache.js";
+
+// ⭐ ШАГ 4: импортируем дефолтные значения ставок из существующего модуля
+// (НЕ создаём новые — переиспользуем DELIVERY_PRICING)
+import { DELIVERY_PRICING } from "../utils/delivery-price.js";
 
 // FIX: защита от race при cold start через upsert
 async function getOrCreateSingleton() {
   try {
     const cfg = await Configuration.findByIdAndUpdate(
       "singleton",
-      { $setOnInsert: { _id: "singleton" } },
+      {
+        // ⭐ ШАГ 4: при первом создании singleton заполняем дефолтными значениями ставок
+        $setOnInsert: {
+          _id: "singleton",
+          deliveryBaseKm: DELIVERY_PRICING.baseKm,
+          deliveryBasePrice: DELIVERY_PRICING.basePrice,
+          deliveryPerKmPrice: DELIVERY_PRICING.perKmPrice,
+          deliveryRate: DELIVERY_PRICING.basePrice, // legacy поле = базовая ставка
+          taxPercent: 10,
+        },
+      },
       { new: true, upsert: true, setDefaultsOnInsert: true },
     );
     return cfg;
@@ -25,13 +40,11 @@ export const configuration = async () => {
 
 export const updateConfiguration = async (_p, { input }, ctx) => {
   requireRole(["SUPER_ADMIN", "FINANCE"])(ctx);
-  const update = {};
-  for (const k of Object.keys(input)) {
-    if (input[k] !== undefined && input[k] !== null) update[k] = input[k];
-  }
-  return Configuration.findByIdAndUpdate(
-    "singleton",
-    { $set: update },
-    { new: true, upsert: true, setDefaultsOnInsert: true },
-  );
+  // ... валидация ...
+  const result = await Configuration.findByIdAndUpdate(/* ... */);
+
+  // ⭐ Шаг 2: инвалидация кэша
+  await invalidateCache("configuration");
+
+  return result;
 };

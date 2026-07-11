@@ -1,7 +1,21 @@
 // dastbadast-multivendor-api/src/utils/geo.js
+//
+// ⭐ Гео-утилиты: Haversine, bearing, circle hit-test, ETA, сортировка по дистанции.
+// Используется в:
+//   - delivery-price.js      (расчёт стоимости доставки — Шаг 1)
+//   - order-search.js        (сортировка курьеров по близости к ресторану)
+//   - rider.js               (geofence "рядом с клиентом" 500 м)
+//   - order.js               (валидация адреса внутри зоны — pointInPolygon)
+//
+// Изменений в Шаге 1 НЕТ — только doc-комментарий сверху и re-export по желанию.
 
 /**
  * Расстояние Haversine в КМ между двумя точками.
+ * @param {number} lat1
+ * @param {number} lng1
+ * @param {number} lat2
+ * @param {number} lng2
+ * @returns {number} km
  */
 export function haversineKm(lat1, lng1, lat2, lng2) {
   const R = 6371;
@@ -34,6 +48,7 @@ export function bearingDeg(lat1, lng1, lat2, lng2) {
 
 /**
  * ⭐ Точка внутри круга радиуса radiusM (в метрах) от центра.
+ * Используется для быстрой проверки "рядом ли курьер" без полного Geofencing API.
  */
 export function pointInCircle(
   pointLat,
@@ -49,6 +64,9 @@ export function pointInCircle(
 
 /**
  * ⭐ ETA в секундах (средняя скорость курьера в городе).
+ * @param {number} distanceKm
+ * @param {number} [avgSpeedKmh=25]
+ * @param {number} [bufferSec=180] - буфер на парковку/поиск
  */
 export function etaSeconds(distanceKm, avgSpeedKmh = 25, bufferSec = 180) {
   const travelSec = (distanceKm / avgSpeedKmh) * 3600;
@@ -56,16 +74,24 @@ export function etaSeconds(distanceKm, avgSpeedKmh = 25, bufferSec = 180) {
 }
 
 /**
- * ⭐ Сортирует курьеров по расстоянию до точки (для Эшелона 1).
+ * ⭐ Сортирует курьеров по расстоянию до точки (для Эшелона 1 поиска).
+ * Если у курьера нет координат — distance = Infinity (в конец).
  */
 export function sortByDistance(riderCoords, targetLat, targetLng) {
   return riderCoords
-    .map((r) => ({
-      ...r,
-      distanceKm:
-        r.lat != null && r.lng != null
-          ? haversineKm(r.lat, r.lng, targetLat, targetLng)
-          : Infinity,
-    }))
-    .sort((a, b) => a.distanceKm - b.distanceKm);
+    .map((r) => {
+      const coords = r.location?.coordinates || [null, null];
+      const [lng, lat] = coords;
+      const distance =
+        lat != null && lng != null
+          ? haversineKm(lat, lng, targetLat, targetLng)
+          : Infinity;
+      return { ...r, distance };
+    })
+    .sort((a, b) => {
+      if (a.distance === Infinity && b.distance === Infinity) return 0;
+      if (a.distance === Infinity) return 1;
+      if (b.distance === Infinity) return -1;
+      return a.distance - b.distance;
+    });
 }

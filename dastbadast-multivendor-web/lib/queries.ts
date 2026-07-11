@@ -1,5 +1,10 @@
 import { gql } from "@apollo/client";
 
+import {
+  ORDER_LIST_ITEM_FRAGMENT,
+  ORDER_TRACKING_FRAGMENT,
+} from "./graphql/fragments";
+
 export const LOGIN = gql`
   mutation Login($input: LoginInput!) {
     login(input: $input) {
@@ -130,6 +135,7 @@ export const GET_RESTAURANT_CHECK = gql`
       tax
       minimumOrder
       isAvailable
+      location
     }
   }
 `;
@@ -143,6 +149,12 @@ export const GET_RESTAURANT = gql`
       minimumOrder
       tax
       isAvailable
+      isOpenNow
+      workingHours {
+        open
+        close
+        isAlwaysOpen
+      }
       categories {
         id
         title
@@ -154,6 +166,10 @@ export const GET_RESTAURANT = gql`
           image
           averageRating
           reviewCount
+          isVegetarian
+          isVegan
+          spiceLevel
+          allergens
           reviews {
             id
             userName
@@ -173,6 +189,41 @@ export const GET_CONFIGURATION = gql`
       currency
       currencySymbol
       deliveryRate
+      deliveryBaseKm
+      deliveryBasePrice
+      deliveryPerKmPrice
+    }
+  }
+`;
+
+// ⭐ ШАГ 4: query для расчёта цены доставки по координатам (вызывается из cart)
+// Использует API: utils/delivery-price.js → calculateDeliveryPrice()
+export const CALCULATE_DELIVERY_PRICE = gql`
+  query CalculateDeliveryPrice($fromCoords: JSON!, $toCoords: JSON!) {
+    calculateDeliveryPrice(fromCoords: $fromCoords, toCoords: $toCoords)
+  }
+`;
+
+export const CALCULATE_DELIVERY_PRICE_BREAKDOWN = gql`
+  query CalculateDeliveryPriceBreakdown(
+    $fromCoords: JSON!
+    $toCoords: JSON!
+    $basePrice: Float
+    $baseKm: Float
+    $perKmPrice: Float
+  ) {
+    calculateDeliveryPriceBreakdown(
+      fromCoords: $fromCoords
+      toCoords: $toCoords
+      basePrice: $basePrice
+      baseKm: $baseKm
+      perKmPrice: $perKmPrice
+    ) {
+      base
+      perKm
+      distanceKm
+      total
+      isOverBase
     }
   }
 `;
@@ -225,7 +276,6 @@ export const PLACE_ORDER = gql`
   }
 `;
 
-// ⭐⭐⭐ ИСПРАВЛЕНО: добавлен prepTime в selection set
 export const GET_ORDER = gql`
   query GetOrder($id: ID!) {
     order(id: $id) {
@@ -238,6 +288,7 @@ export const GET_ORDER = gql`
       paymentStatus
       riderId
       restaurantId
+      ...OrderTrackingFields
       items {
         foodId
         title
@@ -268,9 +319,27 @@ export const GET_ORDER = gql`
           escalationPushedAt
         }
       }
+      # ⭐ ШАГ 3: доставка — динамическая по km (API вычисляет через calculateDeliveryPrice)
+      deliveryPrice
+      # ⭐ ШАГ 4: полная разбивка цены (база + perKm + расстояние)
+      deliveryBreakdown {
+        base
+        perKm
+        distanceKm
+        total
+        isOverBase
+      }
+      # ⭐ ШАГ 3: расстояние маршрута (для UI "📏 3.2 км")
+      routeDistanceKm
+      # ⭐ ШАГ 3: ETA в секундах от курьера до клиента (для SSR/других клиентов;
+      # на web используется client-side etaMin из riderPos для real-time)
+      etaToCustomer
+      # Для будущей миграции на OSRM
+      routeGeometry
       createdAt
     }
   }
+  ${ORDER_TRACKING_FRAGMENT}
 `;
 
 export const GET_ORDERS = gql`
@@ -279,9 +348,11 @@ export const GET_ORDERS = gql`
       id
       orderId
       orderStatus
+      restaurantId
       paid
       paidAt
       riderId
+      ...OrderListItem
       amounts {
         total
       }
@@ -289,9 +360,20 @@ export const GET_ORDERS = gql`
         address
         city
       }
+      items {
+        foodId
+        title
+        price
+        quantity
+        selectedOptions {
+          groupId
+          optionId
+        }
+      }
       createdAt
     }
   }
+  ${ORDER_LIST_ITEM_FRAGMENT}
 `;
 
 export const SUB_USER_ORDERS = gql`
@@ -301,8 +383,10 @@ export const SUB_USER_ORDERS = gql`
       orderId
       orderStatus
       riderId
+      ...OrderListItem
     }
   }
+  ${ORDER_LIST_ITEM_FRAGMENT}
 `;
 
 export const SUB_ORDER = gql`
@@ -311,8 +395,15 @@ export const SUB_ORDER = gql`
       id
       orderId
       orderStatus
+      riderId
+      # ⭐ ШАГ 3: поля добавлены чтобы refetch сразу получал свежие ETA / price
+      deliveryPrice
+      routeDistanceKm
+      etaToCustomer
+      ...OrderTrackingFields
     }
   }
+  ${ORDER_TRACKING_FRAGMENT}
 `;
 
 export const CONFIRM_ORDER_RECEIVED = gql`
@@ -381,9 +472,7 @@ export const RIDER_LOCATION_QUERY = gql`
   query RiderLocation($id: ID!) {
     rider(id: $id) {
       id
-      location {
-        coordinates
-      }
+      location
       lastLocationAt
     }
   }
@@ -401,5 +490,101 @@ export const REFRESH_ORDER_STATUS = gql`
         deliveredAt
       }
     }
+  }
+`;
+
+export const ORDER_FRAGMENT = gql`
+  fragment OrderTrackingFields on Order {
+    id
+    orderId
+    orderStatus
+    paymentMethod
+    paid
+    paidAt
+    paymentStatus
+    riderId
+    deliveryPrice
+    etaToCustomer
+    routeDistanceKm
+    deliveryBreakdown {
+      base
+      perKm
+      distanceKm
+      total
+      isOverBase
+    }
+    statusTimestamps {
+      deliveredAt
+      pickedAt
+      assignedAt
+      acceptedAt
+      pendingAt
+      prepTime
+    }
+    riderLocation {
+      lat
+      lng
+      updatedAt
+    }
+  }
+`;
+
+export const SUB_ORDER_UPDATED = gql`
+  subscription SubOrderUpdated($orderId: ID!) {
+    subscriptionOrder(orderId: $orderId) {
+      ...OrderTrackingFields
+    }
+  }
+  ${ORDER_FRAGMENT}
+`;
+
+export const GET_ORDER_FULL = gql`
+  query GetOrderFull($id: ID!) {
+    order(id: $id) {
+      ...OrderTrackingFields
+      items {
+        foodId
+        title
+        price
+        quantity
+      }
+      amounts {
+        subtotal
+        tax
+        deliveryFee
+        total
+      }
+      deliveryAddress {
+        address
+        city
+        location
+      }
+      pickupAddress {
+        name
+        address
+        location
+      }
+      createdAt
+    }
+  }
+  ${ORDER_FRAGMENT}
+`;
+
+export const ORDER_LIST_ITEM = gql`
+  fragment OrderListItem on Order {
+    id
+    orderId
+    orderStatus
+    paid
+    paidAt
+    riderId
+    amounts {
+      total
+    }
+    deliveryAddress {
+      address
+      city
+    }
+    createdAt
   }
 `;

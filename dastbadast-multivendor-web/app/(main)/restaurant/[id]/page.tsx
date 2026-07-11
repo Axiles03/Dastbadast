@@ -60,6 +60,7 @@ export default async function RestaurantPage({
     day: "numeric",
     month: "long",
   });
+  const closed = r.isOpenNow === false || r.isAvailable === false;
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -80,10 +81,28 @@ export default async function RestaurantPage({
             <MapPin className="w-3.5 h-3.5" /> {r.address}
           </p>
         )}
+
+        {!r.isOpenNow && (
+          <span className="text-xs font-bold px-3 py-1 rounded-full bg-soft-accent-soft text-soft-accent">
+            Закрыто · откроется в {r.workingHours?.open}
+          </span>
+        )}
         <div className="flex gap-2 mt-3 flex-wrap">
           <span className="text-xs font-bold px-3 py-1 rounded-full bg-soft-surface-2 border border-soft-border text-soft-text-soft">
             Мин. заказ · {r.minimumOrder} {sym}
           </span>
+          {r.workingHours && !r.workingHours.isAlwaysOpen && (
+            <span className="text-xs font-bold px-3 py-1 rounded-full bg-soft-surface-2 border border-soft-border text-soft-text-soft">
+              🕐 {r.workingHours.open}–{r.workingHours.close}
+            </span>
+          )}
+          {closed && (
+            <span className="text-xs font-bold px-3 py-1 rounded-full bg-red-soft border border-red/30 text-red">
+              {r.isAvailable === false
+                ? "Временно не принимает заказы"
+                : `Закрыто · откроется в ${r.workingHours?.open ?? ""}`}
+            </span>
+          )}
         </div>
       </header>
 
@@ -92,6 +111,7 @@ export default async function RestaurantPage({
         restaurantName={r.name}
         categories={r.categories || []}
         currencySymbol={sym}
+        disabled={closed}
       />
     </div>
   );

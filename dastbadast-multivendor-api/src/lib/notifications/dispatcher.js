@@ -97,3 +97,11 @@ export const notifyRestaurantNewOrder = (a) =>
     event: "NEW_ORDER_TO_RESTAURANT",
     vars: a,
   });
+
+import { registerRegistry } from "../../cleanup-cron.js";
+registerRegistry(
+  "dedupCache", // антиспам: 1 push на owner+event на 60 сек
+  dedupCache,
+  5 * 60 * 1000, // удалять старше 5 мин
+  10000,
+);

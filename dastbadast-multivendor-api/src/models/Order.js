@@ -1,19 +1,47 @@
 // dastbadast-multivendor-api/src/models/Order.js
 import mongoose from "mongoose";
 
-const OrderItemSchema = new mongoose.Schema(
+const OrderItemOptionSchema = new mongoose.Schema(
   {
-    foodId: { type: mongoose.Schema.Types.ObjectId, ref: "Food" },
-    title: { type: String, required: true },
-    price: { type: Number, required: true },
-    quantity: { type: Number, required: true, min: 1 },
-    image: { type: String, default: "" },
-    description: { type: String, default: "" },
-    variation: { type: Object, default: null },
-    addons: { type: Array, default: [] },
+    groupId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    groupTitle: { type: String, required: true }, // снапшот
+    optionId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    optionTitle: { type: String, required: true }, // снапшот
+    price: { type: Number, required: true, min: 0 }, // снапшот надбавки
   },
   { _id: false },
 );
+
+const OrderItemSchema = new mongoose.Schema(
+  {
+    foodId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Food",
+      required: true,
+    },
+    title: { type: String, required: true }, // снапшот имени
+    basePrice: { type: Number, required: true, min: 0 }, // ⭐⭐⭐ ШАГ 1: было просто `price`
+    optionsTotal: { type: Number, default: 0, min: 0 }, // ⭐⭐⭐ ШАГ 1: Σ(price) по выбранным опциям
+    price: { type: Number, required: true, min: 0 }, // ⭐⭐⭐ ШАГ 1: ИТОГО за единицу = basePrice + optionsTotal (вычисляем перед записью)
+    quantity: { type: Number, required: true, min: 1 },
+    image: { type: String, default: "" }, // снапшот
+    description: { type: String, default: "" }, // снапшот
+    // ⭐⭐⭐ ШАГ 1: структурированный список выбранных опций.
+    // Заменяет старые неструктурированные `variation` + `addons`.
+    selectedOptions: {
+      type: [OrderItemOptionSchema],
+      default: [],
+    },
+  },
+  { _id: false },
+);
+
+OrderItemSchema.virtual("lineTotal").get(function () {
+  return this.price * this.quantity;
+});
+
+OrderItemSchema.set("toJSON", { virtuals: true });
+OrderItemSchema.set("toObject", { virtuals: true });
 
 const OrderSchema = new mongoose.Schema(
   {
@@ -76,7 +104,7 @@ const OrderSchema = new mongoose.Schema(
     },
 
     amounts: {
-      subtotal: { type: Number, required: true },
+      subtotal: { type: Number, required: true }, // ⭐⭐⭐ ШАГ 1: Σ(lineTotal) = Σ((basePrice + optionsTotal) * qty)
       tax: { type: Number, default: 0 },
       deliveryFee: { type: Number, default: 0 },
       total: { type: Number, required: true },
@@ -111,7 +139,6 @@ const OrderSchema = new mongoose.Schema(
     },
     providerRef: { type: String, default: null },
     paidAt: { type: Date, default: null },
-
     cancelReason: { type: String, default: "" },
     note: { type: String, default: "" },
     pickupAddress: {
@@ -124,7 +151,12 @@ const OrderSchema = new mongoose.Schema(
       },
     },
   },
-  { timestamps: true },
+
+  {
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
+  },
 );
 
 OrderSchema.index({ userId: 1, createdAt: -1 });
@@ -138,5 +170,18 @@ OrderSchema.index(
     },
   },
 );
+
+OrderSchema.methods.recalcAmounts = function () {
+  const subtotal = this.items.reduce(
+    (s, i) => s + (i.basePrice + i.optionsTotal) * i.quantity,
+    0,
+  );
+  this.amounts.subtotal = +subtotal.toFixed(2);
+  this.amounts.total = +(
+    this.amounts.subtotal +
+    this.amounts.tax +
+    this.amounts.deliveryFee
+  ).toFixed(2);
+};
 
 export const Order = mongoose.model("Order", OrderSchema);

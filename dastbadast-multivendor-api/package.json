@@ -8,9 +8,14 @@
   "scripts": {
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
+    "start:cluster": "node --experimental-vm-modules src/index.js",
+    "start:pm2": "pm2 start ecosystem.config.js --env production",
+    "stop:pm2": "pm2 delete dastbadast-api",
+    "logs:pm2": "pm2 logs dastbadast-api",
     "seed": "node scripts/seed.js",
     "migrate-geo-index": "node scripts/migrate-geo-index.js",
-    "migrate-order-status": "node scripts/migrate-order-status.js"
+    "migrate-order-status": "node scripts/migrate-order-status.js",
+    "migrate-indexes": "node scripts/recommend-indexes.js"
   },
   "dependencies": {
     "@apollo/server": "^5.5.1",
@@ -26,9 +31,12 @@
     "graphql": "^16.9.0",
     "graphql-subscriptions": "^3.0.0",
     "graphql-ws": "^5.16.0",
+    "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.2",
+    "lru-cache": "^11.5.1",
     "lucide-react": "^1.17.0",
     "mongoose": "^8.6.0",
+    "node-cron": "^3.0.3",
     "ws": "^8.18.0"
   },
   "devDependencies": {

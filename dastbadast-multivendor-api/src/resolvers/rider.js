@@ -4,6 +4,10 @@ import { Order } from "../models/Order.js";
 import { Rider } from "../models/Rider.js";
 import { signRiderToken } from "../middleware/auth.js";
 import { pubsub, TOPICS } from "../pubsub.js";
+import {
+  setRiderLocationInRedis,
+  getRiderLocationFromRedis,
+} from "../services/rider-location.service.js";
 
 // ⭐⭐⭐ Константы для real-time трекинга
 const RIDER_LOCATION_THROTTLE_MS = 10_000; // минимум между обновлениями (10 сек)
@@ -44,12 +48,11 @@ function haversineKm(lat1, lng1, lat2, lng2) {
   return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// ⭐⭐⭐ Полная замена updateRiderLocation: throttling + bearing + geofence
 export const updateRiderLocation = async (_p, { input }, ctx) => {
   const r = requireRider(ctx);
-  const { lat, lng } = input;
+  const { lat, lng, bearing } = input;
 
-  // Базовая валидация
+  // 1) Валидация (без изменений)
   if (
     typeof lat !== "number" ||
     typeof lng !== "number" ||
@@ -63,11 +66,10 @@ export const updateRiderLocation = async (_p, { input }, ctx) => {
     });
   }
 
-  // ⭐⭐⭐ Throttling: не чаще 1 раза в 10 сек (защита от спама)
+  // 2) Throttling: 10 сек (без изменений)
   const now = Date.now();
   const prev = lastRiderLocation.get(r._id.toString());
   if (prev && now - prev.at < RIDER_LOCATION_THROTTLE_MS) {
-    // Возвращаем текущего курьера без сохранения
     return r;
   }
 
@@ -85,9 +87,23 @@ export const updateRiderLocation = async (_p, { input }, ctx) => {
       Math.abs(newBearing - (prev.bearing ?? 0)) >=
         BEARING_CHANGE_THRESHOLD_DEG); // резко повернул
 
+  const speedKmh = prev
+    ? (distanceFromPrev / ((now - prev.at) / 1000)) * 3.6
+    : null;
+
+  const updatedAt = new Date().toISOString();
+  await setRiderLocationInRedis(r._id.toString(), {
+    lat,
+    lng,
+    bearing: bearing ?? newBearing,
+    speedKmh,
+    updatedAt,
+  });
+
   // Сохраняем в БД (всегда — для истории)
   r.location = { type: "Point", coordinates: [lng, lat] };
   r.lastLocationAt = new Date();
+  if (typeof bearing === "number") r.bearing = bearing;
   await r.save();
 
   // Обновляем кэш
@@ -98,6 +114,19 @@ export const updateRiderLocation = async (_p, { input }, ctx) => {
     bearing: newBearing ?? prev?.bearing ?? 0,
   });
 
+  // ⭐ 6) ШАГ 5 (атомарный, раз в 5 мин) — но пока пишем в Mongo,
+  //    если прошло > 5 мин с последней записи (cron не успел).
+  //    Это fallback для случая, когда cron не работает.
+  const lastMongoWriteAt = r.lastLocationAt?.getTime() ?? 0;
+  const NEED_TO_PERSIST = now - lastMongoWriteAt > 4 * 60 * 1000; // 4 мин
+
+  if (NEED_TO_PERSIST) {
+    r.location = { type: "Point", coordinates: [lng, lat] };
+    r.lastLocationAt = new Date();
+    if (typeof bearing === "number") r.bearing = bearing;
+    await r.save();
+  }
+
   if (!shouldBroadcast) return r;
 
   // ⭐⭐⭐ Бродкаст курьерской локации
@@ -105,9 +134,9 @@ export const updateRiderLocation = async (_p, { input }, ctx) => {
     riderId: r._id.toString(),
     lat,
     lng,
-    bearing: newBearing,
-    speedKmh: prev ? (distanceFromPrev / ((now - prev.at) / 1000)) * 3.6 : null,
-    updatedAt: new Date().toISOString(),
+    bearing: bearing ?? newBearing,
+    speedKmh,
+    updatedAt,
   };
   pubsub.publish(TOPICS.RIDER_LOCATION(r._id.toString()), {
     subscriptionRiderLocation: payload,
@@ -355,3 +384,11 @@ export const rider = async (_p, { id }, ctx) => {
   publicProfile.lastLocationAt = null;
   return publicProfile;
 };
+
+import { registerRegistry } from "../cleanup-cron.js";
+registerRegistry(
+  "lastRiderLocation", // last GPS-точка каждого курьера (для throttling)
+  lastRiderLocation, // Map<riderId, {at, lat, lng, bearing}>
+  10 * 60 * 1000, // удалять старше 10 мин (rider вряд ли активен дольше без апдейта)
+  5000, // максимум 5000 курьеров в памяти (≈ 2MB)
+);

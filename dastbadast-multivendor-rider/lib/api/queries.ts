@@ -51,7 +51,7 @@ export const AVAILABLE_ORDERS = gql`
         quantity
       }
       amounts {
-        total
+        deliveryFee
       }
       statusTimestamps {
         pendingAt
@@ -88,7 +88,7 @@ export const MY_ORDERS = gql`
         quantity
       }
       amounts {
-        total
+        deliveryFee
       }
     }
   }
@@ -234,6 +234,20 @@ export const MY_TODAY_EARNINGS = gql`
       statusTimestamps {
         deliveredAt
       }
+    }
+  }
+`;
+
+export const SUB_RIDER_LOCATION = gql`
+  subscription SubRiderLocation($riderId: ID!) {
+    subscriptionRiderLocation(riderId: $riderId) {
+      riderId
+      lat
+      lng
+      bearing
+      speedKmh
+      updatedAt
+      stopped
     }
   }
 `;

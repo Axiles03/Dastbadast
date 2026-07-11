@@ -1,5 +1,7 @@
 import { gql } from "@apollo/client";
 
+import { ORDER_LIST_ITEM_FRAGMENT, ORDER_TRACKING_FRAGMENT } from "./fragments";
+
 export const LOGIN = gql`
   mutation Login($input: LoginInput!) {
     login(input: $input) {
@@ -110,7 +112,6 @@ export const GET_RESTAURANTS = gql`
   }
 `;
 
-// ⭐ ДОБАВЛЕНО: лёгкая проверка ресторана для корзины
 export const GET_RESTAURANT_CHECK = gql`
   query GetRestaurantCheck($id: ID!) {
     restaurant(id: $id) {
@@ -119,6 +120,35 @@ export const GET_RESTAURANT_CHECK = gql`
       tax
       minimumOrder
       isAvailable
+      # ⭐ ШАГ 4: координаты ресторана — нужны для расчёта цены доставки (fromCoords).
+      # Без этого cart показывает "0 сом" (useQuery skip → deliveryFee = 0).
+      location
+    }
+  }
+`;
+
+export const FOOD_WITH_OPTIONS_FRAGMENT = gql`
+  fragment FoodWithOptions on Food {
+    id
+    title
+    description
+    price
+    image
+    isAvailable
+    optionGroups {
+      id
+      title
+      required
+      multiple
+      minSelect
+      maxSelect
+      sortOrder
+      options {
+        id
+        title
+        price
+        isAvailable
+      }
     }
   }
 `;
@@ -137,18 +167,12 @@ export const GET_RESTAURANT = gql`
         title
         image
         foods {
-          id
-          title
-          description
-          price
-          image
-          averageRating
-          reviewCount
-          isAvailable
+          ...FoodWithOptions
         }
       }
     }
   }
+  ${FOOD_WITH_OPTIONS_FRAGMENT}
 `;
 
 export const GET_CONFIGURATION = gql`
@@ -157,6 +181,10 @@ export const GET_CONFIGURATION = gql`
       currency
       currencySymbol
       deliveryRate
+      # ⭐ ШАГ 4: динамические параметры цены доставки (по km)
+      deliveryBaseKm
+      deliveryBasePrice
+      deliveryPerKmPrice
     }
   }
 `;
@@ -221,12 +249,12 @@ export const GET_ORDER = gql`
       paymentStatus
       riderId
       restaurantId
+      ...OrderTrackingFields
       items {
         foodId
         title
         price
         quantity
-        image
       }
       amounts {
         subtotal
@@ -239,6 +267,16 @@ export const GET_ORDER = gql`
         city
         location
       }
+      # ⭐ ШАГ 4: добавлено для отображения цены доставки в tracking
+      deliveryPrice
+      deliveryBreakdown {
+        base
+        perKm
+        distanceKm
+        total
+        isOverBase
+      }
+      routeDistanceKm
       statusTimestamps {
         deliveredAt
         pickedAt
@@ -249,6 +287,7 @@ export const GET_ORDER = gql`
       createdAt
     }
   }
+  ${ORDER_TRACKING_FRAGMENT}
 `;
 
 export const GET_ORDERS = gql`
@@ -260,6 +299,7 @@ export const GET_ORDERS = gql`
       paid
       paidAt
       riderId
+      ...OrderListItem
       amounts {
         total
       }
@@ -270,6 +310,7 @@ export const GET_ORDERS = gql`
       createdAt
     }
   }
+  ${ORDER_LIST_ITEM_FRAGMENT}
 `;
 
 export const SUB_USER_ORDERS = gql`
@@ -279,8 +320,10 @@ export const SUB_USER_ORDERS = gql`
       orderId
       orderStatus
       riderId
+      ...OrderListItem
     }
   }
+  ${ORDER_LIST_ITEM_FRAGMENT}
 `;
 
 export const SUB_ORDER = gql`
@@ -289,8 +332,10 @@ export const SUB_ORDER = gql`
       id
       orderId
       orderStatus
+      ...OrderTrackingFields
     }
   }
+  ${ORDER_TRACKING_FRAGMENT}
 `;
 
 export const CONFIRM_ORDER_RECEIVED = gql`
@@ -377,10 +422,41 @@ export const RIDER_LOCATION_QUERY = gql`
   query RiderLocation($id: ID!) {
     rider(id: $id) {
       id
-      location {
-        coordinates
-      }
+      location
       lastLocationAt
+    }
+  }
+`;
+
+// ⭐ ШАГ 4: query для расчёта цены доставки по координатам
+// (вызывается из cart). Использует API: utils/delivery-price.js → calculateDeliveryPrice()
+export const CALCULATE_DELIVERY_PRICE = gql`
+  query CalculateDeliveryPrice($fromCoords: JSON!, $toCoords: JSON!) {
+    calculateDeliveryPrice(fromCoords: $fromCoords, toCoords: $toCoords)
+  }
+`;
+
+// ⭐ ШАГ 4: query для полной разбивки цены (для UI-чека: "10 + 6 = 16 сом. (3.2 км)")
+export const CALCULATE_DELIVERY_PRICE_BREAKDOWN = gql`
+  query CalculateDeliveryPriceBreakdown(
+    $fromCoords: JSON!
+    $toCoords: JSON!
+    $basePrice: Float
+    $baseKm: Float
+    $perKmPrice: Float
+  ) {
+    calculateDeliveryPriceBreakdown(
+      fromCoords: $fromCoords
+      toCoords: $toCoords
+      basePrice: $basePrice
+      baseKm: $baseKm
+      perKmPrice: $perKmPrice
+    ) {
+      base
+      perKm
+      distanceKm
+      total
+      isOverBase
     }
   }
 `;

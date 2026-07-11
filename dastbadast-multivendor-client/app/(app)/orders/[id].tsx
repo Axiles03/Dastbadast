@@ -27,6 +27,7 @@ import {
 import { getApolloClient } from "../../../lib/apollo-provider";
 import { StatusPill } from "../../../components/StatusPill";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { gql } from "@apollo/client";
 
 // Безопасный импорт react-native-maps — если пакета нет, MapView === null
 let MapView: any = null;
@@ -136,10 +137,39 @@ export default function TrackingPage() {
   const [riderPos, setRiderPos] = useState<RiderPos>(null);
   const [etaMin, setEtaMin] = useState<number | null>(null);
 
-  const { data, loading, error, refetch } = useQuery<any>(GET_ORDER, {
-    variables: { id },
-    skip: !id,
-  });
+  const { data, loading, error, refetch, subscribeToMore } = useQuery<any>(
+    GET_ORDER,
+    {
+      variables: { id },
+      skip: !id,
+      // pollInterval: 10000  // ⭐ УБРАНО
+    },
+  );
+
+  useEffect(() => {
+    if (!id || !subscribeToMore) return;
+    const unsubscribe = subscribeToMore({
+      document: SUB_ORDER, // ⭐ из lib/queries.ts
+      variables: { orderId: id },
+      updateQuery: (prev: any, { subscriptionData }: any) => {
+        if (!subscriptionData?.data?.subscriptionOrder) return prev;
+        const updated = subscriptionData.data.subscriptionOrder;
+        return {
+          order: {
+            ...prev?.order,
+            ...updated,
+            items: updated.items ?? prev?.order?.items,
+            amounts: updated.amounts ?? prev?.order?.amounts,
+            deliveryAddress:
+              updated.deliveryAddress ?? prev?.order?.deliveryAddress,
+            pickupAddress: updated.pickupAddress ?? prev?.order?.pickupAddress,
+          },
+        };
+      },
+    });
+    return () => unsubscribe();
+  }, [id, subscribeToMore]);
+
   const { data: cfg } = useQuery<any>(GET_CONFIGURATION);
   const { data: chatData, refetch: refetchChat } = useQuery<any>(
     GET_CHAT_MESSAGES,
@@ -153,14 +183,23 @@ export default function TrackingPage() {
     CONFIRM_ORDER_RECEIVED,
   );
 
+  // ⭐ ШАГ 5: live countdown для статуса ACCEPTED (готовка на кухне)
+  const { data: prepEtaData } = useQuery<{ restaurantPrepEta: number | null }>(
+    gql`
+      query PrepEta($orderId: ID!) {
+        restaurantPrepEta(orderId: $orderId)
+      }
+    `,
+    {
+      variables: { id },
+      skip: !id,
+      pollInterval: 30_000, // ⭐ Обновлять каждые 30 сек
+    },
+  );
+  const prepEtaMin = prepEtaData?.restaurantPrepEta ?? null;
+
   const o = data?.order;
   const sym = cfg?.configuration?.currencySymbol ?? "сом.";
-
-  useSubscription(SUB_ORDER, {
-    variables: { orderId: id },
-    skip: !id,
-    onData: () => refetch(),
-  });
 
   useSubscription(SUB_CHAT, {
     variables: { orderId: id },
@@ -383,11 +422,28 @@ export default function TrackingPage() {
       >
         <View className="bg-soft-surface border border-border rounded-3xl p-8 items-center shadow-soft-sm mb-4">
           <Text className="text-sm text-text-soft">
-            Ваш заказ будет готов через
+            {o?.orderStatus === "ACCEPTED" &&
+            prepEtaMin != null &&
+            prepEtaMin > 0
+              ? "⏱ Осталось готовить"
+              : "Ваш заказ будет готов через"}
           </Text>
           <Text className="text-4xl font-extrabold text-accent mt-1">
-            {stage.minutes} {minutesWord(stage.minutes)}
+            {/* ⭐ ШАГ 5: показываем live ETA для ACCEPTED, fallback на статику */}
+            {o?.orderStatus === "ACCEPTED" && prepEtaMin != null
+              ? `${prepEtaMin} ${minutesWord(prepEtaMin)}`
+              : `${stage.minutes} ${minutesWord(stage.minutes)}`}
           </Text>
+          {/* ⭐ ШАГ 5: для PICKED показываем ETA до клиента (если курьер есть) */}
+          {(o?.orderStatus === "PICKED" || o?.orderStatus === "ASSIGNED") &&
+            o?.riderId && (
+              <View className="mt-2 bg-info-soft border border-info/30 rounded-2xl px-3 py-2">
+                <Text className="text-xs text-info-dark font-bold">
+                  🛵 Курьер в пути
+                </Text>
+              </View>
+            )}
+
           <View className="w-48 h-48 rounded-full bg-accent-soft items-center justify-center mt-5">
             <Text className="text-7xl">{stage.emoji}</Text>
           </View>
@@ -555,10 +611,9 @@ export default function TrackingPage() {
           ))}
           <View className="pt-2.5 mt-2.5 border-t border-border space-y-1">
             <Row label="Подытог" value={`${o.amounts?.subtotal ?? 0} ${sym}`} />
-            <Row label="Налог" value={`${o.amounts?.tax ?? 0} ${sym}`} />
             <Row
               label="Доставка"
-              value={`${o.amounts?.deliveryFee ?? 0} ${sym}`}
+              value={`${typeof o?.deliveryPrice === "number" ? o.deliveryPrice : (o.amounts?.deliveryFee ?? 0)} ${sym}`}
             />
             <View className="pt-2 border-t border-border flex-row justify-between">
               <Text className="font-extrabold text-text">Итого</Text>
