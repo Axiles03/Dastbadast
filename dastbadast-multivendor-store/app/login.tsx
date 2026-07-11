@@ -17,8 +17,13 @@ import { useRouter } from "expo-router";
 import { GRAPHQL_HTTP } from "../lib/config/api";
 
 export default function Login() {
-  const [username, setUsername] = useState("chayhana1");
-  const [password, setPassword] = useState("store123");
+  // ⭐ ФИКС ПЕРЕД ПУБЛИКАЦИЕЙ: раньше сюда были захардкожены демо-логин/пароль
+  // ("chayhana1"/"store123"), и они же дублировались подсказкой прямо на
+  // экране (см. блок "Демо:" ниже, тоже убран). Для продакшен-сборки,
+  // которая пойдёт в Play Store, поля должны быть пустыми — иначе это
+  // фактически видимый бэкдор в реальный ресторанный аккаунт.
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [doLogin, { loading }] = useMutation(RESTAURANT_LOGIN);
   const { setAuth } = useAuth();
   const router = useRouter();
@@ -34,8 +39,20 @@ export default function Login() {
       router.replace("/(tabs)/new");
     } catch (e: any) {
       let msg = e?.message ?? "Не удалось войти";
-      if (/NoRouteToHost|Network request failed|fetch failed/i.test(msg)) {
+      // ⭐ ФИКС: подробности с адресом API и советами по .env — полезны при
+      // локальной разработке, но не должны показываться конечным
+      // пользователям в опубликованном приложении (мусорная/пугающая
+      // техническая информация). Показываем их только в dev-сборке.
+      if (
+        __DEV__ &&
+        /NoRouteToHost|Network request failed|fetch failed/i.test(msg)
+      ) {
         msg = `Не удалось подключиться к API.\n\nURL: ${GRAPHQL_HTTP}\n\nПроверьте:\n• API запущен\n• EXPO_PUBLIC_API_URL в .env указывает на IP машины`;
+      } else if (
+        /NoRouteToHost|Network request failed|fetch failed/i.test(msg)
+      ) {
+        msg =
+          "Не удалось подключиться к серверу. Проверьте интернет-соединение и попробуйте снова.";
       }
       Alert.alert("Ошибка входа", msg);
     }
@@ -99,17 +116,17 @@ export default function Login() {
             </Text>
           )}
         </TouchableOpacity>
-
-        <Text className="text-2xs text-text-muted mt-3 text-center font-medium">
-          Демо: <Text className="text-accent font-bold">chayhana1</Text> /{" "}
-          <Text className="text-accent font-bold">store123</Text>
-        </Text>
       </View>
 
-      <Text className="text-2xs text-text-muted mt-4 text-center font-mono tracking-wider">
-        {GRAPHQL_HTTP}
-      </Text>
+      {/* ⭐ ФИКС: адрес API на экране логина — полезно для отладки, но не
+          для публичной сборки (лишняя техническая информация для
+          пользователя, плюс раскрывает инфраструктуру). Показываем только
+          в dev. */}
+      {__DEV__ && (
+        <Text className="text-2xs text-text-muted mt-4 text-center font-mono tracking-wider">
+          {GRAPHQL_HTTP}
+        </Text>
+      )}
     </KeyboardAvoidingView>
   );
 }
-  

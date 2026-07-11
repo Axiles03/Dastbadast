@@ -141,6 +141,8 @@ export default function NewOrders() {
     },
     [cancelOrder, refetch],
   );
+  
+  const [markReady, { loading: markingReady }] = useMutation(MARK_ORDER_READY);
 
   const orders = data?.restaurantOrders ?? [];
   const busy = acLoading || cancelLoading;
@@ -163,7 +165,6 @@ export default function NewOrders() {
     );
   }
 
-  const [markReady, { loading: markingReady }] = useMutation(MARK_ORDER_READY);
 
   return (
     <SafeAreaView className="flex-1 bg-soft-bg">

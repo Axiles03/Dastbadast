@@ -267,6 +267,15 @@ export default function Processing() {
       .map((it: any) => `${it.title} ×${it.quantity}`)
       .join(", ");
 
+    // ⭐ ФИКС: раньше здесь (внутри renderHistoryItem — обычной функции,
+    // вызываемой FlatList на каждую строку списка) был отдельный
+    // `useMutation(MARK_ORDER_READY)`. Хуки нельзя вызывать внутри функций,
+    // которые не являются React-компонентом и вызываются переменное число
+    // раз (по одному на элемент списка) — это и давало
+    // "Invalid hook call" / "Rendered more hooks than during the previous
+    // render". Внизу использую единственный `markOrderReady` из тела
+    // компонента Processing (уже объявлен выше, у renderCookingItem).
+    //
     // ⭐ ШАГ 5: для заказов в PREPARING/READY_FOR_PICKUP показываем ETA
     const isPrep =
       item.orderStatus === "ACCEPTED" ||
@@ -286,9 +295,6 @@ export default function Processing() {
         Math.ceil(item.statusTimestamps.prepTime - elapsedMin),
       );
     }
-
-    const [markReady, { loading: markingReady }] =
-      useMutation(MARK_ORDER_READY);
 
     return (
       <View
@@ -364,25 +370,6 @@ export default function Processing() {
             <Text className="text-2xs text-text-muted">🛵 Курьер выполнил</Text>
           </View>
         )}
-        (item.orderStatus === "ACCEPTED" || item.orderStatus === "PREPARING") &&
-        (
-        <TouchableOpacity
-          onPress={async () => {
-            try {
-              await markReady({ variables: { orderId: item.id } });
-              await refetch();
-            } catch (e: any) {
-              Alert.alert("Ошибка", e?.message ?? "Не удалось");
-            }
-          }}
-          disabled={markingReady}
-          className="mt-3 h-12 rounded-2xl bg-accent items-center justify-center active:opacity-85"
-        >
-          <Text className="text-text-inverse font-extrabold text-base">
-            ✅ Готово — отдать курьеру
-          </Text>
-        </TouchableOpacity>
-        );
       </View>
     );
   };
