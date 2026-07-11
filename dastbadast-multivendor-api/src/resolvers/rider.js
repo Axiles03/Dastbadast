@@ -344,6 +344,75 @@ export const toggleRider = async (_p, { available }, ctx) => {
 };
 
 /**
+ * ⭐⭐⭐ НОВОЕ: редактирование профиля курьера (имя, телефон, email, фото).
+ * Пароль тут НЕ меняется — для этого отдельная мутация changeRiderPassword.
+ *
+ * ⚠️ MVP-ограничение: `photo` принимается как готовая строка (URL или
+ * base64 data-URI из клиента). Для продакшена стоит заменить на загрузку
+ * в объектное хранилище (S3/Cloudinary) и хранить здесь только ссылку —
+ * base64 в MongoDB не масштабируется на много курьеров с фото.
+ */
+export const updateRiderProfile = async (_p, { input }, ctx) => {
+  const r = requireRider(ctx);
+  const { name, phone, email, photo } = input;
+
+  if (typeof name === "string") r.name = name.trim().slice(0, 80);
+  if (typeof phone === "string") r.phone = phone.trim().slice(0, 32);
+  if (typeof photo === "string") r.photo = photo;
+
+  if (typeof email === "string") {
+    const trimmed = email.trim().toLowerCase();
+    if (trimmed && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      throw new GraphQLError("Некорректный email", {
+        extensions: { code: "BAD_USER_INPUT" },
+      });
+    }
+    if (trimmed) {
+      const exists = await Rider.findOne({
+        email: trimmed,
+        _id: { $ne: r._id },
+      });
+      if (exists) {
+        throw new GraphQLError("Этот email уже используется", {
+          extensions: { code: "BAD_USER_INPUT" },
+        });
+      }
+    }
+    r.email = trimmed;
+  }
+
+  await r.save();
+  return r;
+};
+
+/**
+ * ⭐⭐⭐ НОВОЕ: смена пароля курьером (нужен текущий пароль).
+ * Восстановление пароля через Google/номер телефона — пока не реализовано,
+ * на клиенте это заглушка ("скоро").
+ */
+export const changeRiderPassword = async (_p, { input }, ctx) => {
+  const r = requireRider(ctx);
+  const { oldPassword, newPassword } = input;
+
+  if (typeof newPassword !== "string" || newPassword.length < 6) {
+    throw new GraphQLError("Новый пароль должен быть не короче 6 символов", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  const ok = await bcrypt.compare(oldPassword ?? "", r.passwordHash);
+  if (!ok) {
+    throw new GraphQLError("Текущий пароль указан неверно", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  r.passwordHash = await bcrypt.hash(newPassword, 10);
+  await r.save();
+  return true;
+};
+
+/**
  * FIX: GPS privacy — координаты курьера видны только:
  *  - самому курьеру
  *  - владельцу заказа, в котором курьер сейчас ASSIGNED/PICKED/AWAITING_CONFIRMATION

@@ -17,6 +17,7 @@ import {
   Switch,
   Alert,
   Linking,
+  Image,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -163,11 +164,15 @@ export default function ProfileScreen() {
           <View className="flex-row items-center gap-4">
             <View
               className={cn(
-                "w-16 h-16 rounded-full items-center justify-center",
+                "w-16 h-16 rounded-full items-center justify-center overflow-hidden",
                 available ? "bg-success-soft" : "bg-soft-surface-2",
               )}
             >
-              <Text className="text-3xl">🛵</Text>
+              {rider.photo ? (
+                <Image source={{ uri: rider.photo }} className="w-16 h-16" />
+              ) : (
+                <Text className="text-3xl">🛵</Text>
+              )}
             </View>
             <View className="flex-1 min-w-0">
               <Text
@@ -270,6 +275,13 @@ export default function ProfileScreen() {
 
         {/* ──── Навигация ──── */}
         <View className="mx-5 mt-3 bg-soft-surface border border-border rounded-3xl shadow-soft-sm overflow-hidden">
+          <NavRow
+            icon="✏️"
+            iconBg="bg-accent-soft"
+            title="Редактировать профиль"
+            subtitle="Фото, имя, телефон, email, пароль"
+            onPress={() => router.push("/edit-profile")}
+          />
           <NavRow
             icon="📦"
             iconBg="bg-info-soft"

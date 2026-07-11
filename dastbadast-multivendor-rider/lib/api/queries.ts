@@ -8,8 +8,46 @@ export const RIDER_LOGIN = gql`
         id
         username
         name
+        phone
+        email
+        photo
       }
     }
+  }
+`;
+
+// ⭐ НОВОЕ: свежие данные профиля (используется на экране редактирования и
+// для повторной синхронизации после смены имени/фото/email).
+export const ME_RIDER = gql`
+  query MeRider {
+    meRider {
+      id
+      username
+      name
+      phone
+      email
+      photo
+      available
+    }
+  }
+`;
+
+export const UPDATE_RIDER_PROFILE = gql`
+  mutation UpdateRiderProfile($input: UpdateRiderProfileInput!) {
+    updateRiderProfile(input: $input) {
+      id
+      username
+      name
+      phone
+      email
+      photo
+    }
+  }
+`;
+
+export const CHANGE_RIDER_PASSWORD = gql`
+  mutation ChangeRiderPassword($input: ChangeRiderPasswordInput!) {
+    changeRiderPassword(input: $input)
   }
 `;
 export const COURIER_SEARCH_NOTIFY = gql`

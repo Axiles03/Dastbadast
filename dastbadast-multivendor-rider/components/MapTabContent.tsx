@@ -1,7 +1,5 @@
 // dastbadast-multivendor-rider/components/MapTabContent.tsx
 //
-// ⭐ ШАГ 3: исправляем захардкоженный Geoapify ключ → берём из env.
-
 import { useState, useMemo, useCallback } from "react";
 import { View, Text, Pressable } from "react-native";
 // ⭐ ШАГ 3: импортируем НОВЫЙ MapView (на WebView), а не react-native-maps
@@ -10,7 +8,10 @@ import { OrderBottomSheet } from "./OrderBottomSheet";
 import { extractLatLng } from "../lib/routing";
 import { cn } from "../lib/cn";
 import type { Order, OrderAddress } from "./OrderCard";
-import dotenv from "dotenv";
+// ⭐ ФИКС: убран `import dotenv from "dotenv"` — это Node.js-пакет
+// (использует `fs`), которого нет в React Native рантайме; он тут даже не
+// вызывался (`dotenv.config()` нигде нет), просто мёртвый импорт, лишний
+// риск для сборки Metro.
 
 type Props = {
   available: boolean;
@@ -28,12 +29,12 @@ type Props = {
     longitude: number;
     bearing?: number | null;
   } | null;
-  onSwitchToList: () => void;
 };
 
 export function MapTabContent(props: Props) {
-  const GEOAPIFY_TILES_KEY = process.env.EXPO_PUBLIC_GEOAPIFY_TILES_KEY ?? "";
-
+  // ⭐ ФИКС: `GEOAPIFY_TILES_KEY` был объявлен, но никуда не передавался —
+  // остаток старой Geoapify/raster-реализации карты. Текущая карта
+  // (MapLibreOrdersMap) использует OpenFreeMap и не требует никакого ключа.
   const {
     available,
     onTab,
@@ -46,7 +47,6 @@ export function MapTabContent(props: Props) {
     onDeliver,
     onOpenChat,
     riderPos,
-    onSwitchToList,
   } = props;
 
   const allOrders = useMemo(() => [...myOrders, ...pool], [myOrders, pool]);
@@ -90,7 +90,6 @@ export function MapTabContent(props: Props) {
     ? (allOrders.find((o) => o.id === selectedId) ?? null)
     : null;
 
-  // ⭐ ШАГ 3 FIX: используем НОВЫЙ MapView, ключ берётся из env (через buildMapHtml)
   return (
     <View className="flex-1 bg-soft-bg relative">
       <MapLibreOrdersMap
@@ -101,15 +100,7 @@ export function MapTabContent(props: Props) {
         autoFit
       />
 
-      <Pressable
-        onPress={onSwitchToList}
-        className="absolute left-3 top-3 bg-soft-surface border border-border rounded-full px-3.5 py-2 flex-row items-center gap-1.5 shadow-soft-sm active:scale-95"
-      >
-        <Text className="text-base">📋</Text>
-        <Text className="text-xs font-extrabold text-text">Список</Text>
-      </Pressable>
-
-      <View className="absolute left-3 right-3 bottom-24 flex-row gap-2">
+      <View className="absolute left-3 right-3 bottom-36 flex-row gap-2">
         <Pressable
           onPress={() => onTab("pool")}
           className="flex-1 bg-accent-soft border border-accent/30 rounded-2xl p-3 shadow-soft-sm flex-row items-center gap-2 active:scale-95"

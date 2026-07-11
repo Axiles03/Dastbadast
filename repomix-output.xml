@@ -271,17 +271,12 @@ dastbadast-multivendor-rider/
     expo.icon/
       icon.json
   components/
-    CourierMarker.tsx
     LogBridge.tsx
-    MapboxOrdersMap.tsx
     mapConfig.ts
     MapLibreOrdersMap.tsx
-    MapPlaceholder.tsx
     MapTabContent.tsx
-    MapView.tsx
     OrderBottomSheet.tsx
     OrderCard.tsx
-    OrderMarker.tsx
     ProfileModal.tsx
     ScreenHeader.tsx
   lib/
@@ -14562,119 +14557,6 @@ function computeStats(allOrders: any[]) {
 }
 </file>
 
-<file path="dastbadast-multivendor-rider/components/CourierMarker.tsx">
-// dastbadast-multivendor-rider/components/CourierMarker.tsx
-
-import React from "react";
-import { View, Text, StyleSheet } from "react-native";
-import { Marker, type MapMarkerProps } from "react-native-maps";
-
-type Props = Omit<MapMarkerProps, "coordinate" | "identifier"> & {
-  coordinate: { latitude: number; longitude: number };
-  /** Курс в градусах (0-360). 0 = север, 90 = восток */
-  bearing?: number | null;
-  active?: boolean;
-  zIndex?: number;
-};
-
-export function CourierMarker({
-  coordinate,
-  bearing,
-  active = false,
-  zIndex,
-  ...rest
-}: Props) {
-  // Нормализуем bearing в 0..360
-  const normBearing =
-    typeof bearing === "number" && Number.isFinite(bearing)
-      ? ((bearing % 360) + 360) % 360
-      : null;
-
-  return (
-    <Marker
-      coordinate={coordinate}
-      anchor={{ x: 0.5, y: 0.5 }}
-      tracksViewChanges={false}
-      zIndex={zIndex ?? 100}
-      {...rest}
-    >
-      <View style={styles.wrap} pointerEvents="box-none">
-        {/* Стрелка направления */}
-        {normBearing !== null && (
-          <View
-            style={[
-              styles.bearingArrow,
-              {
-                backgroundColor: active ? "#16A34A" : "#9A9388",
-                transform: [{ rotate: `${normBearing}deg` }],
-              },
-            ]}
-          />
-        )}
-
-        {/* Пузырь */}
-        <View
-          style={[
-            styles.bubble,
-            {
-              backgroundColor: active ? "#DCFCE7" : "#FFEEE5",
-              borderColor: active ? "#16A34A" : "#F26A4A",
-              width: active ? 50 : 44,
-              height: active ? 50 : 44,
-              borderRadius: active ? 25 : 22,
-            },
-          ]}
-        >
-          <Text style={styles.emoji}>🛵</Text>
-        </View>
-
-        {/* Лейбл "В пути" */}
-        {active && (
-          <View style={[styles.label, { backgroundColor: "#16A34A" }]}>
-            <Text className="text-text-inverse text-2xs font-extrabold">
-              В ПУТИ
-            </Text>
-          </View>
-        )}
-      </View>
-    </Marker>
-  );
-}
-
-const styles = StyleSheet.create({
-  wrap: { alignItems: "center", justifyContent: "center" },
-  bubble: {
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  bearingArrow: {
-    position: "absolute",
-    top: -10,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 5,
-    borderRightWidth: 5,
-    borderBottomWidth: 8,
-    borderLeftColor: "transparent",
-    borderRightColor: "transparent",
-  },
-  label: {
-    position: "absolute",
-    bottom: -16,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  emoji: { fontSize: 22, lineHeight: 26 },
-});
-</file>
-
 <file path="dastbadast-multivendor-rider/components/LogBridge.tsx">
 // components/LogBridge.tsx
 import { useEffect } from "react";
@@ -14688,224 +14570,6 @@ export function LogBridge() {
   }, []);
   return <View />;
 }
-</file>
-
-<file path="dastbadast-multivendor-rider/components/MapboxOrdersMap.tsx">
-// dastbadast-multivendor-rider/components/MapboxOrdersMap.tsx
-import React, { useEffect, useMemo, useRef } from "react";
-import { View, StyleSheet, ActivityIndicator, Text } from "react-native";
-import Mapbox from "@rnmapbox/maps";
-
-Mapbox.setAccessToken(process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN ?? "");
-
-type AnyMarker = {
-  id: string;
-  kind: "restaurant" | "customer" | "urgent";
-  coordinate: { latitude: number; longitude: number };
-  label?: string;
-  active?: boolean;
-  onPress?: () => void;
-};
-type RiderPos = {
-  latitude: number;
-  longitude: number;
-  bearing?: number | null;
-} | null;
-type OrderAddress = {
-  name?: string | null;
-  address?: string | null;
-  location?: { coordinates?: number[] } | null;
-};
-type Props = {
-  markers: AnyMarker[];
-  rider?: RiderPos;
-  pickupGeo?: OrderAddress | null;
-  deliveryGeo?: OrderAddress | null;
-  autoFit?: boolean;
-  loading?: boolean;
-  className?: string;
-};
-
-const DUSHANBE: [number, number] = [68.783, 38.574]; // [lng, lat] — Mapbox всегда lng,lat
-
-const PointAnnotation = Mapbox.PointAnnotation as any;
-
-const MARKER_STYLE: Record<string, { bg: string; emoji: string }> = {
-  restaurant: { bg: "#FFFFFF", emoji: "🏪" },
-  customer: { bg: "#FFFFFF", emoji: "📍" },
-  urgent: { bg: "#FEE2E2", emoji: "⚡" },
-};
-
-export function MapboxOrdersMap({
-  markers,
-  rider = null,
-  pickupGeo = null,
-  deliveryGeo = null,
-  autoFit = true,
-  loading = false,
-  className,
-}: Props) {
-  const cameraRef = useRef<Mapbox.Camera>(null);
-
-  // Маршрут rider → pickup → delivery (прямые линии; для честного роутинга
-  // по дорогам используйте lib/routing.ts + Geoapify/OSRM, как уже сделано
-  // для расчёта ETA, и подставляйте сюда реальные точки полилинии)
-  const routeGeoJSON = useMemo(() => {
-    const coords: [number, number][] = [];
-    if (rider) coords.push([rider.longitude, rider.latitude]);
-    const pickupCoords = pickupGeo?.location?.coordinates;
-    if (pickupCoords?.length === 2)
-      coords.push([pickupCoords[0], pickupCoords[1]]);
-    const deliveryCoords = deliveryGeo?.location?.coordinates;
-    if (deliveryCoords?.length === 2)
-      coords.push([deliveryCoords[0], deliveryCoords[1]]);
-    if (coords.length < 2) return null;
-    return {
-      type: "Feature" as const,
-      geometry: { type: "LineString" as const, coordinates: coords },
-      properties: {},
-    };
-  }, [rider, pickupGeo, deliveryGeo]);
-
-  useEffect(() => {
-    if (!autoFit || !cameraRef.current) return;
-    const pts: [number, number][] = [];
-    if (rider) pts.push([rider.longitude, rider.latitude]);
-    for (const m of markers)
-      pts.push([m.coordinate.longitude, m.coordinate.latitude]);
-    if (pts.length === 0) return;
-    if (pts.length === 1) {
-      cameraRef.current.setCamera({
-        centerCoordinate: pts[0],
-        zoomLevel: 15,
-        animationDuration: 600,
-      });
-      return;
-    }
-    const lngs = pts.map((p) => p[0]);
-    const lats = pts.map((p) => p[1]);
-    cameraRef.current.setCamera({
-      bounds: {
-        ne: [Math.max(...lngs), Math.max(...lats)],
-        sw: [Math.min(...lngs), Math.min(...lats)],
-      },
-      padding: {
-        paddingTop: 80,
-        paddingBottom: 220,
-        paddingLeft: 40,
-        paddingRight: 40,
-      },
-      animationDuration: 600,
-    });
-  }, [autoFit, rider, markers]);
-
-  return (
-    <View style={styles.container} className={className}>
-      <Mapbox.MapView
-        style={StyleSheet.absoluteFill}
-        styleURL="mapbox://styles/mapbox/streets-v12"
-        logoEnabled={false}
-        attributionPosition={{ bottom: 6, right: 6 }}
-      >
-        <Mapbox.Camera
-          ref={cameraRef}
-          defaultSettings={{ centerCoordinate: DUSHANBE, zoomLevel: 13 }}
-        />
-
-        {routeGeoJSON && (
-          <Mapbox.ShapeSource id="route-source" shape={routeGeoJSON}>
-            <Mapbox.LineLayer
-              id="route-line"
-              style={{
-                lineColor: "#F26A4A",
-                lineWidth: 4,
-                lineOpacity: 0.85,
-                lineDasharray: [2, 1.5],
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {rider && (
-          <PointAnnotation
-            id="rider-marker"
-            coordinate={[rider.longitude, rider.latitude]}
-          >
-            <View style={styles.riderMarker}>
-              <Text style={{ fontSize: 20 }}>🛵</Text>
-            </View>
-          </PointAnnotation>
-        )}
-
-        {markers.map((m) => {
-          const style = MARKER_STYLE[m.kind] ?? MARKER_STYLE.customer;
-          return (
-            <PointAnnotation
-              key={m.id}
-              id={m.id}
-              coordinate={[m.coordinate.longitude, m.coordinate.latitude]}
-              onSelected={m.onPress}
-            >
-              <View
-                style={[
-                  styles.pointMarker,
-                  {
-                    backgroundColor: style.bg,
-                    borderColor: m.active ? "#F26A4A" : "#E5E5E5",
-                  },
-                ]}
-              >
-                <Text style={{ fontSize: 16 }}>{style.emoji}</Text>
-              </View>
-            </PointAnnotation>
-          );
-        })}
-      </Mapbox.MapView>
-
-      {loading && (
-        <View style={styles.loadingOverlay} pointerEvents="none">
-          <ActivityIndicator color="#F26A4A" size="large" />
-        </View>
-      )}
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#FAF7F2" },
-  riderMarker: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "#F26A4A",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 3,
-    borderColor: "#FFFFFF",
-    shadowColor: "#000",
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 6,
-  },
-  pointMarker: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-    shadowColor: "#000",
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  loadingOverlay: {
-    ...StyleSheet.absoluteFill,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(250,247,242,0.4)",
-  },
-});
 </file>
 
 <file path="dastbadast-multivendor-rider/components/mapConfig.ts">
@@ -14988,8 +14652,40 @@ export function haversineKm(
 
 <file path="dastbadast-multivendor-rider/components/MapLibreOrdersMap.tsx">
 // dastbadast-multivendor-rider/components/MapLibreOrdersMap.tsx
+//
+// ⭐⭐⭐ ПОЛНАЯ ДОРАБОТКА: карта курьера на MapLibre GL JS (open-source,
+// API-совместим с Mapbox GL JS) + OpenFreeMap (https://openfreemap.org).
+//
+// Почему OpenFreeMap, а не Mapbox / Geoapify:
+//   - НЕ ТРЕБУЕТ никакого API-ключа/токена вообще (ни регистрации,
+//     ни аккаунта) — то, что и было нужно.
+//   - Полноценные векторные тайлы (не растровые PNG) — чёткий рендер на
+//     любом зуме, плавнее, чем raster.
+//   - Бесплатно и без лимита запросов на публичном инстансе
+//     (https://tiles.openfreemap.org), в отличие от tile.openstreetmap.org,
+//     который был здесь раньше: у него жёсткая usage policy для лёгкой
+//     разработки, а НЕ для прод-трафика реального приложения — при
+//     заметной нагрузке OSM банит IP.
+//
+// Что было исправлено по факту (это был реально используемый файл —
+// MapPlaceholder.tsx/CustomMapView.tsx на Leaflet оказались мёртвым кодом,
+// нигде не рендерятся):
+//   1. `rider.bearing` приходил в пропсах, но нигде не использовался —
+//      маркер курьера никогда не поворачивался по направлению движения.
+//   2. На КАЖДОЕ обновление позиции курьера (может быть раз в несколько
+//      секунд) все маркеры удалялись и создавались заново — это и есть
+//      источник подтормаживания/мигания карты. Теперь маркеры маршрута
+//      (ресторан/клиент) переиспользуются по id, двигается только то, что
+//      реально изменилось.
+//   3. `attributionControl: false` — нарушение лицензии OSM/OpenFreeMap
+//      (атрибуция обязательна). Включена обратно.
+//   4. Нет обработки ошибки загрузки WebView (нет сети и т.п.) — экран
+//      просто оставался пустым. Добавлен fallback как в остальных картах
+//      проекта.
+//   5. Нет зум-контролов — добавлены (NavigationControl).
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { View, StyleSheet, ActivityIndicator } from "react-native";
+import { View, StyleSheet, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
 type AnyMarker = {
@@ -15025,6 +14721,10 @@ type Props = {
 
 const DUSHANBE: [number, number] = [68.783, 38.574]; // [lng, lat]
 
+// ⭐ Бесплатный, без ключа, векторный стиль. MapLibre сам добавляет
+// обязательную атрибуцию OpenFreeMap/OSM при использовании этого style.json.
+const MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
+
 export function MapLibreOrdersMap({
   markers,
   rider = null,
@@ -15037,7 +14737,7 @@ export function MapLibreOrdersMap({
   const webViewRef = useRef<WebView>(null);
   const [isMapReady, setIsMapReady] = useState(false);
 
-  // Генерируем GeoJSON для маршрута
+  // Генерируем GeoJSON для маршрута (курьер → ресторан → клиент)
   const routeGeoJSON = useMemo(() => {
     const coords: [number, number][] = [];
     if (rider) coords.push([rider.longitude, rider.latitude]);
@@ -15085,13 +14785,14 @@ export function MapLibreOrdersMap({
         if (clickedMarker && clickedMarker.onPress) {
           clickedMarker.onPress();
         }
+      } else if (data.type === "MAP_ERROR" && __DEV__) {
+        console.warn("[MapLibreOrdersMap]", data.message);
       }
     } catch (e) {
       console.error("Ошибка парсинга сообщения из WebView:", e);
     }
   };
 
-  // HTML-код для рендеринга MapLibre + OSM
   const mapHtml = useMemo(
     () => `
     <!DOCTYPE html>
@@ -15099,146 +14800,201 @@ export function MapLibreOrdersMap({
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
-      <script src="https://unpkg.com/maplibre-gl@4.1.3/dist/maplibre-gl.js"></script>
-      <link href="https://unpkg.com/maplibre-gl@4.1.3/dist/maplibre-gl.css" rel="stylesheet" />
+      <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+      <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
       <style>
         body { margin: 0; padding: 0; }
         #map { position: absolute; top: 0; bottom: 0; width: 100%; }
-        
+
         .rider-marker {
-          width: 40px; height: 40px; border-radius: 50%;
+          width: 42px; height: 42px; position: relative;
+        }
+        .rider-marker .rider-dot {
+          position: absolute; inset: 0; border-radius: 50%;
           background-color: #F26A4A; display: flex; align-items: center;
           justify-content: center; border: 3px solid #FFFFFF;
           box-shadow: 0px 3px 6px rgba(0,0,0,0.3); font-size: 20px;
         }
-        
+        .rider-marker .rider-arrow {
+          position: absolute; top: -7px; left: 50%; transform: translateX(-50%);
+          width: 0; height: 0; border-left: 6px solid transparent;
+          border-right: 6px solid transparent; border-bottom: 9px solid #DC5635;
+        }
+
         .point-marker {
           width: 34px; height: 34px; border-radius: 50%;
           display: flex; align-items: center; justify-content: center;
           border-width: 2px; border-style: solid;
           box-shadow: 0px 2px 4px rgba(0,0,0,0.15); font-size: 16px;
-          transition: transform 0.2s ease;
+          transition: border-color 0.2s ease;
+          background: #FFFFFF;
         }
+
+        .maplibregl-ctrl-attrib { font-size: 10px; }
       </style>
     </head>
     <body>
       <div id="map"></div>
       <script>
-        const map = new maplibregl.Map({
-          container: 'map',
-          style: {
-            version: 8,
-            sources: {
-              'osm-tiles': {
-                type: 'raster',
-                tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-                tileSize: 256,
-                attribution: '&copy; OpenStreetMap'
+        function notifyError(message) {
+          try {
+            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'MAP_ERROR', message: message }));
+          } catch (e) {}
+        }
+
+        var map = null;
+        try {
+          map = new maplibregl.Map({
+            container: 'map',
+            style: '${MAP_STYLE_URL}',
+            center: ${JSON.stringify(DUSHANBE)},
+            zoom: 13,
+            attributionControl: true,
+          });
+          map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+          map.on('error', function (e) {
+            notifyError((e && e.error && e.error.message) || 'unknown map error');
+          });
+        } catch (e) {
+          notifyError('init failed: ' + e.message);
+        }
+
+        // ⭐ Персистентные маркеры точек заказа: id -> maplibregl.Marker.
+        // Пересоздаём только те, чей id реально пропал/появился — не всё
+        // подряд на каждый тик GPS курьера (раньше именно это вызывало
+        // подмигивание/подтормаживание карты).
+        var pointMarkers = {};
+        var riderMarker = null;
+
+        if (map) {
+          map.on('load', function () {
+            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'MAP_READY' }));
+          });
+        }
+
+        var MARKER_STYLE = {
+          restaurant: { emoji: '🏪' },
+          customer: { emoji: '📍' },
+          urgent: { emoji: '⚡' },
+        };
+
+        window.updateMapFeatures = function (markers, rider, routeGeoJSON, autoFit) {
+          if (!map) return;
+          try {
+            // --- Курьер: один персистентный маркер, двигаем + вращаем ---
+            if (rider) {
+              if (!riderMarker) {
+                var el = document.createElement('div');
+                el.className = 'rider-marker';
+                el.innerHTML =
+                  '<div class="rider-arrow" style="display:none"></div>' +
+                  '<div class="rider-dot">🛵</div>';
+                riderMarker = new maplibregl.Marker({ element: el, anchor: 'center' })
+                  .setLngLat([rider.longitude, rider.latitude])
+                  .addTo(map);
+              } else {
+                riderMarker.setLngLat([rider.longitude, rider.latitude]);
               }
-            },
-            layers: [{
-              id: 'osm-tiles',
-              type: 'raster',
-              source: 'osm-tiles',
-              minzoom: 0,
-              maxzoom: 19
-            }]
-          },
-          center: ${JSON.stringify(DUSHANBE)},
-          zoom: 13,
-          attributionControl: false
-        });
+              var arrowEl = riderMarker.getElement().querySelector('.rider-arrow');
+              if (arrowEl) {
+                if (typeof rider.bearing === 'number' && !isNaN(rider.bearing)) {
+                  arrowEl.style.display = 'block';
+                  arrowEl.style.transform =
+                    'translateX(-50%) rotate(' + rider.bearing + 'deg)';
+                } else {
+                  arrowEl.style.display = 'none';
+                }
+              }
+            } else if (riderMarker) {
+              riderMarker.remove();
+              riderMarker = null;
+            }
 
-        let currentMarkers = [];
-
-        map.on('load', () => {
-          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'MAP_READY' }));
-        });
-
-        window.updateMapFeatures = function(markers, rider, routeGeoJSON, autoFit) {
-          // Очищаем старые маркеры
-          currentMarkers.forEach(m => m.remove());
-          currentMarkers = [];
-
-          // Добавляем курьера
-          if (rider) {
-            const el = document.createElement('div');
-            el.className = 'rider-marker';
-            el.innerHTML = '🛵';
-            const marker = new maplibregl.Marker({ element: el })
-              .setLngLat([rider.longitude, rider.latitude])
-              .addTo(map);
-            currentMarkers.push(marker);
-          }
-
-          // Добавляем точки (рестораны и клиенты)
-          const MARKER_STYLE = {
-            restaurant: { bg: "#FFFFFF", emoji: "🏪" },
-            customer: { bg: "#FFFFFF", emoji: "📍" },
-            urgent: { bg: "#FEE2E2", emoji: "⚡" }
-          };
-
-          markers.forEach(m => {
-            const style = MARKER_STYLE[m.kind] || MARKER_STYLE.customer;
-            const el = document.createElement('div');
-            el.className = 'point-marker';
-            el.style.backgroundColor = style.bg;
-            el.style.borderColor = m.active ? "#F26A4A" : "#E5E5E5";
-            el.innerHTML = style.emoji;
-
-            el.addEventListener('click', () => {
-              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'MARKER_PRESS', id: m.id }));
+            // --- Точки заказов: diff по id, без полного пересоздания ---
+            var seenIds = {};
+            markers.forEach(function (m) {
+              seenIds[m.id] = true;
+              var style = MARKER_STYLE[m.kind] || MARKER_STYLE.customer;
+              var existing = pointMarkers[m.id];
+              if (existing) {
+                existing.marker.setLngLat([m.coordinate.longitude, m.coordinate.latitude]);
+                if (existing.active !== !!m.active) {
+                  existing.el.style.borderColor = m.active ? '#F26A4A' : '#E5E5E5';
+                  existing.active = !!m.active;
+                }
+              } else {
+                var el = document.createElement('div');
+                el.className = 'point-marker';
+                el.style.borderColor = m.active ? '#F26A4A' : '#E5E5E5';
+                el.innerHTML = style.emoji;
+                el.addEventListener('click', function () {
+                  window.ReactNativeWebView.postMessage(
+                    JSON.stringify({ type: 'MARKER_PRESS', id: m.id }),
+                  );
+                });
+                var marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+                  .setLngLat([m.coordinate.longitude, m.coordinate.latitude])
+                  .addTo(map);
+                pointMarkers[m.id] = { marker: marker, el: el, active: !!m.active };
+              }
+            });
+            // убираем маркеры заказов, которых больше нет в списке
+            Object.keys(pointMarkers).forEach(function (id) {
+              if (!seenIds[id]) {
+                pointMarkers[id].marker.remove();
+                delete pointMarkers[id];
+              }
             });
 
-            const marker = new maplibregl.Marker({ element: el })
-              .setLngLat([m.coordinate.longitude, m.coordinate.latitude])
-              .addTo(map);
-            currentMarkers.push(marker);
-          });
-
-          // Отрисовка линии маршрута
-          if (routeGeoJSON) {
-            if (map.getSource('route-source')) {
-              map.getSource('route-source').setData(routeGeoJSON);
+            // --- Линия маршрута ---
+            if (routeGeoJSON) {
+              if (map.getSource('route-source')) {
+                map.getSource('route-source').setData(routeGeoJSON);
+              } else {
+                map.addSource('route-source', { type: 'geojson', data: routeGeoJSON });
+                map.addLayer({
+                  id: 'route-line',
+                  type: 'line',
+                  source: 'route-source',
+                  layout: { 'line-cap': 'round', 'line-join': 'round' },
+                  paint: {
+                    'line-color': '#F26A4A',
+                    'line-width': 4,
+                    'line-opacity': 0.85,
+                    'line-dasharray': [2, 1.5],
+                  },
+                });
+              }
             } else {
-              map.addSource('route-source', { type: 'geojson', data: routeGeoJSON });
-              map.addLayer({
-                id: 'route-line',
-                type: 'line',
-                source: 'route-source',
-                paint: {
-                  'line-color': '#F26A4A',
-                  'line-width': 4,
-                  'line-opacity': 0.85,
-                  'line-dasharray': [2, 1.5]
-                }
-              });
+              if (map.getLayer('route-line')) map.removeLayer('route-line');
+              if (map.getSource('route-source')) map.removeSource('route-source');
             }
-          } else {
-            if (map.getLayer('route-line')) map.removeLayer('route-line');
-            if (map.getSource('route-source')) map.removeSource('route-source');
-          }
 
-          // Авто-фит камеры под все точки
-          if (autoFit) {
-            const pts = [];
-            if (rider) pts.push([rider.longitude, rider.latitude]);
-            markers.forEach(m => pts.push([m.coordinate.longitude, m.coordinate.latitude]));
-
-            if (pts.length === 1) {
-              map.flyTo({ center: pts[0], zoom: 15, duration: 600 });
-            } else if (pts.length > 1) {
-              const lngs = pts.map(p => p[0]);
-              const lats = pts.map(p => p[1]);
-              const bounds = [
-                [Math.min(...lngs), Math.min(...lats)],
-                [Math.max(...lngs), Math.max(...lats)]
-              ];
-              map.fitBounds(bounds, {
-                padding: { top: 60, bottom: 180, left: 40, right: 40 },
-                duration: 600
+            // --- Авто-фит камеры под все точки ---
+            if (autoFit) {
+              var pts = [];
+              if (rider) pts.push([rider.longitude, rider.latitude]);
+              markers.forEach(function (m) {
+                pts.push([m.coordinate.longitude, m.coordinate.latitude]);
               });
+
+              if (pts.length === 1) {
+                map.flyTo({ center: pts[0], zoom: 15, duration: 600 });
+              } else if (pts.length > 1) {
+                var lngs = pts.map(function (p) { return p[0]; });
+                var lats = pts.map(function (p) { return p[1]; });
+                var bounds = [
+                  [Math.min.apply(null, lngs), Math.min.apply(null, lats)],
+                  [Math.max.apply(null, lngs), Math.max.apply(null, lats)],
+                ];
+                map.fitBounds(bounds, {
+                  padding: { top: 60, bottom: 180, left: 40, right: 40 },
+                  duration: 600,
+                });
+              }
             }
+          } catch (e) {
+            notifyError('update failed: ' + e.message);
           }
         };
       </script>
@@ -15258,6 +15014,28 @@ export function MapLibreOrdersMap({
         onMessage={handleMessage}
         javaScriptEnabled={true}
         domStorageEnabled={true}
+        renderError={(
+          errorDomain: string | undefined,
+          errorCode: number,
+          errorDesc: string,
+        ) => (
+          <View style={styles.fallback}>
+            <Text style={styles.fallbackEmoji}>🗺</Text>
+            <Text style={styles.fallbackTitle}>Ошибка карты</Text>
+            <Text style={styles.fallbackSubtitle}>
+              {errorDomain ?? "WebView"} · {errorCode} · {errorDesc}
+            </Text>
+            <Text style={styles.fallbackSubtitle}>
+              Проверьте интернет-соединение
+            </Text>
+          </View>
+        )}
+        renderLoading={() => (
+          <View style={styles.fallback}>
+            <ActivityIndicator color="#F26A4A" size="large" />
+            <Text style={styles.fallbackSubtitle}>Загрузка карты…</Text>
+          </View>
+        )}
       />
 
       {loading && (
@@ -15271,6 +15049,25 @@ export function MapLibreOrdersMap({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#FAF7F2" },
+  fallback: {
+    ...StyleSheet.absoluteFill,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FAF7F2",
+  },
+  fallbackEmoji: { fontSize: 56, marginBottom: 8 },
+  fallbackTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#1F1B16",
+    marginBottom: 4,
+  },
+  fallbackSubtitle: {
+    fontSize: 12,
+    color: "#9A9388",
+    textAlign: "center",
+    paddingHorizontal: 24,
+  },
   loadingOverlay: {
     ...StyleSheet.absoluteFill,
     alignItems: "center",
@@ -15280,250 +15077,9 @@ const styles = StyleSheet.create({
 });
 </file>
 
-<file path="dastbadast-multivendor-rider/components/MapPlaceholder.tsx">
-// dastbadast-multivendor-rider/components/MapPlaceholder.tsx
-//
-// ⭐⭐⭐ ШАГ 2 FIX: компонент CustomMapView теперь сам обрабатывает
-// отсутствие react-native-maps (Expo Go / частичная сборка) — рендерит fallback.
-// Поэтому здесь НЕ делаем дополнительный try/catch.
-//
-// Структура Props остаётся 100% совместимой с тем, что вызывал orders.tsx до фикса.
-
-import React, { useMemo, useState, useCallback } from "react";
-import type { Order, OrderAddress } from "./OrderCard";
-import { View, Text, Pressable } from "react-native";
-import { CustomMapView, isMapsAvailable } from "./MapView";
-import { OrderBottomSheet } from "./OrderBottomSheet";
-import { cn } from "../lib/cn";
-
-type FabAction = {
-  label: string;
-  icon: "bicycle-outline" | "basket-outline";
-  onPress: () => void;
-};
-
-type Props = {
-  poolCount: number;
-  myCount: number;
-  online: boolean;
-  poolOrders: Order[];
-  myOrders: Order[];
-
-  rider?: {
-    latitude: number;
-    longitude: number;
-    bearing: number | null;
-  } | null;
-  pickupGeo?: OrderAddress | null;
-  deliveryGeo?: OrderAddress | null;
-  fabActions?: FabAction[];
-
-  onClaim: (orderId: string) => void | Promise<void>;
-  onPickUp: (orderId: string) => void | Promise<void>;
-  onDeliver: (orderId: string) => void | Promise<void>;
-  onOpenChat: (orderId: string) => void;
-  onSwitchTabAndList: (tab: "pool" | "mine") => void;
-
-  loading?: {
-    claim?: boolean;
-    pickUp?: boolean;
-    deliver?: boolean;
-  };
-};
-
-export function MapPlaceholder({
-  poolCount,
-  myCount,
-  online,
-  poolOrders,
-  myOrders,
-  fabActions = [],
-  rider = null,
-  pickupGeo = null,
-  deliveryGeo = null,
-  onClaim,
-  onPickUp,
-  onDeliver,
-  onOpenChat,
-  onSwitchTabAndList,
-  loading,
-}: Props) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-
-  const allOrders = useMemo<Order[]>(
-    () => [...myOrders, ...poolOrders],
-    [myOrders, poolOrders],
-  );
-
-  const markers = useMemo(() => {
-    const out: Array<{
-      id: string;
-      kind: "restaurant" | "customer" | "urgent";
-      coordinate: { latitude: number; longitude: number };
-      label?: string;
-      active?: boolean;
-      onPress?: () => void;
-    }> = [];
-
-    const pushOrder = (o: Order) => {
-      const restCoords = o.pickupAddress?.location;
-      const custCoords = o.deliveryAddress?.location;
-
-      if (
-        Array.isArray(restCoords?.coordinates) &&
-        restCoords.coordinates.length >= 2
-      ) {
-        out.push({
-          id: `${o.id}-rest`,
-          kind: "restaurant",
-          coordinate: {
-            latitude: restCoords.coordinates[1],
-            longitude: restCoords.coordinates[0],
-          },
-          label: o.pickupAddress?.name || "Ресторан",
-          active: selectedId === o.id,
-        });
-      }
-      if (
-        Array.isArray(custCoords?.coordinates) &&
-        custCoords.coordinates.length >= 2
-      ) {
-        const isUrgent =
-          o.orderStatus === "PENDING" &&
-          Date.now() - new Date(o.createdAt).getTime() > 90_000;
-        out.push({
-          id: `${o.id}-cust`,
-          kind: isUrgent ? "urgent" : "customer",
-          coordinate: {
-            latitude: custCoords.coordinates[1],
-            longitude: custCoords.coordinates[0],
-          },
-          label: o.deliveryAddress?.city || "Клиент",
-          active: selectedId === o.id,
-          onPress: () => setSelectedId(o.id),
-        });
-      }
-    };
-
-    myOrders.forEach(pushOrder);
-    poolOrders.forEach(pushOrder);
-    return out;
-  }, [poolOrders, myOrders, selectedId]);
-
-  const handleClose = useCallback(() => setSelectedId(null), []);
-
-  return (
-    <View className="flex-1 bg-soft-bg relative">
-      <CustomMapView
-        markers={markers}
-        rider={rider}
-        pickupGeo={pickupGeo}
-        deliveryGeo={deliveryGeo}
-        autoFit
-      />
-
-      <View className="absolute left-4 right-4" style={{ top: 12 }}>
-        {poolCount > 0 && (
-          <Pressable
-            onPress={() => onSwitchTabAndList("pool")}
-            className="bg-soft-surface/95 backdrop-blur-sm border border-soft-accent/30 rounded-2xl px-4 py-3 mb-2 shadow-soft-sm flex-row items-center gap-3 active:scale-[0.99]"
-          >
-            <View className="w-10 h-10 rounded-xl bg-accent-soft items-center justify-center">
-              <Text className="text-xl">🛒</Text>
-            </View>
-            <View className="flex-1">
-              <Text className="text-sm font-extrabold text-text">
-                Доступно заказов
-              </Text>
-              <Text className="text-xs text-text-soft">
-                Нажмите, чтобы открыть список
-              </Text>
-            </View>
-            <View className="bg-accent rounded-full min-w-[36px] h-9 px-3 items-center justify-center">
-              <Text className="text-text-inverse font-extrabold">
-                {poolCount}
-              </Text>
-            </View>
-          </Pressable>
-        )}
-
-        {myCount > 0 && (
-          <Pressable
-            onPress={() => onSwitchTabAndList("mine")}
-            className="bg-soft-surface/95 backdrop-blur-sm border border-info/30 rounded-2xl px-4 py-3 shadow-soft-sm flex-row items-center gap-3 active:scale-[0.99]"
-          >
-            <View className="w-10 h-10 rounded-xl bg-info-soft items-center justify-center">
-              <Text className="text-xl">🛵</Text>
-            </View>
-            <View className="flex-1">
-              <Text className="text-sm font-extrabold text-text">
-                Активные доставки
-              </Text>
-              <Text className="text-xs text-text-soft">У вас в работе</Text>
-            </View>
-            <View className="bg-info rounded-full min-w-[36px] h-9 px-3 items-center justify-center">
-              <Text className="text-text-inverse font-extrabold">
-                {myCount}
-              </Text>
-            </View>
-          </Pressable>
-        )}
-
-        {poolCount === 0 && myCount === 0 && (
-          <View className="bg-soft-surface/95 backdrop-blur-sm border border-border rounded-2xl p-4 shadow-soft-sm items-center">
-            <Text className="text-2xl mb-1 text-center">🗺</Text>
-            <Text className="text-sm font-extrabold text-text text-center">
-              Режим карты активен
-            </Text>
-            <Text className="text-xs text-text-soft text-center mt-1">
-              {isMapsAvailable()
-                ? "Нажмите на синий пин клиента, чтобы открыть заказ"
-                : "Карта недоступна — запустите dev build"}
-            </Text>
-          </View>
-        )}
-      </View>
-
-      {fabActions.length > 0 && (
-        <View className="absolute right-4" style={{ bottom: 80 }}>
-          <View className="gap-2.5">
-            {fabActions.map((a, i) => (
-              <Pressable
-                key={i}
-                onPress={a.onPress}
-                accessibilityLabel={a.label}
-                className="w-12 h-12 rounded-full bg-soft-surface border border-border items-center justify-center shadow-soft active:scale-95"
-              >
-                <Text className="text-xl">
-                  {a.icon === "bicycle-outline" ? "🛵" : "🛒"}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
-      )}
-
-      <OrderBottomSheet
-        selectedId={selectedId}
-        orders={allOrders}
-        online={online}
-        onClose={handleClose}
-        onClaim={onClaim}
-        onPickUp={onPickUp}
-        onDeliver={onDeliver}
-        onOpenChat={onOpenChat}
-        loading={loading}
-      />
-    </View>
-  );
-}
-</file>
-
 <file path="dastbadast-multivendor-rider/components/MapTabContent.tsx">
 // dastbadast-multivendor-rider/components/MapTabContent.tsx
 //
-// ⭐ ШАГ 3: исправляем захардкоженный Geoapify ключ → берём из env.
-
 import { useState, useMemo, useCallback } from "react";
 import { View, Text, Pressable } from "react-native";
 // ⭐ ШАГ 3: импортируем НОВЫЙ MapView (на WebView), а не react-native-maps
@@ -15532,7 +15088,10 @@ import { OrderBottomSheet } from "./OrderBottomSheet";
 import { extractLatLng } from "../lib/routing";
 import { cn } from "../lib/cn";
 import type { Order, OrderAddress } from "./OrderCard";
-import dotenv from "dotenv";
+// ⭐ ФИКС: убран `import dotenv from "dotenv"` — это Node.js-пакет
+// (использует `fs`), которого нет в React Native рантайме; он тут даже не
+// вызывался (`dotenv.config()` нигде нет), просто мёртвый импорт, лишний
+// риск для сборки Metro.
 
 type Props = {
   available: boolean;
@@ -15554,8 +15113,9 @@ type Props = {
 };
 
 export function MapTabContent(props: Props) {
-  const GEOAPIFY_TILES_KEY = process.env.EXPO_PUBLIC_GEOAPIFY_TILES_KEY ?? "";
-
+  // ⭐ ФИКС: `GEOAPIFY_TILES_KEY` был объявлен, но никуда не передавался —
+  // остаток старой Geoapify/raster-реализации карты. Текущая карта
+  // (MapLibreOrdersMap) использует OpenFreeMap и не требует никакого ключа.
   const {
     available,
     onTab,
@@ -15612,7 +15172,6 @@ export function MapTabContent(props: Props) {
     ? (allOrders.find((o) => o.id === selectedId) ?? null)
     : null;
 
-  // ⭐ ШАГ 3 FIX: используем НОВЫЙ MapView, ключ берётся из env (через buildMapHtml)
   return (
     <View className="flex-1 bg-soft-bg relative">
       <MapLibreOrdersMap
@@ -15682,430 +15241,6 @@ export function MapTabContent(props: Props) {
     </View>
   );
 }
-</file>
-
-<file path="dastbadast-multivendor-rider/components/MapView.tsx">
-// dastbadast-multivendor-rider/components/MapView.tsx
-//
-// ⭐ ШАГ 3: WebView + Leaflet. Все TS-ошибки устранены.
-// (v3 — финальный, после ревью ошибок)
-
-import React, { useEffect, useMemo, useRef } from "react";
-import { View, StyleSheet, ActivityIndicator, Text } from "react-native";
-import { WebView } from "react-native-webview";
-
-const GEOAPIFY_TILES_KEY = process.env.EXPO_PUBLIC_GEOAPIFY_TILES_KEY ?? "";
-const GEOAPIFY_ROUTING_KEY = process.env.EXPO_PUBLIC_GEOAPIFY_KEY ?? "";
-
-type AnyMarker = {
-  id: string;
-  kind: "restaurant" | "customer" | "urgent";
-  coordinate: { latitude: number; longitude: number };
-  label?: string;
-  active?: boolean;
-  onPress?: () => void;
-};
-
-type RiderPos = {
-  latitude: number;
-  longitude: number;
-  bearing?: number | null;
-} | null;
-
-type Props = {
-  markers: AnyMarker[];
-  rider?: RiderPos;
-  pickupGeo?: OrderAddress | null;
-  deliveryGeo?: OrderAddress | null;
-  autoFit?: boolean;
-  initialRegion?: {
-    latitude: number;
-    longitude: number;
-    latitudeDelta: number;
-    longitudeDelta: number;
-  };
-  loading?: boolean;
-  className?: string;
-  followRider?: boolean;
-};
-
-type OrderAddress = {
-  label?: string | null;
-  name?: string | null;
-  address?: string | null;
-  city?: string | null;
-  details?: string | null;
-  location?: { coordinates?: number[] } | null | undefined;
-};
-
-const TILE_URL = `https://maps.geoapify.com/v1/tile/osm-bright/{z}/{x}/{y}.png?apiKey=${GEOAPIFY_TILES_KEY}`;
-const ATTRIBUTION =
-  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://geoapify.com/">Geoapify</a>';
-
-const DUSHANBE = { latitude: 38.574, longitude: 68.783 };
-
-/**
- * ⭐ FIX v3: `initialCenter` теперь типизирован как `Center`,
- * а `centerJson` помечен `as const` (литерал объекта), чтобы
- * TS не путал его со string-интерполяцией.
- */
-type Center = { lat: number; lng: number };
-
-function buildMapHtml({
-  initialCenter,
-  initialZoom,
-  tileUrl,
-  attribution,
-}: {
-  initialCenter: Center;
-  initialZoom: number;
-  tileUrl: string;
-  attribution: string;
-}): string {
-  const centerJson: string = JSON.stringify(initialCenter);
-  // TS-friendly: отдельные константы примитивного типа
-  const initLat: number = initialCenter.lat;
-  const initLng: number = initialCenter.lng;
-  const safeTileUrl = tileUrl.replace(/"/g, "&quot;");
-  const safeAttr = attribution.replace(/"/g, "&quot;");
-
-  return `<!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Dastbadast Map</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
-  <style>
-    html, body, #map { margin: 0; padding: 0; height: 100%; width: 100%; background: #FAF7F2; }
-    .rider-marker {
-      background: #F26A4A; color: white; border-radius: 50%;
-      width: 44px; height: 44px; display: flex; align-items: center; justify-content: center;
-      border: 3px solid white; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-      font-size: 22px; position: relative;
-    }
-    .rider-marker .bearing-arrow {
-      position: absolute; top: -8px; left: 50%; transform: translateX(-50%);
-      width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent;
-      border-bottom: 9px solid #DC5635;
-    }
-    .pickup-marker, .customer-marker {
-      background: white; border-radius: 50%; width: 38px; height: 38px;
-      display: flex; align-items: center; justify-content: center;
-      border: 2px solid #F26A4A; box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-      font-size: 18px;
-    }
-    .customer-marker { border-color: #2D9CDB; }
-    .legend {
-      position: absolute; bottom: 10px; left: 10px; z-index: 1000;
-      background: rgba(255,255,255,0.95); padding: 8px 12px; border-radius: 12px;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    }
-    .legend strong { display: block; margin-bottom: 4px; }
-  </style>
-</head>
-<body>
-  <div id="map"></div>
-  <div class="legend">
-    <strong>Dastbadast</strong>
-    <span>📍 Клиент  🏪 Ресторан  🛵 Курьер</span>
-  </div>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  <script>
-    (function () {
-      var map = L.map('map', {
-        zoomControl: true,
-        attributionControl: true,
-      }).setView[${initialCenter.lat}, ${initialCenter.lng}], ${initialZoom});
-
-      L.tileLayer('${safeTileUrl}', {
-        maxZoom: 19,
-        attribution: '${safeAttr}'
-      }).addTo(map);
-
-      window.__markers = {};
-      window.__lines = {};
-      window.__riderMarker = null;
-
-      window.DBDMap = {
-        setRider: function(lat, lng, bearing) {
-          var latlng = [lat, lng];
-          if (!window.__riderMarker) {
-            var html = '<div class="rider-marker"><div class="bearing-arrow" id="rider-arrow" style="display:none"></div>🛵</div>';
-            var icon = L.divIcon({
-              html: html,
-              className: '',
-              iconSize: [44, 44],
-              iconAnchor: [22, 22],
-            });
-            window.__riderMarker = L.marker(latlng, { icon: icon, zIndexOffset: 1000 }).addTo(map);
-          } else {
-            window.__riderMarker.setLatLng(latlng);
-          }
-          if (typeof bearing === 'number' && !isNaN(bearing)) {
-            var arrow = document.getElementById('rider-arrow');
-            if (arrow) {
-              arrow.style.display = 'block';
-              arrow.style.transform = 'translateX(-50%) rotate(' + bearing + 'deg)';
-            }
-          }
-          map.flyTo(latlng, Math.max(map.getZoom(), 15), { duration: 0.8 });
-        },
-        setPoint: function(id, lat, lng, type, label) {
-          var latlng = [lat, lng];
-          var emoji = type === 'pickup' ? '🏪' : '📍';
-          var cls = type === 'pickup' ? 'pickup-marker' : 'customer-marker';
-          var html = '<div class="' + cls + '">' + emoji + '</div>';
-          var icon = L.divIcon({ html: html, className: '', iconSize: [38, 38], iconAnchor: [19, 19] });
-          if (window.__markers[id]) {
-            window.__markers[id].setLatLng(latlng);
-            window.__markers[id].setIcon(icon);
-          } else {
-            window.__markers[id] = L.marker(latlng, { icon: icon }).addTo(map);
-          }
-          if (label && window.__markers[id].bindTooltip) {
-            window.__markers[id].bindTooltip(label, { permanent: false });
-          }
-        },
-        drawRoute: function(coords) {
-          if (window.__lines.route) {
-            map.removeLayer(window.__lines.route);
-          }
-          if (!coords || coords.length < 2) return;
-          window.__lines.route = L.polyline(coords, {
-            color: '#F26A4A',
-            weight: 4,
-            opacity: 0.85,
-            dashArray: '8 6',
-          }).addTo(map);
-        },
-        fitBounds: function(coords) {
-          if (!coords || coords.length < 1) return;
-          if (coords.length === 1) {
-            map.setView(coords[0], 15);
-            return;
-          }
-          var bounds = L.latLngBounds(coords);
-          map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
-        },
-        clearAll: function() {
-          Object.values(window.__markers).forEach(function(m){ map.removeLayer(m); });
-          window.__markers = {};
-          Object.values(window.__lines).forEach(function(l){ map.removeLayer(l); });
-          window.__lines = {};
-          if (window.__riderMarker) { map.removeLayer(window.__riderMarker); window.__riderMarker = null; }
-        },
-      };
-
-      if (window.ReactNativeWebView) {
-        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ready' }));
-      }
-    })();
-  </script>
-</body>
-</html>`;
-}
-
-function safeInject(expr: string): string {
-  return `(function(){try{${expr}}catch(e){console.warn('[DBDMap]',e.message);}})();`;
-}
-
-export function CustomMapView({
-  markers,
-  rider = null,
-  pickupGeo = null,
-  deliveryGeo = null,
-  autoFit = true,
-  initialRegion,
-  loading = false,
-  className,
-  followRider = true,
-}: Props) {
-  const webViewRef = useRef<WebView | null>(null);
-  const isReadyRef = useRef(false);
-  const pendingQueueRef = useRef<Array<() => void>>([]);
-
-  const mapHtml = useMemo<string>(() => {
-    const center: Center = initialRegion
-      ? { lat: initialRegion.latitude, lng: initialRegion.longitude }
-      : { lat: DUSHANBE.latitude, lng: DUSHANBE.longitude };
-    return buildMapHtml({
-      initialCenter: center,
-      initialZoom: 14,
-      tileUrl: TILE_URL,
-      attribution: ATTRIBUTION,
-    });
-  }, [initialRegion?.latitude, initialRegion?.longitude]);
-
-  const execOnMap = (expr: string) => {
-    if (isReadyRef.current && webViewRef.current) {
-      webViewRef.current.injectJavaScript(safeInject(expr));
-    } else {
-      pendingQueueRef.current.push(() => {
-        if (webViewRef.current) {
-          webViewRef.current.injectJavaScript(safeInject(expr));
-        }
-      });
-    }
-  };
-
-  useEffect(() => {
-    if (!rider) return;
-    execOnMap(
-      `window.DBDMap.setRider(${rider.latitude}, ${rider.longitude}, ${rider.bearing ?? "null"});`,
-    );
-  }, [rider?.latitude, rider?.longitude, rider?.bearing]);
-
-  useEffect(() => {
-    if (
-      pickupGeo?.location?.coordinates &&
-      pickupGeo.location.coordinates.length >= 2
-    ) {
-      const [lng, lat] = pickupGeo.location.coordinates;
-      execOnMap(
-        `window.DBDMap.setPoint('pickup', ${lat}, ${lng}, 'pickup', ${JSON.stringify(pickupGeo.name || "Ресторан")});`,
-      );
-    }
-    if (
-      deliveryGeo?.location?.coordinates &&
-      deliveryGeo.location.coordinates.length >= 2
-    ) {
-      const [lng, lat] = deliveryGeo.location.coordinates;
-      execOnMap(
-        `window.DBDMap.setPoint('delivery', ${lat}, ${lng}, 'delivery', ${JSON.stringify(deliveryGeo.address || "Клиент")});`,
-      );
-    }
-  }, [pickupGeo, deliveryGeo]);
-
-  useEffect(() => {
-    if (!autoFit) return;
-    const pts: Array<[number, number]> = [];
-    if (
-      pickupGeo?.location?.coordinates &&
-      pickupGeo.location.coordinates.length >= 2
-    ) {
-      const [lng, lat] = pickupGeo.location.coordinates;
-      pts.push([lat, lng]);
-    }
-    if (
-      deliveryGeo?.location?.coordinates &&
-      deliveryGeo.location.coordinates.length >= 2
-    ) {
-      const [lng, lat] = deliveryGeo.location.coordinates;
-      pts.push([lat, lng]);
-    }
-    if (rider) pts.push([rider.latitude, rider.longitude]);
-    if (pts.length < 2) return;
-    const json = JSON.stringify(pts);
-    execOnMap(`window.DBDMap.drawRoute(${json});`);
-    execOnMap(`window.DBDMap.fitBounds(${json});`);
-  }, [
-    autoFit,
-    pickupGeo?.location?.coordinates?.[0],
-    pickupGeo?.location?.coordinates?.[1],
-    deliveryGeo?.location?.coordinates?.[0],
-    deliveryGeo?.location?.coordinates?.[1],
-    rider?.latitude,
-    rider?.longitude,
-  ]);
-
-  useEffect(() => {
-    return () => {
-      isReadyRef.current = false;
-      pendingQueueRef.current = [];
-    };
-  }, []);
-
-  return (
-    <View style={styles.container} className={className}>
-      <WebView
-        ref={webViewRef}
-        originWhitelist={["*"]}
-        source={{ html: mapHtml }}
-        style={StyleSheet.absoluteFill}
-        javaScriptEnabled
-        domStorageEnabled={false}
-        scrollEnabled={false}
-        bounces={false}
-        onLoadEnd={() => {
-          isReadyRef.current = true;
-          const queue = pendingQueueRef.current.slice();
-          pendingQueueRef.current = [];
-          queue.forEach((fn) => fn());
-        }}
-        onMessage={(event: { nativeEvent: { data: string } }) => {
-          if (__DEV__) {
-            try {
-              console.log("[MapView msg]", event.nativeEvent.data);
-            } catch {
-              /* ignore */
-            }
-          }
-        }}
-        // ⭐ FIX: renderError в react-native-webview имеет сигнатуру
-        // (errorDomain: string | undefined, errorCode: number, errorDesc: string) => ReactElement
-        // (см. node_modules/react-native-webview/lib/WebViewTypes.d.ts)
-        renderError={(
-          errorDomain: string | undefined,
-          errorCode: number,
-          errorDesc: string,
-        ) => (
-          <View style={styles.fallback}>
-            <Text style={styles.fallbackEmoji}>🗺</Text>
-            <Text style={styles.fallbackTitle}>Ошибка карты</Text>
-            <Text style={styles.fallbackSubtitle}>
-              {errorDomain ?? "WebView"} · {errorCode} · {errorDesc}
-            </Text>
-          </View>
-        )}
-        renderLoading={() => (
-          <View style={styles.fallback}>
-            <ActivityIndicator color="#F26A4A" size="large" />
-            <Text style={styles.fallbackSubtitle}>Загрузка карты…</Text>
-          </View>
-        )}
-      />
-
-      {loading && (
-        <View style={styles.loadingOverlay} pointerEvents="none">
-          <ActivityIndicator color="#F26A4A" size="large" />
-        </View>
-      )}
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#FAF7F2" },
-  fallback: {
-    ...StyleSheet.absoluteFill,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FAF7F2",
-  },
-  fallbackEmoji: { fontSize: 56, marginBottom: 8 },
-  fallbackTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#1F1B16",
-    marginBottom: 4,
-  },
-  fallbackSubtitle: {
-    fontSize: 12,
-    color: "#9A9388",
-    textAlign: "center",
-    paddingHorizontal: 24,
-  },
-  loadingOverlay: {
-    ...StyleSheet.absoluteFill,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(250,247,242,0.4)",
-  },
-});
 </file>
 
 <file path="dastbadast-multivendor-rider/components/OrderBottomSheet.tsx">
@@ -16751,138 +15886,6 @@ export function OrderCard({
     </Pressable>
   );
 }
-</file>
-
-<file path="dastbadast-multivendor-rider/components/OrderMarker.tsx">
-// dastbadast-multivendor-rider/components/OrderMarker.tsx
-//
-// ⭐ ШАГ 3: кастомный маркер для карты — без Google API.
-// Поддерживает 4 типа: ресторан, клиент, курьер, срочный заказ.
-// Показывает emoji в кружке + опциональную подпись.
-
-import React from "react";
-import { View, Text, StyleSheet } from "react-native";
-import { Marker, MapMarkerProps } from "react-native-maps";
-import { cn } from "../lib/cn";
-
-type MarkerKind = "restaurant" | "customer" | "rider" | "urgent";
-
-type Props = Omit<MapMarkerProps, "coordinate" | "identifier"> & {
-  coordinate: { latitude: number; longitude: number };
-  kind: MarkerKind;
-  label?: string;
-  active?: boolean;
-  zIndex?: number;
-  onPress?: () => void;
-};
-
-const KIND_STYLE: Record<
-  MarkerKind,
-  { emoji: string; bg: string; border: string; size: number }
-> = {
-  restaurant: { emoji: "🏪", bg: "#FFEEE5", border: "#F26A4A", size: 40 },
-  customer: { emoji: "🎯", bg: "#E0F2FE", border: "#2D9CDB", size: 44 },
-  rider: { emoji: "🛵", bg: "#DCFCE7", border: "#16A34A", size: 44 },
-  urgent: { emoji: "⚡", bg: "#FEE2E2", border: "#DC2626", size: 46 },
-};
-
-export function OrderMarker({
-  kind,
-  label,
-  active = false,
-  zIndex,
-  onPress,
-  coordinate,
-  ...rest
-}: Props) {
-  const s = KIND_STYLE[kind];
-
-  return (
-    <Marker
-      coordinate={coordinate}
-      anchor={{ x: 0.5, y: 0.5 }}
-      tracksViewChanges={false}
-      zIndex={zIndex}
-      onPress={onPress}
-      {...rest}
-    >
-      <View style={styles.wrap} pointerEvents="box-none">
-        {/* "Хвостик" пина */}
-        <View style={[styles.tail, { borderTopColor: s.border }]} />
-        <View
-          style={[
-            styles.bubble,
-            {
-              backgroundColor: s.bg,
-              borderColor: s.border,
-              width: s.size,
-              height: s.size,
-              borderRadius: s.size / 2,
-            },
-            active && {
-              borderWidth: 3,
-              transform: [{ scale: 1.1 }],
-            },
-          ]}
-        >
-          <Text style={styles.emoji}>{s.emoji}</Text>
-        </View>
-        {label ? (
-          <View
-            className={cn(
-              "absolute -bottom-1 left-1/2 -ml-12 w-24 px-1.5 py-0.5 rounded-full border",
-              active
-                ? "bg-soft-text border-soft-text"
-                : "bg-soft-surface border-border",
-            )}
-            style={{
-              marginLeft: -48,
-              width: 96,
-            }}
-          >
-            <Text
-              numberOfLines={1}
-              className={cn(
-                "text-2xs font-extrabold text-center",
-                active ? "text-text-inverse" : "text-text",
-              )}
-            >
-              {label}
-            </Text>
-          </View>
-        ) : null}
-      </View>
-    </Marker>
-  );
-}
-
-const styles = StyleSheet.create({
-  wrap: { alignItems: "center", justifyContent: "center" },
-  bubble: {
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.18,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-  tail: {
-    width: 0,
-    height: 0,
-    backgroundColor: "transparent",
-    borderStyle: "solid",
-    borderLeftWidth: 5,
-    borderRightWidth: 5,
-    borderTopWidth: 7,
-    borderLeftColor: "transparent",
-    borderRightColor: "transparent",
-    position: "absolute",
-    bottom: -6,
-  },
-  emoji: { fontSize: 18, lineHeight: 22 },
-});
 </file>
 
 <file path="dastbadast-multivendor-rider/components/ProfileModal.tsx">
@@ -18346,141 +17349,6 @@ export default function Index() {
   const { token, loading } = useAuth();
   if (loading) return null;
   return token ? <Redirect href="/(tabs)/new" /> : <Redirect href="/login" />;
-}
-</file>
-
-<file path="dastbadast-multivendor-store/app/login.tsx">
-import { useState } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  Pressable,
-  ActivityIndicator,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  TouchableOpacity,
-} from "react-native";
-import { useMutation } from "@apollo/client/react";
-import { RESTAURANT_LOGIN } from "../lib/api/graphql/queries";
-import { useAuth } from "../lib/auth-context";
-import { useRouter } from "expo-router";
-import { GRAPHQL_HTTP } from "../lib/config/api";
-
-export default function Login() {
-  // ⭐ ФИКС ПЕРЕД ПУБЛИКАЦИЕЙ: раньше сюда были захардкожены демо-логин/пароль
-  // ("chayhana1"/"store123"), и они же дублировались подсказкой прямо на
-  // экране (см. блок "Демо:" ниже, тоже убран). Для продакшен-сборки,
-  // которая пойдёт в Play Store, поля должны быть пустыми — иначе это
-  // фактически видимый бэкдор в реальный ресторанный аккаунт.
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [doLogin, { loading }] = useMutation(RESTAURANT_LOGIN);
-  const { setAuth } = useAuth();
-  const router = useRouter();
-
-  const submit = async () => {
-    try {
-      const res = await doLogin({
-        variables: { input: { username, password } },
-      });
-      const data = res.data as any;
-      const { token, restaurant } = data.restaurantLogin;
-      await setAuth(token, restaurant);
-      router.replace("/(tabs)/new");
-    } catch (e: any) {
-      let msg = e?.message ?? "Не удалось войти";
-      // ⭐ ФИКС: подробности с адресом API и советами по .env — полезны при
-      // локальной разработке, но не должны показываться конечным
-      // пользователям в опубликованном приложении (мусорная/пугающая
-      // техническая информация). Показываем их только в dev-сборке.
-      if (
-        __DEV__ &&
-        /NoRouteToHost|Network request failed|fetch failed/i.test(msg)
-      ) {
-        msg = `Не удалось подключиться к API.\n\nURL: ${GRAPHQL_HTTP}\n\nПроверьте:\n• API запущен\n• EXPO_PUBLIC_API_URL в .env указывает на IP машины`;
-      } else if (
-        /NoRouteToHost|Network request failed|fetch failed/i.test(msg)
-      ) {
-        msg =
-          "Не удалось подключиться к серверу. Проверьте интернет-соединение и попробуйте снова.";
-      }
-      Alert.alert("Ошибка входа", msg);
-    }
-  };
-
-  return (
-    <KeyboardAvoidingView
-      className="flex-1 justify-center px-6 bg-soft-bg"
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-    >
-      {/* Логотип */}
-      <View className="items-center mb-7">
-        <View className="w-16 h-16 rounded-2xl bg-accent items-center justify-center mb-3.5 shadow-soft-sm">
-          <Text className="text-text-inverse text-3xl font-black">D</Text>
-        </View>
-        <Text className="text-3xl font-extrabold text-text tracking-tight">
-          Dastbadast
-        </Text>
-        <Text className="text-sm text-text-muted mt-1">Портал ресторана</Text>
-      </View>
-
-      {/* Карточка */}
-      <View className="bg-soft-surface border border-border rounded-3xl p-5 shadow-soft-sm">
-        <Text className="text-xs text-text-muted font-bold mb-1.5 uppercase tracking-wider">
-          Логин
-        </Text>
-        <TextInput
-          className="border border-border rounded-xl px-3.5 py-3 text-base bg-soft-surface-2 text-text placeholder-text-muted mb-3.5"
-          autoCapitalize="none"
-          placeholder="username"
-          placeholderTextColor="#9A9388"
-          value={username}
-          onChangeText={setUsername}
-        />
-
-        <Text className="text-xs text-text-muted font-bold mb-1.5 uppercase tracking-wider">
-          Пароль
-        </Text>
-        <TextInput
-          className="border border-border rounded-xl px-3.5 py-3 text-base bg-soft-surface-2 text-text placeholder-text-muted mb-4"
-          secureTextEntry
-          placeholder="••••••••"
-          placeholderTextColor="#9A9388"
-          value={password}
-          onChangeText={setPassword}
-        />
-
-        <TouchableOpacity
-          onPress={submit}
-          disabled={loading}
-          className={`h-13 rounded-2xl items-center justify-center bg-accent shadow-soft-sm ${
-            loading ? "opacity-40" : "active:opacity-85"
-          }`}
-          style={{ height: 52 }}
-        >
-          {loading ? (
-            <ActivityIndicator color="#FFFFFF" />
-          ) : (
-            <Text className="text-text-inverse font-extrabold text-lg tracking-wide">
-              Войти в систему
-            </Text>
-          )}
-        </TouchableOpacity>
-      </View>
-
-      {/* ⭐ ФИКС: адрес API на экране логина — полезно для отладки, но не
-          для публичной сборки (лишняя техническая информация для
-          пользователя, плюс раскрывает инфраструктуру). Показываем только
-          в dev. */}
-      {__DEV__ && (
-        <Text className="text-2xs text-text-muted mt-4 text-center font-mono tracking-wider">
-          {GRAPHQL_HTTP}
-        </Text>
-      )}
-    </KeyboardAvoidingView>
-  );
 }
 </file>
 
@@ -26877,6 +25745,141 @@ export default function RootLayout() {
         <Stack screenOptions={{ headerShown: false }} />
       </AuthProvider>
     </ApolloProviderClient>
+  );
+}
+</file>
+
+<file path="dastbadast-multivendor-store/app/login.tsx">
+import { useState } from "react";
+import {
+  View,
+  Text,
+  TextInput,
+  Pressable,
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  TouchableOpacity,
+} from "react-native";
+import { useMutation } from "@apollo/client/react";
+import { RESTAURANT_LOGIN } from "../lib/api/graphql/queries";
+import { useAuth } from "../lib/auth-context";
+import { useRouter } from "expo-router";
+import { GRAPHQL_HTTP } from "../lib/config/api";
+
+export default function Login() {
+  // ⭐ ФИКС ПЕРЕД ПУБЛИКАЦИЕЙ: раньше сюда были захардкожены демо-логин/пароль
+  // ("chayhana1"/"store123"), и они же дублировались подсказкой прямо на
+  // экране (см. блок "Демо:" ниже, тоже убран). Для продакшен-сборки,
+  // которая пойдёт в Play Store, поля должны быть пустыми — иначе это
+  // фактически видимый бэкдор в реальный ресторанный аккаунт.
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [doLogin, { loading }] = useMutation(RESTAURANT_LOGIN);
+  const { setAuth } = useAuth();
+  const router = useRouter();
+
+  const submit = async () => {
+    try {
+      const res = await doLogin({
+        variables: { input: { username, password } },
+      });
+      const data = res.data as any;
+      const { token, restaurant } = data.restaurantLogin;
+      await setAuth(token, restaurant);
+      router.replace("/(tabs)/new");
+    } catch (e: any) {
+      let msg = e?.message ?? "Не удалось войти";
+      // ⭐ ФИКС: подробности с адресом API и советами по .env — полезны при
+      // локальной разработке, но не должны показываться конечным
+      // пользователям в опубликованном приложении (мусорная/пугающая
+      // техническая информация). Показываем их только в dev-сборке.
+      if (
+        __DEV__ &&
+        /NoRouteToHost|Network request failed|fetch failed/i.test(msg)
+      ) {
+        msg = `Не удалось подключиться к API.\n\nURL: ${GRAPHQL_HTTP}\n\nПроверьте:\n• API запущен\n• EXPO_PUBLIC_API_URL в .env указывает на IP машины`;
+      } else if (
+        /NoRouteToHost|Network request failed|fetch failed/i.test(msg)
+      ) {
+        msg =
+          "Не удалось подключиться к серверу. Проверьте интернет-соединение и попробуйте снова.";
+      }
+      Alert.alert("Ошибка входа", msg);
+    }
+  };
+
+  return (
+    <KeyboardAvoidingView
+      className="flex-1 justify-center px-6 bg-soft-bg"
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
+      {/* Логотип */}
+      <View className="items-center mb-7">
+        <View className="w-16 h-16 rounded-2xl bg-accent items-center justify-center mb-3.5 shadow-soft-sm">
+          <Text className="text-text-inverse text-3xl font-black">D</Text>
+        </View>
+        <Text className="text-3xl font-extrabold text-text tracking-tight">
+          Dastbadast
+        </Text>
+        <Text className="text-sm text-text-muted mt-1">Портал ресторана</Text>
+      </View>
+
+      {/* Карточка */}
+      <View className="bg-soft-surface border border-border rounded-3xl p-5 shadow-soft-sm">
+        <Text className="text-xs text-text-muted font-bold mb-1.5 uppercase tracking-wider">
+          Логин
+        </Text>
+        <TextInput
+          className="border border-border rounded-xl px-3.5 py-3 text-base bg-soft-surface-2 text-text placeholder-text-muted mb-3.5"
+          autoCapitalize="none"
+          placeholder="username"
+          placeholderTextColor="#9A9388"
+          value={username}
+          onChangeText={setUsername}
+        />
+
+        <Text className="text-xs text-text-muted font-bold mb-1.5 uppercase tracking-wider">
+          Пароль
+        </Text>
+        <TextInput
+          className="border border-border rounded-xl px-3.5 py-3 text-base bg-soft-surface-2 text-text placeholder-text-muted mb-4"
+          secureTextEntry
+          placeholder="••••••••"
+          placeholderTextColor="#9A9388"
+          value={password}
+          onChangeText={setPassword}
+        />
+
+        <TouchableOpacity
+          onPress={submit}
+          disabled={loading}
+          className={`h-13 rounded-2xl items-center justify-center bg-accent shadow-soft-sm ${
+            loading ? "opacity-40" : "active:opacity-85"
+          }`}
+          style={{ height: 52 }}
+        >
+          {loading ? (
+            <ActivityIndicator color="#FFFFFF" />
+          ) : (
+            <Text className="text-text-inverse font-extrabold text-lg tracking-wide">
+              Войти в систему
+            </Text>
+          )}
+        </TouchableOpacity>
+      </View>
+
+      {/* ⭐ ФИКС: адрес API на экране логина — полезно для отладки, но не
+          для публичной сборки (лишняя техническая информация для
+          пользователя, плюс раскрывает инфраструктуру). Показываем только
+          в dev. */}
+      {__DEV__ && (
+        <Text className="text-2xs text-text-muted mt-4 text-center font-mono tracking-wider">
+          {GRAPHQL_HTTP}
+        </Text>
+      )}
+    </KeyboardAvoidingView>
   );
 }
 </file>
@@ -36752,1007 +35755,6 @@ async function sendOnce(): Promise<void> {
 }
 </file>
 
-<file path="dastbadast-multivendor-store/app/(tabs)/new.tsx">
-import { useEffect, useMemo, useCallback, useState } from "react";
-import {
-  View,
-  Text,
-  FlatList,
-  Pressable,
-  ActivityIndicator,
-  Alert,
-  Modal,
-  TouchableOpacity,
-} from "react-native";
-import { useQuery, useMutation, useSubscription } from "@apollo/client/react";
-import {
-  RESTAURANT_ORDERS,
-  ACCEPT_ORDER,
-  CANCEL_ORDER,
-  SUB_PLACE_ORDER,
-  MARK_ORDER_READY,
-} from "../../lib/api/graphql/queries";
-import { useAuth } from "../../lib/auth-context";
-import Toast from "react-native-toast-message";
-import * as Haptics from "expo-haptics";
-import { playNewOrderSignal } from "../../lib/sound";
-import {
-  formatTimeAgo,
-  formatOrdersCount,
-  formatItemsCount,
-} from "../../lib/format";
-import { EmptyState } from "../../components/EmptyState";
-import { cn } from "../../lib/cn";
-import { SafeAreaView } from "react-native-safe-area-context";
-
-// Предустановленные опции времени приготовления (мин).
-// Шаг 5, диапазон 20..60.
-const PREP_TIME_OPTIONS = [20, 25, 30, 35, 40, 45, 50, 55, 60];
-const DEFAULT_PREP_TIME = 40;
-
-export default function NewOrders() {
-  const { restaurant } = useAuth();
-
-  const {
-    data,
-    loading,
-    refetch,
-    error: queryError,
-  } = useQuery(RESTAURANT_ORDERS, {
-    variables: { status: "PENDING" },
-    pollInterval: 15_000,
-    skip: !restaurant?.id,
-  }) as any;
-
-  useSubscription(SUB_PLACE_ORDER, {
-    variables: { restaurantId: restaurant?.id },
-    skip: !restaurant?.id,
-    onData: ({ data: subData, client }: any) => {
-      const order = subData?.data?.subscribePlaceOrder;
-      if (!order) return;
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
-        () => {},
-      );
-      Toast.show({
-        type: "success",
-        text1: "🔔 Новый заказ!",
-        text2: `Сумма: ${order.amounts?.subtotal} сом.`,
-        visibilityTime: 5000,
-      });
-      client.refetchQueries({ include: [RESTAURANT_ORDERS] });
-    },
-  });
-
-  useEffect(() => {
-    if (restaurant?.id) refetch();
-  }, [restaurant?.id, refetch]);
-
-  const [acceptOrder, { loading: acLoading }] = useMutation(ACCEPT_ORDER);
-  const [cancelOrder, { loading: cancelLoading }] = useMutation(CANCEL_ORDER);
-
-  // ⭐ Модалка выбора времени приготовления
-  const [prepModal, setPrepModal] = useState<{
-    orderId: string;
-    order: any;
-  } | null>(null);
-  const [prepTime, setPrepTime] = useState<number>(DEFAULT_PREP_TIME);
-
-  // Просто открывает модалку — без Alert
-  const onAccept = useCallback(
-    (orderId: string) => {
-      const order = (data?.restaurantOrders ?? []).find(
-        (o: any) => o.id === orderId,
-      );
-      if (!order) {
-        Alert.alert("Ошибка", "Заказ не найден в списке");
-        return;
-      }
-      setPrepTime(DEFAULT_PREP_TIME);
-      setPrepModal({ orderId, order });
-    },
-    [data],
-  );
-
-  const confirmAccept = async () => {
-    if (!prepModal) return;
-    try {
-      await acceptOrder({
-        variables: {
-          input: { orderId: prepModal.orderId, prepTime },
-        },
-      });
-      Toast.show({
-        type: "success",
-        text1: "✅ Заказ принят",
-        text2: `Время приготовления: ${prepTime} мин`,
-      });
-      setPrepModal(null);
-      refetch();
-    } catch (e: any) {
-      Alert.alert("Ошибка", e?.message ?? "Не удалось принять");
-    }
-  };
-
-  const onCancel = useCallback(
-    (orderId: string) => {
-      Alert.alert("Отменить заказ?", "Клиент получит уведомление", [
-        { text: "Назад", style: "cancel" },
-        {
-          text: "Отменить",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await cancelOrder({
-                variables: { input: { orderId, reason: "Нет продуктов" } },
-              });
-              Toast.show({ type: "info", text1: "Заказ отменён" });
-              refetch();
-            } catch (e: any) {
-              Alert.alert("Ошибка", e?.message ?? "Не удалось отменить");
-            }
-          },
-        },
-      ]);
-    },
-    [cancelOrder, refetch],
-  );
-  
-  const [markReady, { loading: markingReady }] = useMutation(MARK_ORDER_READY);
-
-  const orders = data?.restaurantOrders ?? [];
-  const busy = acLoading || cancelLoading;
-
-  const stats = useMemo(() => {
-    const total = orders.length;
-    const totalAmount = orders.reduce(
-      (s: number, o: any) => s + (o.amounts?.subtotal ?? 0),
-      0,
-    );
-    return { total, totalAmount };
-  }, [orders]);
-
-  if (loading && !orders.length) {
-    return (
-      <View className="flex-1 items-center justify-center bg-soft-bg">
-        <ActivityIndicator size="large" color="#F26A4A" />
-        <Text className="text-text-muted text-sm mt-3">Загружаем заказы…</Text>
-      </View>
-    );
-  }
-
-
-  return (
-    <SafeAreaView className="flex-1 bg-soft-bg">
-      <View className="px-5 pb-2 flex-row items-end justify-between">
-        <View className="flex-1">
-          <Text className="text-2xl font-extrabold text-text tracking-tight">
-            Новые заказы
-          </Text>
-          <Text className="text-sm text-text-muted mt-0.5">
-            Готовьте быстрее — клиент уже ждёт
-          </Text>
-        </View>
-        {stats.total > 0 && (
-          <View className="bg-accent rounded-2xl px-3.5 py-2 items-center min-w-[60px] shadow-soft-sm">
-            <Text className="text-text-inverse text-xl font-black leading-none">
-              {stats.total}
-            </Text>
-            <Text className="text-text-inverse/90 text-2xs font-bold mt-0.5">
-              {formatOrdersCount(stats.total)}
-            </Text>
-          </View>
-        )}
-      </View>
-
-      {queryError && (
-        <View className="mx-5 my-2 bg-red-soft border border-red/30 rounded-xl px-3 py-2">
-          <Text className="text-red text-sm font-semibold">
-            ⚠️ {queryError.message}
-          </Text>
-        </View>
-      )}
-
-      <FlatList
-        data={orders}
-        keyExtractor={(o: any) => o.id}
-        contentContainerStyle={
-          orders.length === 0
-            ? { flexGrow: 1 }
-            : { padding: 16, paddingBottom: 24 }
-        }
-        ListEmptyComponent={
-          <EmptyState
-            emoji="🎉"
-            title="Нет новых заказов"
-            subtitle="Здесь появятся заказы, как только клиенты их оформят"
-          />
-        }
-        renderItem={({ item }: any) => {
-          const minutesAgo = Math.floor(
-            (Date.now() - new Date(item.createdAt).getTime()) / 60_000,
-          );
-          const isUrgent = minutesAgo >= 10;
-
-          return (
-            <View
-              className={cn(
-                "bg-soft-surface border rounded-2xl p-4 mb-3.5 shadow-soft-sm",
-                isUrgent
-                  ? "bg-accent-soft border-accent border-2"
-                  : "border-border",
-              )}
-            >
-              <View className="flex-row justify-between items-start mb-3">
-                <View className="flex-1 mr-3">
-                  <View className="flex-row items-center gap-2 mb-1">
-                    <Text className="text-lg font-extrabold text-text tracking-tight">
-                      #{item.orderId}
-                    </Text>
-                    {isUrgent && (
-                      <View className="bg-red rounded-full px-2 py-0.5">
-                        <Text className="text-text-inverse text-2xs font-extrabold">
-                          🔥 Срочно
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                  <Text className="text-xs text-text-muted font-medium">
-                    ⏱ {formatTimeAgo(item.createdAt)}
-                  </Text>
-                </View>
-                <View className="items-end">
-                  <Text className="text-lg font-extrabold text-accent tracking-tight">
-                    {item.amounts?.subtotal} сом.
-                  </Text>
-                  <Text className="text-2xs text-text-muted font-bold mt-0.5">
-                    {formatItemsCount(item.items?.length || 0)}
-                  </Text>
-                </View>
-              </View>
-
-              <View className="bg-soft-surface-2 rounded-xl p-3 mb-2.5">
-                <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
-                  📍 Доставить
-                </Text>
-                <Text className="text-sm text-text font-semibold leading-5">
-                  {item.deliveryAddress?.city
-                    ? `${item.deliveryAddress.city}, `
-                    : ""}
-                  {item.deliveryAddress?.address}
-                </Text>
-              </View>
-
-              <View className="pt-2.5 border-t border-border">
-                {item.items?.map((it: any) => (
-                  <Text
-                    key={it.foodId}
-                    className="text-sm text-text-soft leading-6"
-                  >
-                    • {it.title}{" "}
-                    <Text className="text-accent font-extrabold">
-                      ×{it.quantity}
-                    </Text>
-                  </Text>
-                ))}
-              </View>
-
-              {item.note && (
-                <View className="mt-2.5 bg-warning-soft rounded-xl p-2.5 border-l-[3px] border-warning">
-                  <Text className="text-sm text-text italic">
-                    💬 {item.note}
-                  </Text>
-                </View>
-              )}
-
-              <View className="flex-row gap-2 mt-3.5">
-                <TouchableOpacity
-                  disabled={busy}
-                  onPress={() => onAccept(item.id)}
-                  className={cn(
-                    "flex-1 h-12 rounded-xl items-center justify-center bg-success shadow-soft-sm",
-                    busy ? "opacity-40" : "active:opacity-80",
-                  )}
-                >
-                  <Text className="text-text-inverse font-extrabold text-base tracking-wide">
-                    ✓ Принять
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  disabled={busy}
-                  onPress={() => onCancel(item.id)}
-                  className={cn(
-                    "flex-1 h-12 rounded-xl items-center justify-center bg-soft-surface border border-red",
-                    busy ? "opacity-40" : "active:opacity-80",
-                  )}
-                >
-                  <Text className="text-red font-extrabold text-base tracking-wide">
-                    ✕ Отменить
-                  </Text>
-                </TouchableOpacity>
-              </View>
-              {(item.orderStatus === "ACCEPTED" ||
-                item.orderStatus === "PREPARING") && (
-                <TouchableOpacity
-                  onPress={async () => {
-                    try {
-                      await markReady({ variables: { orderId: item.id } });
-                      await refetch();
-                    } catch (e: any) {
-                      Alert.alert("Ошибка", e?.message ?? "Не удалось");
-                    }
-                  }}
-                  disabled={markingReady}
-                  className="mt-3 h-12 rounded-2xl bg-accent items-center justify-center active:opacity-85"
-                >
-                  <Text className="text-text-inverse font-extrabold text-base">
-                    ✅ Готово — отдать курьеру
-                  </Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          );
-        }}
-      />
-
-      {/* ⭐ Модалка выбора времени приготовления */}
-      {prepModal && (
-        <PrepTimeModal
-          visible={!!prepModal}
-          order={prepModal.order}
-          selected={prepTime}
-          onSelect={setPrepTime}
-          onConfirm={confirmAccept}
-          onClose={() => setPrepModal(null)}
-          busy={acLoading}
-        />
-      )}
-    </SafeAreaView>
-  );
-}
-
-/* ============== Модалка выбора времени ============== */
-
-function PrepTimeModal({
-  visible,
-  order,
-  selected,
-  onSelect,
-  onConfirm,
-  onClose,
-  busy,
-}: {
-  visible: boolean;
-  order: any;
-  selected: number;
-  onSelect: (m: number) => void;
-  onConfirm: () => void;
-  onClose: () => void;
-  busy: boolean;
-}) {
-  if (!visible || !order) return null;
-
-  return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
-    >
-      <View className="flex-1 bg-black/50 justify-end">
-        <Pressable className="flex-1" onPress={onClose} />
-
-        <View className="bg-soft-surface rounded-t-3xl p-5 pb-8">
-          <View className="items-center mb-3">
-            <View className="w-12 h-1 bg-border rounded-full" />
-          </View>
-
-          <Text className="text-lg font-extrabold text-text">
-            Принять заказ
-          </Text>
-
-          {/* Информация о заказе */}
-          <View className="mt-3 bg-soft-surface-2 border border-border rounded-2xl p-3.5">
-            <Text className="text-sm font-bold text-text" numberOfLines={1}>
-              Заказ #{String(order.orderId).substring(0, 8)}
-            </Text>
-            <View className="flex-row justify-between mt-1.5">
-              <Text className="text-xs text-text-muted">Сумма</Text>
-              <Text className="text-sm font-extrabold text-accent">
-                {order.amounts?.subtotal} сом.
-              </Text>
-            </View>
-            <View className="flex-row justify-between mt-1">
-              <Text className="text-xs text-text-muted">Ожидает с</Text>
-              <Text className="text-xs font-bold text-text-soft">
-                {formatTimeAgo(order.createdAt)}
-              </Text>
-            </View>
-            {order.deliveryAddress && (
-              <View className="mt-2 pt-2 border-t border-border">
-                <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
-                  📍 Доставить
-                </Text>
-                <Text className="text-xs text-text-soft leading-5">
-                  {order.deliveryAddress.city
-                    ? `${order.deliveryAddress.city}, `
-                    : ""}
-                  {order.deliveryAddress.address}
-                </Text>
-              </View>
-            )}
-            {order.items && order.items.length > 0 && (
-              <View className="mt-2 pt-2 border-t border-border">
-                <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
-                  🍽 Состав
-                </Text>
-                {order.items.map((it: any) => (
-                  <Text key={it.foodId} className="text-xs text-text-soft">
-                    • {it.title}{" "}
-                    <Text className="text-text-muted">×{it.quantity}</Text>
-                  </Text>
-                ))}
-              </View>
-            )}
-          </View>
-
-          {/* Заголовок выбора */}
-          <Text className="text-sm font-extrabold text-text mt-5">
-            ⏱ Сколько времени на готовку?
-          </Text>
-          <Text className="text-2xs text-text-muted mt-0.5 mb-3">
-            Минимум 20 минут · Максимум 60 минут · Шаг 5 минут
-          </Text>
-
-          {/* Сетка выбора 3×3 */}
-          <View className="flex-row flex-wrap gap-2">
-            {PREP_TIME_OPTIONS.map((min) => {
-              const active = selected === min;
-              return (
-                <Pressable
-                  key={min}
-                  onPress={() => onSelect(min)}
-                  className={cn(
-                    "w-[31%] py-3.5 rounded-2xl items-center border-2",
-                    active
-                      ? "bg-accent border-accent"
-                      : "bg-soft-surface border-border",
-                  )}
-                >
-                  <Text
-                    className={cn(
-                      "text-lg font-extrabold",
-                      active ? "text-text-inverse" : "text-text",
-                    )}
-                  >
-                    {min}
-                  </Text>
-                  <Text
-                    className={cn(
-                      "text-2xs font-bold mt-0.5",
-                      active ? "text-text-inverse/80" : "text-text-muted",
-                    )}
-                  >
-                    мин
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          {/* Кнопки действий */}
-          <View className="flex-row gap-2 mt-5">
-            <Pressable
-              onPress={onClose}
-              className="flex-1 h-12 rounded-2xl items-center justify-center border border-border bg-soft-surface"
-            >
-              <Text className="text-text-soft font-bold text-base">Отмена</Text>
-            </Pressable>
-            <Pressable
-              onPress={onConfirm}
-              disabled={busy}
-              className={cn(
-                "flex-[2] h-12 rounded-2xl items-center justify-center bg-success shadow-soft-sm",
-                busy ? "opacity-40" : "active:opacity-80",
-              )}
-            >
-              {busy ? (
-                <ActivityIndicator color="white" />
-              ) : (
-                <Text className="text-text-inverse font-extrabold text-base">
-                  ✓ Принять · {selected} мин
-                </Text>
-              )}
-            </Pressable>
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-</file>
-
-<file path="dastbadast-multivendor-store/app/(tabs)/processing.tsx">
-import { useMemo, useState, useEffect } from "react";
-import {
-  View,
-  Text,
-  FlatList,
-  ActivityIndicator,
-  TouchableOpacity,
-  Alert,
-} from "react-native";
-import { useQuery, useMutation } from "@apollo/client/react";
-import {
-  RESTAURANT_ORDERS,
-  MARK_ORDER_READY,
-} from "../../lib/api/graphql/queries";
-import { useAuth } from "../../lib/auth-context";
-import { SegmentedTabs } from "../../components/SegmentedTabs";
-import { EmptyState } from "../../components/EmptyState";
-import { StatusPill } from "../../components/StatusPill";
-import { cn } from "../../lib/cn";
-import { usePrepRemainingMs, formatPrepRemaining } from "../../lib/prep-timer";
-import {
-  formatDateTime,
-  formatOrdersCount,
-  formatItemsCount,
-  pluralize,
-} from "../../lib/format";
-import { SafeAreaView } from "react-native-safe-area-context";
-
-type Tab = "cooking" | "history";
-
-const PREP_TIME = 20;
-
-export default function Processing() {
-  const { restaurant } = useAuth();
-  const [tab, setTab] = useState<Tab>("cooking");
-
-  const { data, loading, refetch } = useQuery(RESTAURANT_ORDERS, {
-    variables: { status: "ACCEPTED" },
-    pollInterval: 15_000,
-    skip: !restaurant?.id,
-  }) as any;
-
-  const [markOrderReady, { loading: markingReady }] =
-    useMutation(MARK_ORDER_READY);
-
-  const handleMarkReady = async (orderId: string) => {
-    try {
-      await markOrderReady({ variables: { orderId } });
-      await refetch();
-    } catch (e: any) {
-      Alert.alert("Ошибка", e?.message ?? "Не удалось отметить заказ готовым");
-    }
-  };
-
-  const {
-    data: histAll,
-    loading: histLoading,
-    refetch: refetchHist,
-  } = useQuery(RESTAURANT_ORDERS, {
-    variables: { status: "DELIVERED" },
-    pollInterval: 30_000,
-    skip: !restaurant?.id || tab !== "history",
-  }) as any;
-
-  const {
-    data: cancAll,
-    loading: cancLoading,
-    refetch: refetchCanc,
-  } = useQuery(RESTAURANT_ORDERS, {
-    variables: { status: "CANCELLED" },
-    skip: !restaurant?.id || tab !== "history",
-  }) as any;
-
-  useEffect(() => {
-    if (restaurant?.id) refetch();
-  }, [restaurant?.id, refetch]);
-
-  useEffect(() => {
-    if (tab === "history") {
-      refetchHist();
-      refetchCanc();
-    }
-  }, [tab, refetchHist, refetchCanc]);
-
-  const orders: any[] = data?.restaurantOrders ?? [];
-  const histOrders: any[] = histAll?.restaurantOrders ?? [];
-  const cancOrders: any[] = cancAll?.restaurantOrders ?? [];
-
-  const history = useMemo(() => {
-    return [...histOrders, ...cancOrders].sort(
-      (a, b) =>
-        new Date(
-          b.statusTimestamps?.deliveredAt ||
-            b.statusTimestamps?.cancelledAt ||
-            b.createdAt,
-        ).getTime() -
-        new Date(
-          a.statusTimestamps?.deliveredAt ||
-            a.statusTimestamps?.cancelledAt ||
-            a.createdAt,
-        ).getTime(),
-    );
-  }, [histOrders, cancOrders]);
-
-  const tabs = [
-    {
-      value: "cooking" as const,
-      label: "Готовятся",
-      count: orders.length,
-      icon: "👨‍🍳",
-    },
-    {
-      value: "history" as const,
-      label: "История",
-      count: history.length,
-      icon: "📦",
-    },
-  ];
-
-  function PrepCountdown({
-    acceptedAt,
-    prepTime,
-  }: {
-    acceptedAt?: string | null;
-    prepTime?: number | null;
-  }) {
-    const { remainingMs, isLate, elapsedMs, totalMs } = usePrepRemainingMs(
-      acceptedAt,
-      prepTime,
-    );
-
-    if (!acceptedAt || !prepTime) return null;
-
-    // Прогресс-бар (0–100%)
-    const pct = totalMs > 0 ? Math.min(100, (elapsedMs / totalMs) * 100) : 0;
-
-    return (
-      <View className="mt-2">
-        <View className="flex-row items-center justify-between mb-1.5">
-          {isLate ? (
-            <View className="flex-row items-center">
-              <Text className="text-xs font-bold text-red">
-                ⚠️ Задержка {Math.floor((elapsedMs - totalMs) / 60000)} мин
-              </Text>
-            </View>
-          ) : (
-            <Text className="text-xs font-bold text-text-soft">
-              ⏱ Осталось готовить
-            </Text>
-          )}
-          <Text
-            className={cn(
-              "text-base font-extrabold font-mono tabular-nums",
-              isLate ? "text-red" : "text-accent",
-            )}
-          >
-            {formatPrepRemaining(remainingMs)}
-          </Text>
-        </View>
-        <View className="w-full h-1.5 bg-soft-surface-2 rounded-full overflow-hidden">
-          <View
-            className={cn(
-              "h-full rounded-full transition-all",
-              isLate ? "bg-red" : pct > 80 ? "bg-warning" : "bg-success",
-            )}
-            style={{ width: `${Math.min(100, pct)}%` }}
-          />
-        </View>
-      </View>
-    );
-  }
-
-  const isLoading = tab === "cooking" ? loading : histLoading || cancLoading;
-
-  const renderCookingItem = ({ item }: any) => {
-    const elapsed = Math.floor(
-      (Date.now() - new Date(item.createdAt).getTime()) / 60_000,
-    );
-    const isLate = elapsed > PREP_TIME + 5;
-
-    return (
-      <View
-        className={cn(
-          "bg-soft-surface border rounded-2xl p-4 mb-3.5 shadow-soft-sm",
-          isLate ? "border-warning border-2" : "border-border",
-        )}
-      >
-        <View className="flex-row justify-between items-start mb-3">
-          <View className="flex-1 mr-3">
-            <View className="flex-row items-center gap-2 mb-1">
-              <Text className="text-lg font-extrabold text-text tracking-tight">
-                #{item.orderId}
-              </Text>
-              {isLate && (
-                <View className="bg-warning-soft rounded-full px-2 py-0.5 border border-warning">
-                  <Text className="text-warning-dark text-2xs font-extrabold">
-                    ⚠️ Задержка
-                  </Text>
-                </View>
-              )}
-            </View>
-            <Text className="text-xs text-text-muted font-medium">
-              ⏱ готовится {elapsed}{" "}
-              {pluralize(elapsed, "минуту", "минуты", "минут")}
-            </Text>
-          </View>
-          <Text className="text-lg font-extrabold text-accent tracking-tight">
-            {item.amounts?.subtotal} сом.
-          </Text>
-        </View>
-
-        <View className="bg-soft-surface-2 rounded-xl p-3 mb-2.5">
-          <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
-            📍 Доставить
-          </Text>
-          <Text className="text-sm text-text font-semibold leading-5">
-            {item.deliveryAddress?.city ? `${item.deliveryAddress.city}, ` : ""}
-            {item.deliveryAddress?.address}
-          </Text>
-        </View>
-
-        <View className="pt-2.5 border-t border-border">
-          {item.items?.map((it: any) => (
-            <Text key={it.foodId} className="text-sm text-text-soft leading-6">
-              • {it.title}{" "}
-              <Text className="text-accent font-extrabold">×{it.quantity}</Text>
-            </Text>
-          ))}
-        </View>
-
-        <PrepCountdown
-          acceptedAt={item.statusTimestamps?.acceptedAt}
-          prepTime={item.statusTimestamps?.prepTime}
-        />
-
-        <View className="mt-3 pt-3 border-t border-border">
-          <Text className="text-xs text-text-muted italic leading-4">
-            💡 Курьер увидит заказ и сам приедет в ресторан
-          </Text>
-        </View>
-
-        {(item.orderStatus === "ACCEPTED" ||
-          item.orderStatus === "PREPARING") && (
-          <TouchableOpacity
-            onPress={() => handleMarkReady(item.id)}
-            disabled={markingReady}
-            className="mt-3 h-12 rounded-2xl bg-accent items-center justify-center active:opacity-85"
-          >
-            <Text className="text-text-inverse font-extrabold text-base">
-              ✅ Готово — отдать курьеру
-            </Text>
-          </TouchableOpacity>
-        )}
-      </View>
-    );
-  };
-
-  const renderHistoryItem = ({ item }: any) => {
-    const isDelivered = item.orderStatus === "DELIVERED";
-    const ts =
-      item.statusTimestamps?.deliveredAt ||
-      item.statusTimestamps?.cancelledAt ||
-      item.createdAt;
-    const itemsCount = item.items?.length || 0;
-    const dishesSummary = item.items
-      ?.slice(0, 3)
-      .map((it: any) => `${it.title} ×${it.quantity}`)
-      .join(", ");
-
-    // ⭐ ФИКС: раньше здесь (внутри renderHistoryItem — обычной функции,
-    // вызываемой FlatList на каждую строку списка) был отдельный
-    // `useMutation(MARK_ORDER_READY)`. Хуки нельзя вызывать внутри функций,
-    // которые не являются React-компонентом и вызываются переменное число
-    // раз (по одному на элемент списка) — это и давало
-    // "Invalid hook call" / "Rendered more hooks than during the previous
-    // render". Внизу использую единственный `markOrderReady` из тела
-    // компонента Processing (уже объявлен выше, у renderCookingItem).
-    //
-    // ⭐ ШАГ 5: для заказов в PREPARING/READY_FOR_PICKUP показываем ETA
-    const isPrep =
-      item.orderStatus === "ACCEPTED" ||
-      item.orderStatus === "PREPARING" ||
-      item.orderStatus === "READY_FOR_PICKUP";
-    let prepRemaining: number | null = null;
-    if (
-      isPrep &&
-      item.statusTimestamps?.acceptedAt &&
-      item.statusTimestamps?.prepTime
-    ) {
-      const elapsedMin =
-        (Date.now() - new Date(item.statusTimestamps.acceptedAt).getTime()) /
-        60_000;
-      prepRemaining = Math.max(
-        0,
-        Math.ceil(item.statusTimestamps.prepTime - elapsedMin),
-      );
-    }
-
-    return (
-      <View
-        className={cn(
-          "bg-soft-surface border rounded-2xl p-4 mb-3 shadow-soft-sm",
-          isDelivered ? "border-border" : "border-red/30 bg-red-soft/30",
-        )}
-      >
-        <View className="flex-row justify-between items-start mb-2.5">
-          <View className="flex-1 mr-3">
-            <View className="flex-row items-center gap-2 mb-1">
-              <Text className="text-base font-extrabold text-text tracking-tight">
-                #{item.orderId}
-              </Text>
-              <StatusPill status={item.orderStatus} />
-            </View>
-            <Text className="text-xs text-text-muted">
-              {isDelivered
-                ? `✅ ${formatDateTime(ts)}`
-                : `✕ ${formatDateTime(ts)}`}
-            </Text>
-          </View>
-          <Text
-            className={cn(
-              "text-base font-extrabold tracking-tight",
-              isDelivered ? "text-text" : "text-text-muted line-through",
-            )}
-          >
-            {item.amounts?.subtotal} сом.
-          </Text>
-        </View>
-        <View className="bg-soft-surface-2 rounded-xl p-2.5 mb-2.5">
-          <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
-            📍 Доставлено
-          </Text>
-          <Text className="text-sm text-text-soft leading-5" numberOfLines={2}>
-            {item.deliveryAddress?.city ? `${item.deliveryAddress.city}, ` : ""}
-            {item.deliveryAddress?.address}
-          </Text>
-        </View>
-        {/* ⭐ ШАГ 5: live ETA countdown для готовящихся заказов */}
-        {prepRemaining != null && prepRemaining > 0 && (
-          <View className="mt-2 bg-warning-soft border border-warning/30 rounded-lg px-2.5 py-1.5 flex-row items-center gap-1.5">
-            <Text className="text-sm">⏱</Text>
-            <Text className="text-xs text-warning-dark font-extrabold">
-              Осталось готовить: {prepRemaining} мин
-            </Text>
-          </View>
-        )}
-        {dishesSummary && (
-          <View className="pt-2 border-t border-border">
-            <Text
-              className="text-sm text-text-soft leading-5"
-              numberOfLines={2}
-            >
-              {dishesSummary}
-              {itemsCount > 3 ? ` · + ещё ${itemsCount - 3}` : ""}
-            </Text>
-            <Text className="text-2xs text-text-muted mt-1 font-medium">
-              {formatItemsCount(itemsCount)}
-            </Text>
-          </View>
-        )}
-        {!isDelivered && item.cancelReason && (
-          <View className="mt-2 bg-red-soft rounded-lg px-2.5 py-1.5">
-            <Text className="text-2xs text-red-dark font-semibold">
-              Причина: {item.cancelReason}
-            </Text>
-          </View>
-        )}
-        {isDelivered && item.riderId && (
-          <View className="mt-2 flex-row items-center gap-1.5">
-            <Text className="text-2xs text-text-muted">🛵 Курьер выполнил</Text>
-          </View>
-        )}
-      </View>
-    );
-  };
-
-  if (tab === "cooking") {
-    return (
-      <View className="flex-1 bg-soft-bg">
-        <SegmentedTabs tabs={tabs} value={tab} onChange={setTab} />
-        {loading && !orders.length ? (
-          <View className="flex-1 items-center justify-center">
-            <ActivityIndicator size="large" color="#F26A4A" />
-            <Text className="text-text-muted text-sm mt-3">
-              Загружаем заказы…
-            </Text>
-          </View>
-        ) : (
-          <FlatList
-            data={orders}
-            keyExtractor={(o: any) => o.id}
-            renderItem={renderCookingItem}
-            contentContainerStyle={
-              orders.length === 0
-                ? { flexGrow: 1 }
-                : { padding: 16, paddingBottom: 24 }
-            }
-            ListEmptyComponent={
-              <EmptyState
-                emoji="👨‍🍳"
-                title="Пока тихо"
-                subtitle="Принятые заказы появятся здесь — удобно следить за очередью"
-              />
-            }
-          />
-        )}
-      </View>
-    );
-  }
-
-  return (
-    <View className="flex-1 bg-soft-bg">
-      <SegmentedTabs tabs={tabs} value={tab} onChange={setTab} />
-
-      {history.length > 0 && (
-        <View className="mx-5 mt-4 bg-soft-surface border border-border rounded-2xl p-4 shadow-soft-sm flex-row items-end gap-5 flex-wrap">
-          <View>
-            <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider">
-              Выручка (доставлено)
-            </Text>
-            <Text className="text-2xl font-black text-success mt-0.5">
-              {history
-                .filter((o: any) => o.orderStatus === "DELIVERED")
-                .reduce(
-                  (s: number, o: any) => s + (o.amounts?.subtotal ?? 0),
-                  0,
-                )
-                .toLocaleString("ru")}{" "}
-              сом.
-            </Text>
-          </View>
-          <View>
-            <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider">
-              Заказов
-            </Text>
-            <Text className="text-xl font-extrabold text-text mt-0.5">
-              {history.length}
-            </Text>
-          </View>
-          <View>
-            <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider">
-              Отменено
-            </Text>
-            <Text className="text-xl font-extrabold text-red mt-0.5">
-              {history.filter((o: any) => o.orderStatus === "CANCELLED").length}
-            </Text>
-          </View>
-        </View>
-      )}
-
-      {isLoading && !history.length ? (
-        <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" color="#F26A4A" />
-          <Text className="text-text-muted text-sm mt-3">
-            Загружаем историю…
-          </Text>
-        </View>
-      ) : (
-        <FlatList
-          data={history}
-          keyExtractor={(o: any) => o.id}
-          renderItem={renderHistoryItem}
-          contentContainerStyle={
-            history.length === 0
-              ? { flexGrow: 1 }
-              : { padding: 16, paddingBottom: 24 }
-          }
-          ListEmptyComponent={
-            <EmptyState
-              emoji="📦"
-              title="История пуста"
-              subtitle="Завершённые и отменённые заказы появятся здесь"
-            />
-          }
-        />
-      )}
-    </View>
-  );
-}
-</file>
-
 <file path="dastbadast-multivendor-store/components/SegmentedTabs.tsx">
 // dastbadast-multivendor-store/components/SegmentedTabs.tsx
 import { Text, TouchableOpacity, View } from "react-native";
@@ -41056,6 +39058,1007 @@ export default function OrdersScreen() {
     "lint": "expo lint"
   },
   "private": true
+}
+</file>
+
+<file path="dastbadast-multivendor-store/app/(tabs)/new.tsx">
+import { useEffect, useMemo, useCallback, useState } from "react";
+import {
+  View,
+  Text,
+  FlatList,
+  Pressable,
+  ActivityIndicator,
+  Alert,
+  Modal,
+  TouchableOpacity,
+} from "react-native";
+import { useQuery, useMutation, useSubscription } from "@apollo/client/react";
+import {
+  RESTAURANT_ORDERS,
+  ACCEPT_ORDER,
+  CANCEL_ORDER,
+  SUB_PLACE_ORDER,
+  MARK_ORDER_READY,
+} from "../../lib/api/graphql/queries";
+import { useAuth } from "../../lib/auth-context";
+import Toast from "react-native-toast-message";
+import * as Haptics from "expo-haptics";
+import { playNewOrderSignal } from "../../lib/sound";
+import {
+  formatTimeAgo,
+  formatOrdersCount,
+  formatItemsCount,
+} from "../../lib/format";
+import { EmptyState } from "../../components/EmptyState";
+import { cn } from "../../lib/cn";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+// Предустановленные опции времени приготовления (мин).
+// Шаг 5, диапазон 20..60.
+const PREP_TIME_OPTIONS = [20, 25, 30, 35, 40, 45, 50, 55, 60];
+const DEFAULT_PREP_TIME = 40;
+
+export default function NewOrders() {
+  const { restaurant } = useAuth();
+
+  const {
+    data,
+    loading,
+    refetch,
+    error: queryError,
+  } = useQuery(RESTAURANT_ORDERS, {
+    variables: { status: "PENDING" },
+    pollInterval: 15_000,
+    skip: !restaurant?.id,
+  }) as any;
+
+  useSubscription(SUB_PLACE_ORDER, {
+    variables: { restaurantId: restaurant?.id },
+    skip: !restaurant?.id,
+    onData: ({ data: subData, client }: any) => {
+      const order = subData?.data?.subscribePlaceOrder;
+      if (!order) return;
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
+        () => {},
+      );
+      Toast.show({
+        type: "success",
+        text1: "🔔 Новый заказ!",
+        text2: `Сумма: ${order.amounts?.subtotal} сом.`,
+        visibilityTime: 5000,
+      });
+      client.refetchQueries({ include: [RESTAURANT_ORDERS] });
+    },
+  });
+
+  useEffect(() => {
+    if (restaurant?.id) refetch();
+  }, [restaurant?.id, refetch]);
+
+  const [acceptOrder, { loading: acLoading }] = useMutation(ACCEPT_ORDER);
+  const [cancelOrder, { loading: cancelLoading }] = useMutation(CANCEL_ORDER);
+
+  // ⭐ Модалка выбора времени приготовления
+  const [prepModal, setPrepModal] = useState<{
+    orderId: string;
+    order: any;
+  } | null>(null);
+  const [prepTime, setPrepTime] = useState<number>(DEFAULT_PREP_TIME);
+
+  // Просто открывает модалку — без Alert
+  const onAccept = useCallback(
+    (orderId: string) => {
+      const order = (data?.restaurantOrders ?? []).find(
+        (o: any) => o.id === orderId,
+      );
+      if (!order) {
+        Alert.alert("Ошибка", "Заказ не найден в списке");
+        return;
+      }
+      setPrepTime(DEFAULT_PREP_TIME);
+      setPrepModal({ orderId, order });
+    },
+    [data],
+  );
+
+  const confirmAccept = async () => {
+    if (!prepModal) return;
+    try {
+      await acceptOrder({
+        variables: {
+          input: { orderId: prepModal.orderId, prepTime },
+        },
+      });
+      Toast.show({
+        type: "success",
+        text1: "✅ Заказ принят",
+        text2: `Время приготовления: ${prepTime} мин`,
+      });
+      setPrepModal(null);
+      refetch();
+    } catch (e: any) {
+      Alert.alert("Ошибка", e?.message ?? "Не удалось принять");
+    }
+  };
+
+  const onCancel = useCallback(
+    (orderId: string) => {
+      Alert.alert("Отменить заказ?", "Клиент получит уведомление", [
+        { text: "Назад", style: "cancel" },
+        {
+          text: "Отменить",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await cancelOrder({
+                variables: { input: { orderId, reason: "Нет продуктов" } },
+              });
+              Toast.show({ type: "info", text1: "Заказ отменён" });
+              refetch();
+            } catch (e: any) {
+              Alert.alert("Ошибка", e?.message ?? "Не удалось отменить");
+            }
+          },
+        },
+      ]);
+    },
+    [cancelOrder, refetch],
+  );
+  
+  const [markReady, { loading: markingReady }] = useMutation(MARK_ORDER_READY);
+
+  const orders = data?.restaurantOrders ?? [];
+  const busy = acLoading || cancelLoading;
+
+  const stats = useMemo(() => {
+    const total = orders.length;
+    const totalAmount = orders.reduce(
+      (s: number, o: any) => s + (o.amounts?.subtotal ?? 0),
+      0,
+    );
+    return { total, totalAmount };
+  }, [orders]);
+
+  if (loading && !orders.length) {
+    return (
+      <View className="flex-1 items-center justify-center bg-soft-bg">
+        <ActivityIndicator size="large" color="#F26A4A" />
+        <Text className="text-text-muted text-sm mt-3">Загружаем заказы…</Text>
+      </View>
+    );
+  }
+
+
+  return (
+    <SafeAreaView className="flex-1 bg-soft-bg">
+      <View className="px-5 pb-2 flex-row items-end justify-between">
+        <View className="flex-1">
+          <Text className="text-2xl font-extrabold text-text tracking-tight">
+            Новые заказы
+          </Text>
+          <Text className="text-sm text-text-muted mt-0.5">
+            Готовьте быстрее — клиент уже ждёт
+          </Text>
+        </View>
+        {stats.total > 0 && (
+          <View className="bg-accent rounded-2xl px-3.5 py-2 items-center min-w-[60px] shadow-soft-sm">
+            <Text className="text-text-inverse text-xl font-black leading-none">
+              {stats.total}
+            </Text>
+            <Text className="text-text-inverse/90 text-2xs font-bold mt-0.5">
+              {formatOrdersCount(stats.total)}
+            </Text>
+          </View>
+        )}
+      </View>
+
+      {queryError && (
+        <View className="mx-5 my-2 bg-red-soft border border-red/30 rounded-xl px-3 py-2">
+          <Text className="text-red text-sm font-semibold">
+            ⚠️ {queryError.message}
+          </Text>
+        </View>
+      )}
+
+      <FlatList
+        data={orders}
+        keyExtractor={(o: any) => o.id}
+        contentContainerStyle={
+          orders.length === 0
+            ? { flexGrow: 1 }
+            : { padding: 16, paddingBottom: 24 }
+        }
+        ListEmptyComponent={
+          <EmptyState
+            emoji="🎉"
+            title="Нет новых заказов"
+            subtitle="Здесь появятся заказы, как только клиенты их оформят"
+          />
+        }
+        renderItem={({ item }: any) => {
+          const minutesAgo = Math.floor(
+            (Date.now() - new Date(item.createdAt).getTime()) / 60_000,
+          );
+          const isUrgent = minutesAgo >= 10;
+
+          return (
+            <View
+              className={cn(
+                "bg-soft-surface border rounded-2xl p-4 mb-3.5 shadow-soft-sm",
+                isUrgent
+                  ? "bg-accent-soft border-accent border-2"
+                  : "border-border",
+              )}
+            >
+              <View className="flex-row justify-between items-start mb-3">
+                <View className="flex-1 mr-3">
+                  <View className="flex-row items-center gap-2 mb-1">
+                    <Text className="text-lg font-extrabold text-text tracking-tight">
+                      #{item.orderId}
+                    </Text>
+                    {isUrgent && (
+                      <View className="bg-red rounded-full px-2 py-0.5">
+                        <Text className="text-text-inverse text-2xs font-extrabold">
+                          🔥 Срочно
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text className="text-xs text-text-muted font-medium">
+                    ⏱ {formatTimeAgo(item.createdAt)}
+                  </Text>
+                </View>
+                <View className="items-end">
+                  <Text className="text-lg font-extrabold text-accent tracking-tight">
+                    {item.amounts?.subtotal} сом.
+                  </Text>
+                  <Text className="text-2xs text-text-muted font-bold mt-0.5">
+                    {formatItemsCount(item.items?.length || 0)}
+                  </Text>
+                </View>
+              </View>
+
+              <View className="bg-soft-surface-2 rounded-xl p-3 mb-2.5">
+                <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
+                  📍 Доставить
+                </Text>
+                <Text className="text-sm text-text font-semibold leading-5">
+                  {item.deliveryAddress?.city
+                    ? `${item.deliveryAddress.city}, `
+                    : ""}
+                  {item.deliveryAddress?.address}
+                </Text>
+              </View>
+
+              <View className="pt-2.5 border-t border-border">
+                {item.items?.map((it: any) => (
+                  <Text
+                    key={it.foodId}
+                    className="text-sm text-text-soft leading-6"
+                  >
+                    • {it.title}{" "}
+                    <Text className="text-accent font-extrabold">
+                      ×{it.quantity}
+                    </Text>
+                  </Text>
+                ))}
+              </View>
+
+              {item.note && (
+                <View className="mt-2.5 bg-warning-soft rounded-xl p-2.5 border-l-[3px] border-warning">
+                  <Text className="text-sm text-text italic">
+                    💬 {item.note}
+                  </Text>
+                </View>
+              )}
+
+              <View className="flex-row gap-2 mt-3.5">
+                <TouchableOpacity
+                  disabled={busy}
+                  onPress={() => onAccept(item.id)}
+                  className={cn(
+                    "flex-1 h-12 rounded-xl items-center justify-center bg-success shadow-soft-sm",
+                    busy ? "opacity-40" : "active:opacity-80",
+                  )}
+                >
+                  <Text className="text-text-inverse font-extrabold text-base tracking-wide">
+                    ✓ Принять
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  disabled={busy}
+                  onPress={() => onCancel(item.id)}
+                  className={cn(
+                    "flex-1 h-12 rounded-xl items-center justify-center bg-soft-surface border border-red",
+                    busy ? "opacity-40" : "active:opacity-80",
+                  )}
+                >
+                  <Text className="text-red font-extrabold text-base tracking-wide">
+                    ✕ Отменить
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              {(item.orderStatus === "ACCEPTED" ||
+                item.orderStatus === "PREPARING") && (
+                <TouchableOpacity
+                  onPress={async () => {
+                    try {
+                      await markReady({ variables: { orderId: item.id } });
+                      await refetch();
+                    } catch (e: any) {
+                      Alert.alert("Ошибка", e?.message ?? "Не удалось");
+                    }
+                  }}
+                  disabled={markingReady}
+                  className="mt-3 h-12 rounded-2xl bg-accent items-center justify-center active:opacity-85"
+                >
+                  <Text className="text-text-inverse font-extrabold text-base">
+                    ✅ Готово — отдать курьеру
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          );
+        }}
+      />
+
+      {/* ⭐ Модалка выбора времени приготовления */}
+      {prepModal && (
+        <PrepTimeModal
+          visible={!!prepModal}
+          order={prepModal.order}
+          selected={prepTime}
+          onSelect={setPrepTime}
+          onConfirm={confirmAccept}
+          onClose={() => setPrepModal(null)}
+          busy={acLoading}
+        />
+      )}
+    </SafeAreaView>
+  );
+}
+
+/* ============== Модалка выбора времени ============== */
+
+function PrepTimeModal({
+  visible,
+  order,
+  selected,
+  onSelect,
+  onConfirm,
+  onClose,
+  busy,
+}: {
+  visible: boolean;
+  order: any;
+  selected: number;
+  onSelect: (m: number) => void;
+  onConfirm: () => void;
+  onClose: () => void;
+  busy: boolean;
+}) {
+  if (!visible || !order) return null;
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
+      <View className="flex-1 bg-black/50 justify-end">
+        <Pressable className="flex-1" onPress={onClose} />
+
+        <View className="bg-soft-surface rounded-t-3xl p-5 pb-8">
+          <View className="items-center mb-3">
+            <View className="w-12 h-1 bg-border rounded-full" />
+          </View>
+
+          <Text className="text-lg font-extrabold text-text">
+            Принять заказ
+          </Text>
+
+          {/* Информация о заказе */}
+          <View className="mt-3 bg-soft-surface-2 border border-border rounded-2xl p-3.5">
+            <Text className="text-sm font-bold text-text" numberOfLines={1}>
+              Заказ #{String(order.orderId).substring(0, 8)}
+            </Text>
+            <View className="flex-row justify-between mt-1.5">
+              <Text className="text-xs text-text-muted">Сумма</Text>
+              <Text className="text-sm font-extrabold text-accent">
+                {order.amounts?.subtotal} сом.
+              </Text>
+            </View>
+            <View className="flex-row justify-between mt-1">
+              <Text className="text-xs text-text-muted">Ожидает с</Text>
+              <Text className="text-xs font-bold text-text-soft">
+                {formatTimeAgo(order.createdAt)}
+              </Text>
+            </View>
+            {order.deliveryAddress && (
+              <View className="mt-2 pt-2 border-t border-border">
+                <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
+                  📍 Доставить
+                </Text>
+                <Text className="text-xs text-text-soft leading-5">
+                  {order.deliveryAddress.city
+                    ? `${order.deliveryAddress.city}, `
+                    : ""}
+                  {order.deliveryAddress.address}
+                </Text>
+              </View>
+            )}
+            {order.items && order.items.length > 0 && (
+              <View className="mt-2 pt-2 border-t border-border">
+                <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
+                  🍽 Состав
+                </Text>
+                {order.items.map((it: any) => (
+                  <Text key={it.foodId} className="text-xs text-text-soft">
+                    • {it.title}{" "}
+                    <Text className="text-text-muted">×{it.quantity}</Text>
+                  </Text>
+                ))}
+              </View>
+            )}
+          </View>
+
+          {/* Заголовок выбора */}
+          <Text className="text-sm font-extrabold text-text mt-5">
+            ⏱ Сколько времени на готовку?
+          </Text>
+          <Text className="text-2xs text-text-muted mt-0.5 mb-3">
+            Минимум 20 минут · Максимум 60 минут · Шаг 5 минут
+          </Text>
+
+          {/* Сетка выбора 3×3 */}
+          <View className="flex-row flex-wrap gap-2">
+            {PREP_TIME_OPTIONS.map((min) => {
+              const active = selected === min;
+              return (
+                <Pressable
+                  key={min}
+                  onPress={() => onSelect(min)}
+                  className={cn(
+                    "w-[31%] py-3.5 rounded-2xl items-center border-2",
+                    active
+                      ? "bg-accent border-accent"
+                      : "bg-soft-surface border-border",
+                  )}
+                >
+                  <Text
+                    className={cn(
+                      "text-lg font-extrabold",
+                      active ? "text-text-inverse" : "text-text",
+                    )}
+                  >
+                    {min}
+                  </Text>
+                  <Text
+                    className={cn(
+                      "text-2xs font-bold mt-0.5",
+                      active ? "text-text-inverse/80" : "text-text-muted",
+                    )}
+                  >
+                    мин
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          {/* Кнопки действий */}
+          <View className="flex-row gap-2 mt-5">
+            <Pressable
+              onPress={onClose}
+              className="flex-1 h-12 rounded-2xl items-center justify-center border border-border bg-soft-surface"
+            >
+              <Text className="text-text-soft font-bold text-base">Отмена</Text>
+            </Pressable>
+            <Pressable
+              onPress={onConfirm}
+              disabled={busy}
+              className={cn(
+                "flex-[2] h-12 rounded-2xl items-center justify-center bg-success shadow-soft-sm",
+                busy ? "opacity-40" : "active:opacity-80",
+              )}
+            >
+              {busy ? (
+                <ActivityIndicator color="white" />
+              ) : (
+                <Text className="text-text-inverse font-extrabold text-base">
+                  ✓ Принять · {selected} мин
+                </Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+</file>
+
+<file path="dastbadast-multivendor-store/app/(tabs)/processing.tsx">
+import { useMemo, useState, useEffect } from "react";
+import {
+  View,
+  Text,
+  FlatList,
+  ActivityIndicator,
+  TouchableOpacity,
+  Alert,
+} from "react-native";
+import { useQuery, useMutation } from "@apollo/client/react";
+import {
+  RESTAURANT_ORDERS,
+  MARK_ORDER_READY,
+} from "../../lib/api/graphql/queries";
+import { useAuth } from "../../lib/auth-context";
+import { SegmentedTabs } from "../../components/SegmentedTabs";
+import { EmptyState } from "../../components/EmptyState";
+import { StatusPill } from "../../components/StatusPill";
+import { cn } from "../../lib/cn";
+import { usePrepRemainingMs, formatPrepRemaining } from "../../lib/prep-timer";
+import {
+  formatDateTime,
+  formatOrdersCount,
+  formatItemsCount,
+  pluralize,
+} from "../../lib/format";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+type Tab = "cooking" | "history";
+
+const PREP_TIME = 20;
+
+export default function Processing() {
+  const { restaurant } = useAuth();
+  const [tab, setTab] = useState<Tab>("cooking");
+
+  const { data, loading, refetch } = useQuery(RESTAURANT_ORDERS, {
+    variables: { status: "ACCEPTED" },
+    pollInterval: 15_000,
+    skip: !restaurant?.id,
+  }) as any;
+
+  const [markOrderReady, { loading: markingReady }] =
+    useMutation(MARK_ORDER_READY);
+
+  const handleMarkReady = async (orderId: string) => {
+    try {
+      await markOrderReady({ variables: { orderId } });
+      await refetch();
+    } catch (e: any) {
+      Alert.alert("Ошибка", e?.message ?? "Не удалось отметить заказ готовым");
+    }
+  };
+
+  const {
+    data: histAll,
+    loading: histLoading,
+    refetch: refetchHist,
+  } = useQuery(RESTAURANT_ORDERS, {
+    variables: { status: "DELIVERED" },
+    pollInterval: 30_000,
+    skip: !restaurant?.id || tab !== "history",
+  }) as any;
+
+  const {
+    data: cancAll,
+    loading: cancLoading,
+    refetch: refetchCanc,
+  } = useQuery(RESTAURANT_ORDERS, {
+    variables: { status: "CANCELLED" },
+    skip: !restaurant?.id || tab !== "history",
+  }) as any;
+
+  useEffect(() => {
+    if (restaurant?.id) refetch();
+  }, [restaurant?.id, refetch]);
+
+  useEffect(() => {
+    if (tab === "history") {
+      refetchHist();
+      refetchCanc();
+    }
+  }, [tab, refetchHist, refetchCanc]);
+
+  const orders: any[] = data?.restaurantOrders ?? [];
+  const histOrders: any[] = histAll?.restaurantOrders ?? [];
+  const cancOrders: any[] = cancAll?.restaurantOrders ?? [];
+
+  const history = useMemo(() => {
+    return [...histOrders, ...cancOrders].sort(
+      (a, b) =>
+        new Date(
+          b.statusTimestamps?.deliveredAt ||
+            b.statusTimestamps?.cancelledAt ||
+            b.createdAt,
+        ).getTime() -
+        new Date(
+          a.statusTimestamps?.deliveredAt ||
+            a.statusTimestamps?.cancelledAt ||
+            a.createdAt,
+        ).getTime(),
+    );
+  }, [histOrders, cancOrders]);
+
+  const tabs = [
+    {
+      value: "cooking" as const,
+      label: "Готовятся",
+      count: orders.length,
+      icon: "👨‍🍳",
+    },
+    {
+      value: "history" as const,
+      label: "История",
+      count: history.length,
+      icon: "📦",
+    },
+  ];
+
+  function PrepCountdown({
+    acceptedAt,
+    prepTime,
+  }: {
+    acceptedAt?: string | null;
+    prepTime?: number | null;
+  }) {
+    const { remainingMs, isLate, elapsedMs, totalMs } = usePrepRemainingMs(
+      acceptedAt,
+      prepTime,
+    );
+
+    if (!acceptedAt || !prepTime) return null;
+
+    // Прогресс-бар (0–100%)
+    const pct = totalMs > 0 ? Math.min(100, (elapsedMs / totalMs) * 100) : 0;
+
+    return (
+      <View className="mt-2">
+        <View className="flex-row items-center justify-between mb-1.5">
+          {isLate ? (
+            <View className="flex-row items-center">
+              <Text className="text-xs font-bold text-red">
+                ⚠️ Задержка {Math.floor((elapsedMs - totalMs) / 60000)} мин
+              </Text>
+            </View>
+          ) : (
+            <Text className="text-xs font-bold text-text-soft">
+              ⏱ Осталось готовить
+            </Text>
+          )}
+          <Text
+            className={cn(
+              "text-base font-extrabold font-mono tabular-nums",
+              isLate ? "text-red" : "text-accent",
+            )}
+          >
+            {formatPrepRemaining(remainingMs)}
+          </Text>
+        </View>
+        <View className="w-full h-1.5 bg-soft-surface-2 rounded-full overflow-hidden">
+          <View
+            className={cn(
+              "h-full rounded-full transition-all",
+              isLate ? "bg-red" : pct > 80 ? "bg-warning" : "bg-success",
+            )}
+            style={{ width: `${Math.min(100, pct)}%` }}
+          />
+        </View>
+      </View>
+    );
+  }
+
+  const isLoading = tab === "cooking" ? loading : histLoading || cancLoading;
+
+  const renderCookingItem = ({ item }: any) => {
+    const elapsed = Math.floor(
+      (Date.now() - new Date(item.createdAt).getTime()) / 60_000,
+    );
+    const isLate = elapsed > PREP_TIME + 5;
+
+    return (
+      <View
+        className={cn(
+          "bg-soft-surface border rounded-2xl p-4 mb-3.5 shadow-soft-sm",
+          isLate ? "border-warning border-2" : "border-border",
+        )}
+      >
+        <View className="flex-row justify-between items-start mb-3">
+          <View className="flex-1 mr-3">
+            <View className="flex-row items-center gap-2 mb-1">
+              <Text className="text-lg font-extrabold text-text tracking-tight">
+                #{item.orderId}
+              </Text>
+              {isLate && (
+                <View className="bg-warning-soft rounded-full px-2 py-0.5 border border-warning">
+                  <Text className="text-warning-dark text-2xs font-extrabold">
+                    ⚠️ Задержка
+                  </Text>
+                </View>
+              )}
+            </View>
+            <Text className="text-xs text-text-muted font-medium">
+              ⏱ готовится {elapsed}{" "}
+              {pluralize(elapsed, "минуту", "минуты", "минут")}
+            </Text>
+          </View>
+          <Text className="text-lg font-extrabold text-accent tracking-tight">
+            {item.amounts?.subtotal} сом.
+          </Text>
+        </View>
+
+        <View className="bg-soft-surface-2 rounded-xl p-3 mb-2.5">
+          <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
+            📍 Доставить
+          </Text>
+          <Text className="text-sm text-text font-semibold leading-5">
+            {item.deliveryAddress?.city ? `${item.deliveryAddress.city}, ` : ""}
+            {item.deliveryAddress?.address}
+          </Text>
+        </View>
+
+        <View className="pt-2.5 border-t border-border">
+          {item.items?.map((it: any) => (
+            <Text key={it.foodId} className="text-sm text-text-soft leading-6">
+              • {it.title}{" "}
+              <Text className="text-accent font-extrabold">×{it.quantity}</Text>
+            </Text>
+          ))}
+        </View>
+
+        <PrepCountdown
+          acceptedAt={item.statusTimestamps?.acceptedAt}
+          prepTime={item.statusTimestamps?.prepTime}
+        />
+
+        <View className="mt-3 pt-3 border-t border-border">
+          <Text className="text-xs text-text-muted italic leading-4">
+            💡 Курьер увидит заказ и сам приедет в ресторан
+          </Text>
+        </View>
+
+        {(item.orderStatus === "ACCEPTED" ||
+          item.orderStatus === "PREPARING") && (
+          <TouchableOpacity
+            onPress={() => handleMarkReady(item.id)}
+            disabled={markingReady}
+            className="mt-3 h-12 rounded-2xl bg-accent items-center justify-center active:opacity-85"
+          >
+            <Text className="text-text-inverse font-extrabold text-base">
+              ✅ Готово — отдать курьеру
+            </Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    );
+  };
+
+  const renderHistoryItem = ({ item }: any) => {
+    const isDelivered = item.orderStatus === "DELIVERED";
+    const ts =
+      item.statusTimestamps?.deliveredAt ||
+      item.statusTimestamps?.cancelledAt ||
+      item.createdAt;
+    const itemsCount = item.items?.length || 0;
+    const dishesSummary = item.items
+      ?.slice(0, 3)
+      .map((it: any) => `${it.title} ×${it.quantity}`)
+      .join(", ");
+
+    // ⭐ ФИКС: раньше здесь (внутри renderHistoryItem — обычной функции,
+    // вызываемой FlatList на каждую строку списка) был отдельный
+    // `useMutation(MARK_ORDER_READY)`. Хуки нельзя вызывать внутри функций,
+    // которые не являются React-компонентом и вызываются переменное число
+    // раз (по одному на элемент списка) — это и давало
+    // "Invalid hook call" / "Rendered more hooks than during the previous
+    // render". Внизу использую единственный `markOrderReady` из тела
+    // компонента Processing (уже объявлен выше, у renderCookingItem).
+    //
+    // ⭐ ШАГ 5: для заказов в PREPARING/READY_FOR_PICKUP показываем ETA
+    const isPrep =
+      item.orderStatus === "ACCEPTED" ||
+      item.orderStatus === "PREPARING" ||
+      item.orderStatus === "READY_FOR_PICKUP";
+    let prepRemaining: number | null = null;
+    if (
+      isPrep &&
+      item.statusTimestamps?.acceptedAt &&
+      item.statusTimestamps?.prepTime
+    ) {
+      const elapsedMin =
+        (Date.now() - new Date(item.statusTimestamps.acceptedAt).getTime()) /
+        60_000;
+      prepRemaining = Math.max(
+        0,
+        Math.ceil(item.statusTimestamps.prepTime - elapsedMin),
+      );
+    }
+
+    return (
+      <View
+        className={cn(
+          "bg-soft-surface border rounded-2xl p-4 mb-3 shadow-soft-sm",
+          isDelivered ? "border-border" : "border-red/30 bg-red-soft/30",
+        )}
+      >
+        <View className="flex-row justify-between items-start mb-2.5">
+          <View className="flex-1 mr-3">
+            <View className="flex-row items-center gap-2 mb-1">
+              <Text className="text-base font-extrabold text-text tracking-tight">
+                #{item.orderId}
+              </Text>
+              <StatusPill status={item.orderStatus} />
+            </View>
+            <Text className="text-xs text-text-muted">
+              {isDelivered
+                ? `✅ ${formatDateTime(ts)}`
+                : `✕ ${formatDateTime(ts)}`}
+            </Text>
+          </View>
+          <Text
+            className={cn(
+              "text-base font-extrabold tracking-tight",
+              isDelivered ? "text-text" : "text-text-muted line-through",
+            )}
+          >
+            {item.amounts?.subtotal} сом.
+          </Text>
+        </View>
+        <View className="bg-soft-surface-2 rounded-xl p-2.5 mb-2.5">
+          <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-0.5">
+            📍 Доставлено
+          </Text>
+          <Text className="text-sm text-text-soft leading-5" numberOfLines={2}>
+            {item.deliveryAddress?.city ? `${item.deliveryAddress.city}, ` : ""}
+            {item.deliveryAddress?.address}
+          </Text>
+        </View>
+        {/* ⭐ ШАГ 5: live ETA countdown для готовящихся заказов */}
+        {prepRemaining != null && prepRemaining > 0 && (
+          <View className="mt-2 bg-warning-soft border border-warning/30 rounded-lg px-2.5 py-1.5 flex-row items-center gap-1.5">
+            <Text className="text-sm">⏱</Text>
+            <Text className="text-xs text-warning-dark font-extrabold">
+              Осталось готовить: {prepRemaining} мин
+            </Text>
+          </View>
+        )}
+        {dishesSummary && (
+          <View className="pt-2 border-t border-border">
+            <Text
+              className="text-sm text-text-soft leading-5"
+              numberOfLines={2}
+            >
+              {dishesSummary}
+              {itemsCount > 3 ? ` · + ещё ${itemsCount - 3}` : ""}
+            </Text>
+            <Text className="text-2xs text-text-muted mt-1 font-medium">
+              {formatItemsCount(itemsCount)}
+            </Text>
+          </View>
+        )}
+        {!isDelivered && item.cancelReason && (
+          <View className="mt-2 bg-red-soft rounded-lg px-2.5 py-1.5">
+            <Text className="text-2xs text-red-dark font-semibold">
+              Причина: {item.cancelReason}
+            </Text>
+          </View>
+        )}
+        {isDelivered && item.riderId && (
+          <View className="mt-2 flex-row items-center gap-1.5">
+            <Text className="text-2xs text-text-muted">🛵 Курьер выполнил</Text>
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  if (tab === "cooking") {
+    return (
+      <View className="flex-1 bg-soft-bg">
+        <SegmentedTabs tabs={tabs} value={tab} onChange={setTab} />
+        {loading && !orders.length ? (
+          <View className="flex-1 items-center justify-center">
+            <ActivityIndicator size="large" color="#F26A4A" />
+            <Text className="text-text-muted text-sm mt-3">
+              Загружаем заказы…
+            </Text>
+          </View>
+        ) : (
+          <FlatList
+            data={orders}
+            keyExtractor={(o: any) => o.id}
+            renderItem={renderCookingItem}
+            contentContainerStyle={
+              orders.length === 0
+                ? { flexGrow: 1 }
+                : { padding: 16, paddingBottom: 24 }
+            }
+            ListEmptyComponent={
+              <EmptyState
+                emoji="👨‍🍳"
+                title="Пока тихо"
+                subtitle="Принятые заказы появятся здесь — удобно следить за очередью"
+              />
+            }
+          />
+        )}
+      </View>
+    );
+  }
+
+  return (
+    <View className="flex-1 bg-soft-bg">
+      <SegmentedTabs tabs={tabs} value={tab} onChange={setTab} />
+
+      {history.length > 0 && (
+        <View className="mx-5 mt-4 bg-soft-surface border border-border rounded-2xl p-4 shadow-soft-sm flex-row items-end gap-5 flex-wrap">
+          <View>
+            <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider">
+              Выручка (доставлено)
+            </Text>
+            <Text className="text-2xl font-black text-success mt-0.5">
+              {history
+                .filter((o: any) => o.orderStatus === "DELIVERED")
+                .reduce(
+                  (s: number, o: any) => s + (o.amounts?.subtotal ?? 0),
+                  0,
+                )
+                .toLocaleString("ru")}{" "}
+              сом.
+            </Text>
+          </View>
+          <View>
+            <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider">
+              Заказов
+            </Text>
+            <Text className="text-xl font-extrabold text-text mt-0.5">
+              {history.length}
+            </Text>
+          </View>
+          <View>
+            <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider">
+              Отменено
+            </Text>
+            <Text className="text-xl font-extrabold text-red mt-0.5">
+              {history.filter((o: any) => o.orderStatus === "CANCELLED").length}
+            </Text>
+          </View>
+        </View>
+      )}
+
+      {isLoading && !history.length ? (
+        <View className="flex-1 items-center justify-center">
+          <ActivityIndicator size="large" color="#F26A4A" />
+          <Text className="text-text-muted text-sm mt-3">
+            Загружаем историю…
+          </Text>
+        </View>
+      ) : (
+        <FlatList
+          data={history}
+          keyExtractor={(o: any) => o.id}
+          renderItem={renderHistoryItem}
+          contentContainerStyle={
+            history.length === 0
+              ? { flexGrow: 1 }
+              : { padding: 16, paddingBottom: 24 }
+          }
+          ListEmptyComponent={
+            <EmptyState
+              emoji="📦"
+              title="История пуста"
+              subtitle="Завершённые и отменённые заказы появятся здесь"
+            />
+          }
+        />
+      )}
+    </View>
+  );
 }
 </file>
 

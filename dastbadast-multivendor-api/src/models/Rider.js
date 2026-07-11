@@ -37,6 +37,13 @@ const RiderSchema = new mongoose.Schema(
     passwordHash: { type: String, required: true },
     name: { type: String, default: "", maxlength: 80 },
     phone: { type: String, default: "", maxlength: 32 },
+    email: {
+      type: String,
+      default: "",
+      maxlength: 120,
+      trim: true,
+      lowercase: true,
+    },
     photo: { type: String, default: "" }, // ⭐⭐⭐ ШАГ 1: аватарка курьера (для UI)
 
     zoneId: {

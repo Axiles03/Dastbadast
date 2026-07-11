@@ -110,6 +110,8 @@ import {
   updateOrderStatusRider,
   updateRiderLocation,
   toggleRider,
+  updateRiderProfile,
+  changeRiderPassword,
   stopRiderLocationStream, // ⭐ ФИКС: было в rider.js, но не импортировано
   rider as riderOne,
 } from "./rider.js";
@@ -225,6 +227,8 @@ export const resolvers = {
     confirmOrderReceived,
     updateRiderLocation,
     toggleRider,
+    updateRiderProfile,
+    changeRiderPassword,
     sendChatMessage,
     createOwner,
     updateOwner,

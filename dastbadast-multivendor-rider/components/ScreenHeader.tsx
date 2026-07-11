@@ -93,12 +93,16 @@ export function ScreenHeader({
           </View>
         </View>
 
-        {/* Правая часть: либо slot, либо toggle, либо ничего */}
-        {rightSlot ? (
-          rightSlot
-        ) : typeof listMode === "boolean" && onListModeChange ? (
-          <ListMapToggle listMode={listMode} onChange={onListModeChange} />
-        ) : null}
+        {/* Правая часть: toggle Список/Карта (если задан) + rightSlot одновременно.
+            ⭐ ФИКС: раньше rightSlot полностью перекрывал toggle через тернарник —
+            на экране "Доступные" toggle никогда не показывался, и карта была
+            недостижима из UI, хотя весь функционал карты уже реализован. */}
+        <View className="flex-row items-center gap-1.5">
+          {typeof listMode === "boolean" && onListModeChange ? (
+            <ListMapToggle listMode={listMode} onChange={onListModeChange} />
+          ) : null}
+          {rightSlot}
+        </View>
       </View>
     </View>
   );

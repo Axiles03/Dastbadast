@@ -240,6 +240,7 @@ export const typeDefs = /* GraphQL */ `
     username: String!
     name: String
     phone: String
+    email: String
     photo: String
     available: Boolean!
     location: JSON
@@ -253,6 +254,18 @@ export const typeDefs = /* GraphQL */ `
     totalDeliveries: Int!
     # ratings — не возвращаем в общем списке (там могут быть тысячи).
     # Если нужны — отдельный query.
+  }
+
+  input UpdateRiderProfileInput {
+    name: String
+    phone: String
+    email: String
+    photo: String
+  }
+
+  input ChangeRiderPasswordInput {
+    oldPassword: String!
+    newPassword: String!
   }
 
   type RiderFinancials {
@@ -876,6 +889,8 @@ export const typeDefs = /* GraphQL */ `
     refreshOrderStatus(id: ID!): Order! # ← ДОБАВЬ
     updateRiderLocation(input: RiderLocationInput!): Rider!
     toggleRider(available: Boolean!): Rider!
+    updateRiderProfile(input: UpdateRiderProfileInput!): Rider!
+    changeRiderPassword(input: ChangeRiderPasswordInput!): Boolean!
     updateConfiguration(input: ConfigurationInput!): Configuration!
     sendChatMessage(orderId: ID!, text: String!): ChatMessage!
     createOwner(input: CreateOwnerInput!): Owner!

@@ -7,7 +7,6 @@ import {
   FlatList,
   ActivityIndicator,
   Pressable,
-  Switch,
   Alert,
   Vibration,
   ToastAndroid,
@@ -38,10 +37,9 @@ import { startGpsLoop, stopGpsLoop, getPermissionStatus } from "../../lib/gps";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { cn } from "../../lib/cn";
 import { haversineKm } from "../../lib/mapConfig";
-import { ScreenHeader } from "../../components/ScreenHeader";
-import { MapPlaceholder } from "../../components/MapPlaceholder";
+import { RiderTopBar } from "../../components/RiderTopBar";
+import { ListMapSwitcher } from "../../components/ListMapSwitcher";
 import { OrderCard, getUrgency, type Order } from "../../components/OrderCard";
-import { ProfileModal } from "../../components/ProfileModal";
 import { MapTabContent } from "../../components/MapTabContent";
 
 function showToast(msg: string) {
@@ -54,14 +52,13 @@ function showToast(msg: string) {
 
 export default function OrdersScreen() {
   // ===== ALL HOOKS AT TOP — RULES OF HOOKS =====
-  const { rider, token, logout } = useAuth();
+  const { rider, token } = useAuth();
   const router = useRouter();
   const client = useApolloClient();
   const [available, setAvailable] = useState(true);
   const [tab, setTab] = useState<"pool" | "mine">("pool");
   const [listMode, setListMode] = useState<boolean>(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [showProfile, setShowProfile] = useState(false);
   const [permissionModalOpen, setPermissionModalOpen] = useState(false);
   const [now, setNow] = useState(Date.now());
 
@@ -409,50 +406,13 @@ export default function OrdersScreen() {
   );
 
   return (
-    <SafeAreaView className="flex-1 bg-soft-bg" edges={["bottom"]}>
-      <ScreenHeader
-        title="Курьер"
-        subtitle="Dastbadast · Доставка"
-        showBack={false}
+    <SafeAreaView className="flex-1 bg-soft-bg" edges={[]}>
+      <RiderTopBar
+        name={rider?.name || rider?.username || ""}
+        photo={rider?.photo}
         online={available}
-        listMode={listMode}
-        onListModeChange={setListMode}
-        rightSlot={
-          <View className="flex-row items-center gap-1.5">
-            <Pressable
-              onPress={() => router.push("/history")}
-              className="w-9 h-9 rounded-full bg-soft-surface-2 border border-border items-center justify-center active:scale-95"
-              accessibilityLabel="История доставок"
-            >
-              <Text className="text-base">📦</Text>
-            </Pressable>
-
-            <View
-              className={cn(
-                "w-9 h-9 rounded-full border items-center justify-center",
-                available
-                  ? "bg-success-soft border-success/30"
-                  : "bg-soft-surface-2 border-border",
-              )}
-              accessibilityLabel={available ? "В сети" : "Оффлайн"}
-            >
-              <View
-                className={cn(
-                  "w-3 h-3 rounded-full",
-                  available ? "bg-success" : "bg-text-muted",
-                )}
-              />
-            </View>
-
-            <Pressable
-              onPress={() => router.push("./profile")}
-              className="w-9 h-9 rounded-full bg-accent-soft border border-accent/20 items-center justify-center active:scale-95"
-              accessibilityLabel="Открыть профиль"
-            >
-              <Text className="text-accent text-base">⚙</Text>
-            </Pressable>
-          </View>
-        }
+        onToggleOnline={onAvailableChange}
+        onOpenSettings={() => router.push("/profile")}
       />
 
       {listMode && (
@@ -502,7 +462,7 @@ export default function OrdersScreen() {
             keyExtractor={(o: Order) => o.id}
             contentContainerStyle={{
               padding: 12,
-              paddingBottom: 24,
+              paddingBottom: 110,
             }}
             ListEmptyComponent={
               <View className="items-center py-12 px-6">
@@ -542,27 +502,11 @@ export default function OrdersScreen() {
                 }
               : null
           }
-          onSwitchToList={() => setListMode(true)}
         />
       )}
 
-      <ProfileModal
-        visible={showProfile}
-        onClose={() => setShowProfile(false)}
-        available={available}
-        onToggleAvailable={onAvailableChange}
-        riderName={rider?.name || rider?.username || ""}
-        username={rider?.username || ""}
-        onLogout={async () => {
-          await logout();
-          setShowProfile(false);
-          router.replace("/login");
-        }}
-        onHistory={() => {
-          setShowProfile(false);
-          router.push("/history");
-        }}
-      />
+      {/* ⭐ Переключатель Список/Карта — плавающий, внизу, виден всегда */}
+      <ListMapSwitcher listMode={listMode} onChange={setListMode} />
 
       {permissionModalOpen && (
         <View className="absolute inset-0 z-50 items-center justify-center px-5">
