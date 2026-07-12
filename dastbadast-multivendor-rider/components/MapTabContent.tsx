@@ -1,6 +1,6 @@
 // dastbadast-multivendor-rider/components/MapTabContent.tsx
 //
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { View, Text, Pressable, ActivityIndicator } from "react-native";
 // ⭐ ШАГ 3: импортируем НОВЫЙ MapView (на WebView), а не react-native-maps
 import {
@@ -8,7 +8,7 @@ import {
   type MapLibreOrdersMapHandle,
 } from "./MapLibreOrdersMap";
 import { OrderBottomSheet } from "./OrderBottomSheet";
-import { extractLatLng } from "../lib/routing";
+import { extractLatLng, fetchRoadRoute, type RoutePoint } from "../lib/routing";
 import { cn } from "../lib/cn";
 import { getCurrentDeviceLocation } from "../lib/gps";
 import type { Order, OrderAddress } from "./OrderCard";
@@ -54,6 +54,95 @@ export function MapTabContent(props: Props) {
   } = props;
 
   const allOrders = useMemo(() => [...myOrders, ...pool], [myOrders, pool]);
+
+  // ⭐ ШАГ 5: "активная доставка" — заказ, который курьер сейчас везёт
+  // (едет в ресторан или уже везёт клиенту). Именно для неё включаем
+  // режим камеры "следовать за курьером" + реальный маршрут по дорогам.
+  const activeDelivery = useMemo(
+    () =>
+      myOrders.find(
+        (o) => o.orderStatus === "ASSIGNED" || o.orderStatus === "PICKED",
+      ) ?? null,
+    [myOrders],
+  );
+
+  // ⭐ ШАГ 5: цель текущего "плеча" маршрута — ресторан, пока не забрал
+  // заказ (ASSIGNED), или клиент, если уже везёт (PICKED).
+  const activeLegTarget: OrderAddress | null = activeDelivery
+    ? activeDelivery.orderStatus === "PICKED"
+      ? (activeDelivery.deliveryAddress ?? null)
+      : (activeDelivery.pickupAddress ?? null)
+    : null;
+
+  // Ручной тумблер: курьер может временно выключить "следование", чтобы
+  // осмотреть карту целиком (например свайпнуть в сторону, посмотреть
+  // другие заказы в пуле), не теряя автоматическое включение при новой
+  // активной доставке.
+  const [followManuallyDisabled, setFollowManuallyDisabled] = useState(false);
+  const followRider = !!activeDelivery && !followManuallyDisabled;
+
+  // При появлении новой активной доставки (или её завершении) сбрасываем
+  // ручной оффнутый тумблер, чтобы follow снова включался по умолчанию.
+  useEffect(() => {
+    setFollowManuallyDisabled(false);
+  }, [activeDelivery?.id]);
+
+  // ⭐ ШАГ 5: реальный маршрут по дорогам (OSRM) для активного плеча —
+  // курьер → цель (ресторан/клиент). Перезапрашиваем при заметном сдвиге
+  // позиции курьера (не на каждый GPS-тик — OSRM бесплатный демо-сервер,
+  // не хотим его спамить/упереться в rate limit).
+  const [routePoints, setRoutePoints] = useState<RoutePoint[] | null>(null);
+  const lastRouteFetchRef = useRef<{ lat: number; lng: number } | null>(null);
+
+  useEffect(() => {
+    if (!activeLegTarget || !riderPos) {
+      setRoutePoints(null);
+      lastRouteFetchRef.current = null;
+      return;
+    }
+    const targetPoint = extractLatLng(activeLegTarget);
+    if (!targetPoint) {
+      setRoutePoints(null);
+      return;
+    }
+
+    const last = lastRouteFetchRef.current;
+    const movedEnoughM = last
+      ? Math.hypot(
+          (riderPos.latitude - last.lat) * 111_000,
+          (riderPos.longitude - last.lng) *
+            111_000 *
+            Math.cos((riderPos.latitude * Math.PI) / 180),
+        )
+      : Infinity;
+
+    // Перезапрашиваем маршрут не чаще, чем раз в ~30м смещения курьера —
+    // достаточно для плавной линии, но не заваливает OSRM запросами.
+    if (movedEnoughM < 30) return;
+
+    let cancelled = false;
+    lastRouteFetchRef.current = {
+      lat: riderPos.latitude,
+      lng: riderPos.longitude,
+    };
+    fetchRoadRoute([riderPos.latitude, riderPos.longitude], targetPoint).then(
+      (route) => {
+        if (cancelled) return;
+        if (route) setRoutePoints(route.points);
+        // если OSRM недоступен — оставляем предыдущий routePoints (не мигаем
+        // прямой линией туда-обратно); MapLibreOrdersMap сам умеет упасть на
+        // прямую линию, если routePoints вообще ещё не пришли.
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeLegTarget?.location?.coordinates?.[0],
+    activeLegTarget?.location?.coordinates?.[1],
+    riderPos?.latitude,
+    riderPos?.longitude,
+  ]);
 
   const markers = useMemo(() => {
     const out: Array<{
@@ -126,7 +215,23 @@ export function MapTabContent(props: Props) {
         pickupGeo={focused?.pickupAddress ?? null}
         deliveryGeo={focused?.deliveryAddress ?? null}
         autoFit
+        routePoints={followRider ? routePoints : null}
+        followRider={followRider}
       />
+
+      {/* ⭐ ШАГ 5: тумблер "Следовать/Обзор" — виден только когда есть активная
+          доставка (иначе нечему следовать, обычный autoFit и так работает). */}
+      {activeDelivery && (
+        <Pressable
+          onPress={() => setFollowManuallyDisabled((v) => !v)}
+          className="absolute left-3 bottom-52 bg-soft-surface border border-border rounded-full px-3 h-10 items-center justify-center shadow-soft-md active:opacity-80 flex-row gap-1.5"
+        >
+          <Text className="text-base">{followRider ? "🧭" : "🗺"}</Text>
+          <Text className="text-xs font-extrabold text-text">
+            {followRider ? "Слежу" : "Обзор"}
+          </Text>
+        </Pressable>
+      )}
 
       {/* ⭐ Кнопка "Моё местоположение" — плавающая, справа над переключателями вкладок */}
       <Pressable

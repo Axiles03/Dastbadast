@@ -10,6 +10,7 @@ import {
   getRiderLocationFromRedis,
 } from "../services/rider-location.service.js";
 
+
 // ⭐⭐⭐ Константы для real-time трекинга
 const RIDER_LOCATION_THROTTLE_MS = 10_000; // минимум между обновлениями (10 сек)
 const NEAR_DROP_OFF_RADIUS_M = 500; // радиус geofence "рядом с клиентом"
@@ -453,6 +454,60 @@ export const rider = async (_p, { id }, ctx) => {
   publicProfile.location = { type: "Point", coordinates: [0, 0] };
   publicProfile.lastLocationAt = null;
   return publicProfile;
+};
+
+
+
+export const riderLocationStream = {
+  subscribe: async (_p, { riderId }) => {
+    if (!riderId) {
+      throw new GraphQLError("riderId обязателен", {
+        extensions: { code: "BAD_USER_INPUT" },
+      });
+    }
+    return pubsub.asyncIterator(TOPICS.RIDER_LOCATION(riderId));
+  },
+  resolve: async (payload, { riderId }) => {
+    // payload.subscriptionRiderLocation — приходит из updateRiderLocation
+    const data = payload?.subscriptionRiderLocation;
+    if (data?.stopped) {
+      return {
+        riderId,
+        stopped: true,
+        lat: 0,
+        lng: 0,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    if (data && typeof data.lat === "number" && typeof data.lng === "number") {
+      return {
+        riderId,
+        lat: data.lat,
+        lng: data.lng,
+        bearing: data.bearing ?? null,
+        speedKmh: data.speedKmh ?? null,
+        updatedAt: data.updatedAt ?? new Date().toISOString(),
+      };
+    }
+    // Fallback: если payload пустой — читаем из Redis
+    const fromRedis = await getRiderLocationFromRedis(riderId);
+    if (fromRedis) {
+      return {
+        riderId,
+        lat: fromRedis.lat,
+        lng: fromRedis.lng,
+        bearing: fromRedis.bearing,
+        speedKmh: fromRedis.speedKmh,
+        updatedAt: fromRedis.updatedAt,
+      };
+    }
+    return null;
+  },
+};
+
+export const allOrdersChanged = {
+  subscribe: (_p, _a) => _pubsub.asyncIterator(_TOPICS.ALL_DELIVERIES),
+  resolve: (payload) => payload?.order ?? null,
 };
 
 import { registerRegistry } from "../cleanup-cron.js";

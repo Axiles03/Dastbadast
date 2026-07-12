@@ -167,6 +167,102 @@ export async function getDistanceMeters(from, to, mode = "scooter") {
 }
 
 /**
+ * ⭐ ШАГ 5: аналог fetchRouteDistance(), но с geometry=true — возвращает
+ * GeoJSON LineString координат по дорогам (для отображения реального
+ * маршрута на карте, а не прямой линии).
+ *
+ * Отдельный кеш от fetchRouteDistance() (geometry весит намного больше
+ * одного числа distance, поэтому TTL/размер держим скромнее — не хотим
+ * раздувать память процесса координатами каждого запрошенного маршрута).
+ *
+ * @param {number[]} from  - [lng, lat]
+ * @param {number[]} to    - [lng, lat]
+ * @param {string} mode    - 'scooter' | 'car' | 'walk'
+ * @returns {Promise<{coordinates: number[][], distanceM: number}|null>}
+ *          coordinates — массив [lng, lat] точек маршрута, или null при ошибке.
+ */
+const GEOMETRY_CACHE = new Map();
+const GEOMETRY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 минут
+const GEOMETRY_CACHE_MAX_SIZE = 500;
+
+export async function fetchRouteGeometry(from, to, mode = "scooter") {
+  if (!GEOAPIFY_API_KEY) return null;
+  if (!Array.isArray(from) || from.length < 2) return null;
+  if (!Array.isArray(to) || to.length < 2) return null;
+
+  const key = makeKey(from, to);
+  const cached = GEOMETRY_CACHE.get(key);
+  if (cached && Date.now() - cached.at < GEOMETRY_CACHE_TTL_MS) {
+    return cached.value;
+  }
+
+  const url = new URL(GEOAPIFY_BASE);
+  url.searchParams.set("waypoints", `${from[0]},${from[1]}|${to[0]},${to[1]}`);
+  url.searchParams.set("mode", mode);
+  url.searchParams.set("apiKey", GEOAPIFY_API_KEY);
+  url.searchParams.set("geometry", "geojson"); // ⭐ на этот раз нужна геометрия
+  url.searchParams.set("units", "meters");
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), GEOAPIFY_TIMEOUT_MS);
+    const res = await fetch(url.toString(), {
+      method: "GET",
+      signal: controller.signal,
+      headers: { Accept: "application/json" },
+    });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      debugWarn(
+        "Geoapify",
+        `geometry HTTP ${res.status} — fallback to straight line`,
+      );
+      return null;
+    }
+
+    const data = await res.json();
+    const feature = data?.features?.[0];
+    const distanceM = feature?.properties?.distance;
+    // geometry может прийти как LineString или MultiLineString в зависимости
+    // от того, был ли маршрут разбит на сегменты у Geoapify.
+    const geom = feature?.geometry;
+    let coordinates = null;
+    if (geom?.type === "LineString" && Array.isArray(geom.coordinates)) {
+      coordinates = geom.coordinates;
+    } else if (
+      geom?.type === "MultiLineString" &&
+      Array.isArray(geom.coordinates)
+    ) {
+      coordinates = geom.coordinates.flat();
+    }
+
+    if (!Array.isArray(coordinates) || coordinates.length < 2) {
+      debugWarn("Geoapify", "geometry: invalid response shape — fallback");
+      return null;
+    }
+
+    const value = { coordinates, distanceM: distanceM ?? null };
+
+    if (GEOMETRY_CACHE.size >= GEOMETRY_CACHE_MAX_SIZE) {
+      const iter = GEOMETRY_CACHE.keys();
+      const oldest = iter.next().value;
+      if (oldest) GEOMETRY_CACHE.delete(oldest);
+    }
+    GEOMETRY_CACHE.set(key, { value, at: Date.now() });
+
+    return value;
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      debugWarn("Geoapify", "geometry timeout — fallback to straight line");
+    } else {
+      debugWarn("Geoapify", "geometry fetch error — fallback", e?.message);
+    }
+    return null;
+  }
+}
+
+/**
  * ⭐ ШАГ 3: Статистика кеша (для отладки в логах или админке в будущем).
  */
 export function getCacheStats() {

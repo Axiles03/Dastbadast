@@ -1,3 +1,4 @@
+// dastbadast-multivendor-admin/app/configuration/page.tsx
 "use client";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@apollo/client";
@@ -16,6 +17,8 @@ import {
   KeyRound,
   Globe,
   Smartphone,
+  Ruler,
+  Check,
 } from "lucide-react";
 import { RoleGate } from "@/lib/hooks/useRequireAuth";
 import { NAV_ACCESS, ACTION_ACCESS } from "@/lib/page-access";
@@ -52,6 +55,7 @@ function ConfigurationInner() {
     UPDATE_CONFIGURATION,
     {
       refetchQueries: [{ query: GET_CONFIGURATION }],
+      awaitRefetchQueries: true,
     },
   );
 
@@ -59,8 +63,14 @@ function ConfigurationInner() {
     currency: "TJS",
     currencySymbol: "сом.",
     taxPercent: 10,
+    // ⭐ ИСПРАВЛЕНО: 3 отдельных поля вместо одной переменной taxPercent
+    deliveryBaseKm: 3,
+    deliveryBasePrice: 10,
+    deliveryPerKmPrice: 3,
     testOtp: "123456",
   });
+
+  const [savedOk, setSavedOk] = useState(false);
 
   useEffect(() => {
     if (data?.configuration) {
@@ -69,6 +79,12 @@ function ConfigurationInner() {
         currency: c.currency ?? "TJS",
         currencySymbol: c.currencySymbol ?? "сом.",
         taxPercent: typeof c.taxPercent === "number" ? c.taxPercent : 10,
+        deliveryBaseKm:
+          typeof c.deliveryBaseKm === "number" ? c.deliveryBaseKm : 3,
+        deliveryBasePrice:
+          typeof c.deliveryBasePrice === "number" ? c.deliveryBasePrice : 10,
+        deliveryPerKmPrice:
+          typeof c.deliveryPerKmPrice === "number" ? c.deliveryPerKmPrice : 3,
         testOtp: c.testOtp ?? "123456",
       });
     }
@@ -84,22 +100,35 @@ function ConfigurationInner() {
           currency: form.currency,
           currencySymbol: form.currencySymbol,
           taxPercent: Number(form.taxPercent),
+          deliveryBaseKm: Number(form.deliveryBaseKm),
+          deliveryBasePrice: Number(form.deliveryBasePrice),
+          deliveryPerKmPrice: Number(form.deliveryPerKmPrice),
           testOtp: form.testOtp,
         },
       },
     });
+    setSavedOk(true);
+    setTimeout(() => setSavedOk(false), 3000);
   };
 
   return (
     <div className="space-y-6 max-w-2xl">
       {/* Шапка */}
-      <div>
-        <h1 className="text-2xl font-extrabold text-soft-text tracking-tight">
-          Глобальные настройки
-        </h1>
-        <p className="text-sm text-soft-text-soft mt-1">
-          Финансовая логика, ключи интеграции и параметры верификации
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-extrabold text-soft-text tracking-tight">
+            Глобальные настройки
+          </h1>
+          <p className="text-sm text-soft-text-soft mt-1">
+            Финансовая логика, тариф доставки и параметры верификации
+          </p>
+        </div>
+        {savedOk && (
+          <div className="flex items-center gap-1.5 bg-soft-success-soft text-soft-success border border-soft-success/30 px-3 py-1.5 rounded-full text-xs font-extrabold">
+            <Check className="w-3.5 h-3.5" />
+            Сохранено
+          </div>
+        )}
       </div>
 
       {ldg ? (
@@ -142,7 +171,7 @@ function ConfigurationInner() {
               </div>
             </SectionGroup>
 
-            {/* ⭐ ШАГ 2: НОВАЯ секция "Финансы" — комиссия платформы */}
+            {/* Финансы */}
             <SectionGroup
               title="Финансы"
               icon={<Percent className="w-4 h-4" />}
@@ -165,18 +194,64 @@ function ConfigurationInner() {
               />
             </SectionGroup>
 
-            {/* Доставка */}
-            <SectionGroup title="Доставка" icon={<Percent className="w-4 h-4" />}>
-              <FormField
-                icon={<Percent className="w-3.5 h-3.5" />}
-                label="Базовая стоимость доставки"
-                hint="Фиксированная ставка за доставку заказа курьером"
-                type="number"
-                value={String(form.taxPercent)}
-                onChange={(v) =>
-                  setForm({ ...form, taxPercent: parseFloat(v || "0") })
-                }
-              />
+            {/* ⭐ ИСПРАВЛЕНО: 3 отдельных поля вместо одного taxPercent */}
+            <SectionGroup
+              title="Тариф доставки"
+              icon={<Ruler className="w-4 h-4" />}
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <FormField
+                  icon={<DollarSign className="w-3.5 h-3.5" />}
+                  label="Базовая стоимость"
+                  hint={`Цена за первые ${form.deliveryBaseKm} км`}
+                  type="number"
+                  value={String(form.deliveryBasePrice)}
+                  onChange={(v) =>
+                    setForm({
+                      ...form,
+                      deliveryBasePrice: Math.max(0, parseFloat(v || "0")),
+                    })
+                  }
+                />
+                <FormField
+                  icon={<Ruler className="w-3.5 h-3.5" />}
+                  label="Базовый радиус (км)"
+                  hint="Расстояние включено в базовую цену"
+                  type="number"
+                  value={String(form.deliveryBaseKm)}
+                  onChange={(v) =>
+                    setForm({
+                      ...form,
+                      deliveryBaseKm: Math.max(0, parseFloat(v || "0")),
+                    })
+                  }
+                />
+                <FormField
+                  icon={<Percent className="w-3.5 h-3.5" />}
+                  label="Цена за км сверх"
+                  hint="За каждый км после базового радиуса"
+                  type="number"
+                  value={String(form.deliveryPerKmPrice)}
+                  onChange={(v) =>
+                    setForm({
+                      ...form,
+                      deliveryPerKmPrice: Math.max(0, parseFloat(v || "0")),
+                    })
+                  }
+                />
+              </div>
+              <div className="mt-3 bg-soft-info-soft border border-soft-info/20 rounded-xl p-3 flex items-start gap-2">
+                <Info className="w-3.5 h-3.5 text-soft-info shrink-0 mt-0.5" />
+                <span className="text-xs text-soft-text-soft leading-relaxed">
+                  <strong className="text-soft-text">Формула:</strong>{" "}
+                  <code className="bg-soft-surface px-1.5 py-0.5 rounded text-2xs">
+                    доставка = {form.deliveryBasePrice} сом, если ≤{" "}
+                    {form.deliveryBaseKm} км, иначе {form.deliveryBasePrice} +{" "}
+                    {form.deliveryPerKmPrice} × (расстояние −{" "}
+                    {form.deliveryBaseKm})
+                  </code>
+                </span>
+              </div>
             </SectionGroup>
 
             {/* Верификация */}

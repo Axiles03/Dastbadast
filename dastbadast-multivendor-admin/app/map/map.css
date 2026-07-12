@@ -1,0 +1,46 @@
+/* app/map/map.css */
+
+/* MapLibre CSS уже импортируется в MapView.tsx */
+
+.maplibregl-canvas {
+  outline: none;
+}
+
+.maplibregl-ctrl-attrib {
+  font-size: 10px;
+  background: rgba(255, 255, 255, 0.85);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.maplibregl-ctrl-bottom-right .maplibregl-ctrl {
+  margin-bottom: 8px;
+  margin-right: 8px;
+}
+
+.maplibregl-ctrl-top-right {
+  top: 8px;
+  right: 8px;
+}
+
+/* Анимация пульсации для активных маркеров */
+@keyframes map-marker-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+
+.map-marker-pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: #16a34a;
+  animation: map-marker-pulse 1.6s ease-in-out infinite;
+  pointer-events: none;
+}

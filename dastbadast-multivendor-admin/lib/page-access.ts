@@ -13,6 +13,7 @@ export const NAV_ACCESS = {
     "SUPPORT",
     "ANALYST",
   ],
+  map: ["SUPER_ADMIN", "DISPATCHER", "OPERATIONS"],
   dispatch: [
     "SUPER_ADMIN",
     "DISPATCHER",

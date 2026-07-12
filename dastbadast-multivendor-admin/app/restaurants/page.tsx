@@ -1,20 +1,27 @@
+// dastbadast-multivendor-admin/app/restaurants/page.tsx
 "use client";
 import { useEffect, useState } from "react";
-import { useQuery, useMutation } from "@apollo/client";
-import { GET_RESTAURANTS, CREATE_RESTAURANT } from "@/lib/queries";
-import { useAuth } from "@/lib/auth-context";
+import { useMutation, useQuery } from "@apollo/client";
 import { useRouter } from "next/navigation";
+import {
+  GET_RESTAURANTS,
+  CREATE_RESTAURANT,
+  UPDATE_RESTAURANT,
+} from "@/lib/queries";
+import { useAuth } from "@/lib/auth-context";
 import {
   Plus,
   MapPin,
   Store,
   Loader2,
-  Trash2,
   RefreshCw,
   AlertCircle,
   Search,
   Percent,
   ShoppingBag,
+  Pencil,
+  X,
+  Eye,
 } from "lucide-react";
 import { RoleGate } from "@/lib/hooks/useRequireAuth";
 import { ACTION_ACCESS, NAV_ACCESS } from "@/lib/page-access";
@@ -27,8 +34,19 @@ const defaultForm = {
   password: "",
   tax: "10",
   minimumOrder: "0",
-  lat: "38.5598",
-  lng: "68.7870",
+  lat: "38.574",
+  lng: "68.783",
+};
+
+// ⭐ Поля для редактирования (без username/password — они не меняются)
+const editForm = {
+  name: "",
+  address: "",
+  tax: "10",
+  minimumOrder: "0",
+  isAvailable: true,
+  lat: "38.574",
+  lng: "68.783",
 };
 
 export default function RestaurantsPage() {
@@ -44,17 +62,28 @@ function RestaurantsInner() {
   const router = useRouter();
   const [form, setForm] = useState(defaultForm);
   const [err, setErr] = useState<string | null>(null);
+  const [toast, setToast] = useState<{
+    type: "ok" | "err";
+    msg: string;
+  } | null>(null);
   const [geoLoading, setGeoLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
   const [search, setSearch] = useState("");
   const { hasRole } = useAuth();
   const canCreate = hasRole(ACTION_ACCESS.createRestaurant);
+  const canEdit = hasRole(ACTION_ACCESS.editRestaurant);
 
   const { data, loading, refetch } = useQuery(GET_RESTAURANTS, {
     skip: !owner,
   });
   const [createRestaurant, { loading: creating }] =
     useMutation(CREATE_RESTAURANT);
+  const [updateRestaurant, { loading: updating }] =
+    useMutation(UPDATE_RESTAURANT);
+  // ⭐ Состояние для редактирования
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [edit, setEdit] = useState(editForm);
 
   useEffect(() => {
     document.body.style.backgroundColor = "#FAF7F2";
@@ -125,14 +154,95 @@ function RestaurantsInner() {
       });
       setForm(defaultForm);
       setShowForm(false);
+      showOk("Ресторан создан");
       refetch();
     } catch (e: any) {
       setErr(e.message);
     }
   };
 
+  // ⭐ Открытие модалки редактирования с предзаполнением
+  const startEdit = (r: any) => {
+    setEditingId(r.id);
+    setEdit({
+      name: r.name || "",
+      address: r.address || "",
+      tax: String(r.tax ?? 10),
+      minimumOrder: String(r.minimumOrder ?? 0),
+      isAvailable: r.isAvailable !== false,
+      lat: String(r.location?.coordinates?.[0] ?? 68.783),
+      lng: String(r.location?.coordinates?.[1] ?? 38.574),
+    });
+    setShowEdit(true);
+  };
+
+  // ⭐ Сохранение изменений
+  const saveEdit = async () => {
+    if (!editingId) return;
+    try {
+      await updateRestaurant({
+        variables: {
+          id: editingId,
+          input: {
+            name: edit.name,
+            address: edit.address,
+            tax: parseFloat(edit.tax) || 0,
+            minimumOrder: parseFloat(edit.minimumOrder) || 0,
+            isAvailable: edit.isAvailable,
+            lat: parseFloat(edit.lat),
+            lng: parseFloat(edit.lng),
+          },
+        },
+      });
+      setShowEdit(false);
+      setEditingId(null);
+      showOk("Изменения сохранены");
+      refetch();
+    } catch (e: any) {
+      showErr(e.message);
+    }
+  };
+
+  // ⭐ Быстрое переключение доступности прямо из карточки
+  const toggleAvailable = async (r: any) => {
+    try {
+      await updateRestaurant({
+        variables: {
+          id: r.id,
+          input: { isAvailable: !r.isAvailable },
+        },
+      });
+      showOk(r.isAvailable ? "Ресторан выключен" : "Ресторан включён");
+      refetch();
+    } catch (e: any) {
+      showErr(e.message);
+    }
+  };
+
+  const showOk = (msg: string) => {
+    setToast({ type: "ok", msg });
+    setTimeout(() => setToast(null), 3000);
+  };
+  const showErr = (msg: string) => {
+    setToast({ type: "err", msg });
+    setTimeout(() => setToast(null), 4000);
+  };
+
   return (
     <div className="space-y-6">
+      {/* Тост */}
+      {toast && (
+        <div
+          className={`fixed top-20 right-4 z-50 px-4 py-3 rounded-2xl shadow-soft-lg flex items-center gap-2 text-sm font-bold animate-fade-in ${
+            toast.type === "ok"
+              ? "bg-soft-success text-white"
+              : "bg-soft-accent text-white"
+          }`}
+        >
+          {toast.type === "ok" ? "✓" : "⚠"} {toast.msg}
+        </div>
+      )}
+
       {/* Заголовок */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div>
@@ -140,7 +250,9 @@ function RestaurantsInner() {
             Управление ресторанами
           </h1>
           <p className="text-sm text-soft-text-soft mt-1">
-            Подключённые заведения к платформе
+            Подключённые заведения к платформе ·{" "}
+            <span className="text-soft-text font-bold">{filtered.length}</span>{" "}
+            из {restaurants.length}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -148,7 +260,7 @@ function RestaurantsInner() {
             <Search className="w-4 h-4 text-soft-text-muted absolute left-3.5 top-1/2 -translate-y-1/2" />
             <input
               type="search"
-              placeholder="Поиск..."
+              placeholder="Поиск по названию или адресу..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full pl-10 pr-3 py-2 bg-soft-surface border border-soft-border rounded-full text-sm text-soft-text placeholder-soft-text-muted focus:outline-none focus:border-soft-accent transition-colors"
@@ -309,13 +421,6 @@ function RestaurantsInner() {
 
       {/* Список ресторанов */}
       <div className="space-y-3">
-        <h2 className="font-extrabold text-lg text-soft-text px-1">
-          Подключённые заведения{" "}
-          <span className="text-soft-text-muted font-medium">
-            {filtered.length}
-          </span>
-        </h2>
-
         {loading ? (
           <div className="space-y-2">
             {[1, 2].map((n) => (
@@ -342,63 +447,207 @@ function RestaurantsInner() {
             {filtered.map((r: any) => (
               <li
                 key={r.id}
-                className="bg-soft-surface border border-soft-border rounded-2xl p-4 flex justify-between items-center shadow-soft-sm hover:border-soft-accent hover:shadow-soft transition-all group"
+                className="bg-soft-surface border border-soft-border rounded-2xl p-4 shadow-soft-sm hover:border-soft-accent transition-all"
               >
-                <div className="flex items-center gap-3 min-w-0">
+                <div className="flex items-start gap-3">
                   <div
                     className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 ${
                       r.isAvailable
                         ? "bg-soft-success-soft text-soft-success"
-                        : "bg-soft-accent-soft text-soft-accent"
+                        : "bg-soft-surface-2 text-soft-text-muted"
                     }`}
                   >
                     <Store className="w-5 h-5" />
                   </div>
-                  <div className="space-y-0.5 min-w-0">
-                    <div className="font-extrabold text-base text-soft-text group-hover:text-soft-accent transition-colors truncate">
-                      {r.name}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-extrabold text-base text-soft-text">
+                        {r.name}
+                      </span>
+                      {!r.isAvailable && (
+                        <span className="text-2xs font-bold px-1.5 py-0.5 rounded-md bg-soft-surface-2 text-soft-text-muted">
+                          ВЫКЛЮЧЕН
+                        </span>
+                      )}
                     </div>
-                    <div className="text-xs text-soft-text-soft flex items-center gap-1.5 truncate">
+                    <div className="text-xs text-soft-text-soft flex items-center gap-1.5 mt-0.5 truncate">
                       <MapPin className="w-3 h-3 shrink-0" />
-                      {r.address || "Адрес не указан"}
+                      <span className="truncate">
+                        {r.address || "Адрес не указан"}
+                      </span>
                     </div>
-                    {r.lat && r.lng && (
-                      <div className="text-[10px] text-soft-text-muted font-mono pt-0.5 truncate">
-                        {r.lat?.toFixed(4)}, {r.lng?.toFixed(4)}
-                      </div>
-                    )}
+                    <div className="flex items-center gap-3 mt-1.5 text-2xs">
+                      <span className="text-soft-text-muted font-bold">
+                        Мин. заказ:{" "}
+                        <span className="text-soft-text">
+                          {r.minimumOrder} сом.
+                        </span>
+                      </span>
+                      <span className="text-soft-text-muted font-bold">
+                        Налог:{" "}
+                        <span className="text-soft-text">{r.tax ?? 0}%</span>
+                      </span>
+                    </div>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-3 shrink-0">
-                  <div className="text-right hidden sm:block">
-                    <div className="text-xs text-soft-text-muted font-bold">
-                      Мин. заказ
-                    </div>
-                    <div className="text-sm font-extrabold text-soft-accent">
-                      {r.minimumOrder} сом.
-                    </div>
-                  </div>
-                  <span
-                    className={`inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full font-bold border ${
-                      r.isAvailable
-                        ? "bg-soft-success-soft text-soft-success border-soft-success/30"
-                        : "bg-soft-accent-soft text-soft-accent border-soft-accent/20"
-                    }`}
+                {/* ⭐ Кнопки действий: просмотр, редактирование, вкл/выкл */}
+                <div className="flex items-center gap-2 mt-3 pt-3 border-t border-soft-border">
+                  <button
+                    onClick={() => router.push(`/restaurants/${r.id}`)}
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 bg-soft-surface-2 hover:bg-soft-info-soft border border-soft-border text-soft-text-soft hover:text-soft-info px-3 py-2 rounded-xl text-xs font-extrabold active:scale-95 transition-all"
                   >
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full ${
-                        r.isAvailable ? "bg-soft-success" : "bg-soft-accent"
-                      } ${r.isAvailable ? "animate-pulse-soft" : ""}`}
-                    />
-                    {r.isAvailable ? "Открыт" : "Закрыт"}
-                  </span>
+                    <Eye className="w-3.5 h-3.5" />
+                    Детали
+                  </button>
+                  {canEdit && (
+                    <>
+                      <button
+                        onClick={() => toggleAvailable(r)}
+                        className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-extrabold border active:scale-95 transition-all ${
+                          r.isAvailable
+                            ? "bg-soft-warning-soft text-soft-warning-dark border-soft-warning/30 hover:bg-soft-warning/20"
+                            : "bg-soft-success-soft text-soft-success border-soft-success/30 hover:bg-soft-success/20"
+                        }`}
+                      >
+                        {r.isAvailable ? "⏸ Выключить" : "▶ Включить"}
+                      </button>
+                      <button
+                        onClick={() => startEdit(r)}
+                        className="flex-1 inline-flex items-center justify-center gap-1.5 bg-soft-accent-soft text-soft-accent border border-soft-accent/30 px-3 py-2 rounded-xl text-xs font-extrabold active:scale-95 hover:bg-soft-accent hover:text-white transition-all"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                        Изменить
+                      </button>
+                    </>
+                  )}
                 </div>
               </li>
             ))}
           </ul>
         )}
       </div>
+
+      {/* ⭐ Модалка редактирования */}
+      {showEdit && (
+        <div className="fixed inset-0 z-50 bg-soft-dark-2/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div
+            className="absolute inset-0"
+            onClick={() => !updating && setShowEdit(false)}
+          />
+          <div className="relative w-full sm:max-w-lg max-h-[92vh] overflow-y-auto bg-soft-surface border border-soft-border rounded-t-3xl sm:rounded-3xl shadow-soft-xl flex flex-col">
+            <div className="sticky top-0 bg-soft-surface border-b border-soft-border px-5 py-4 flex items-center justify-between z-10">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-soft-accent-soft text-soft-accent flex items-center justify-center">
+                  <Pencil className="w-4 h-4" />
+                </div>
+                <div>
+                  <h2 className="font-extrabold text-base text-soft-text">
+                    Редактировать ресторан
+                  </h2>
+                  <p className="text-2xs text-soft-text-muted">
+                    {filtered.find((x: any) => x.id === editingId)?.name}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowEdit(false)}
+                disabled={updating}
+                className="w-8 h-8 flex items-center justify-center text-soft-text-muted hover:text-soft-text hover:bg-soft-surface-2 rounded-xl"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <FormField
+                  label="Название"
+                  value={edit.name}
+                  onChange={(v) => setEdit({ ...edit, name: v })}
+                  required
+                />
+                <FormField
+                  label="Адрес"
+                  value={edit.address}
+                  onChange={(v) => setEdit({ ...edit, address: v })}
+                  required
+                />
+                <FormField
+                  label="Мин. заказ (сом.)"
+                  type="number"
+                  value={edit.minimumOrder}
+                  onChange={(v) => setEdit({ ...edit, minimumOrder: v })}
+                />
+                <FormField
+                  label="Комиссия (%)"
+                  type="number"
+                  value={edit.tax}
+                  onChange={(v) => setEdit({ ...edit, tax: v })}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <FormField
+                  label="Долгота (Lng)"
+                  value={edit.lng}
+                  onChange={(v) => setEdit({ ...edit, lng: v })}
+                  hint="[GeoJSON порядок]"
+                />
+                <FormField
+                  label="Широта (Lat)"
+                  value={edit.lat}
+                  onChange={(v) => setEdit({ ...edit, lat: v })}
+                  hint="[GeoJSON порядок]"
+                />
+              </div>
+
+              <label className="flex items-center gap-3 p-3 bg-soft-surface-2 rounded-xl cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={edit.isAvailable}
+                  onChange={(e) =>
+                    setEdit({ ...edit, isAvailable: e.target.checked })
+                  }
+                  className="w-4 h-4 accent-soft-accent"
+                />
+                <div>
+                  <div className="text-sm font-bold text-soft-text">
+                    Принимает заказы
+                  </div>
+                  <div className="text-2xs text-soft-text-muted">
+                    Выключите, чтобы временно приостановить приём заказов
+                  </div>
+                </div>
+              </label>
+            </div>
+
+            <div className="sticky bottom-0 bg-soft-surface border-t border-soft-border p-4 flex gap-2">
+              <button
+                onClick={() => setShowEdit(false)}
+                disabled={updating}
+                className="flex-1 h-11 bg-soft-surface-2 border border-soft-border text-soft-text-soft font-bold rounded-2xl text-sm hover:bg-soft-border"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={saveEdit}
+                disabled={updating}
+                className="flex-1 h-11 bg-soft-accent hover:bg-soft-accent-dark text-white font-extrabold rounded-2xl text-sm disabled:opacity-50 flex items-center justify-center gap-2 shadow-soft-sm"
+              >
+                {updating ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Сохраняем...
+                  </>
+                ) : (
+                  "Сохранить"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -76,6 +76,25 @@ export const typeDefs = /* GraphQL */ `
     phone: String
   }
 
+  input UpdateRestaurantInput {
+    name: String
+    address: String
+    tax: Float
+    minimumOrder: Float
+    isAvailable: Boolean
+    lat: Float
+    lng: Float
+  }
+
+  input UpdateRiderInput {
+    name: String
+    phone: String
+    email: String
+    photo: String
+    isActive: Boolean
+    zoneId: ID
+  }
+
   # Расширенный тип для админ-карточки пользователя
   type AdminUser {
     id: ID!
@@ -227,14 +246,6 @@ export const typeDefs = /* GraphQL */ `
     zoneId: ID
   }
 
-  type RiderRating {
-    id: ID!
-    score: Int!
-    orderId: ID
-    comment: String
-    ratedAt: String!
-  }
-
   type Rider {
     id: ID!
     username: String!
@@ -247,13 +258,21 @@ export const typeDefs = /* GraphQL */ `
     lastLocationAt: String
     bearing: Float
     zoneId: ID
-    # ⭐⭐⭐ ШАГ 1
+    isActive: Boolean!
     balance: Float!
     averageRating: Float!
     totalRatings: Int!
     totalDeliveries: Int!
     # ratings — не возвращаем в общем списке (там могут быть тысячи).
     # Если нужны — отдельный query.
+  }
+
+  type RiderRating {
+    id: ID!
+    score: Int!
+    orderId: ID
+    comment: String
+    ratedAt: String!
   }
 
   input UpdateRiderProfileInput {
@@ -814,6 +833,25 @@ export const typeDefs = /* GraphQL */ `
     optionId: ID!
   }
 
+  input UpdateRestaurantInput {
+    name: String
+    address: String
+    tax: Float
+    minimumOrder: Float
+    isAvailable: Boolean
+    lat: Float
+    lng: Float
+  }
+
+  type RiderFinancials {
+    riderId: ID!
+    riderName: String!
+    balance: Float!
+    totalEarned: Float!
+    totalDeliveries: Int!
+    averageDeliveryFee: Float!
+  }
+
   type Query {
     configuration: Configuration
     deliveryZone: DeliveryZone
@@ -854,10 +892,13 @@ export const typeDefs = /* GraphQL */ `
       baseKm: Float
       perKmPrice: Float
     ): DeliveryPriceBreakdown
-    riderFinancials(riderId: ID!): RiderFinancials!
     getCart: Cart
     # ⭐ ФИКС: поле объявлено в схеме (резолвер уже был подключён)
     estimateDelivery(restaurantId: ID!, addressId: ID!): EstimateDeliveryResult!
+    riderFinancials(riderId: ID!): RiderFinancials!
+    allRidersWithLocation: [Rider!]!
+    ordersForMap(status: OrderStatus): [Order!]!
+    riderLocationOnMap(riderId: ID!): RiderLocation
   }
 
   type Mutation {
@@ -911,6 +952,9 @@ export const typeDefs = /* GraphQL */ `
     pickupDelivery(orderId: ID!): Order!
     arriveAtDropOff(orderId: ID!): Order!
     markDelivered(orderId: ID!): Order!
+    updateRestaurant(id: ID!, input: UpdateRestaurantInput!): Restaurant!
+    updateRider(id: ID!, input: UpdateRiderInput!): Rider!
+    toggleRiderActive(id: ID!, isActive: Boolean!): Rider!
     stopRiderLocationStream: Boolean!
     registerPushToken(input: PushTokenInput!): PushToken!
     unregisterPushToken(token: String!): Boolean!
@@ -935,5 +979,7 @@ export const typeDefs = /* GraphQL */ `
     deliveryStatusChanged(orderId: ID!): DeliveryEvent!
     allDeliveries: Order!
     riderNearDropOff(orderId: ID!): RiderNearDropOffEvent!
+    riderLocationStream(riderId: ID!): RiderLocation!
+    allOrdersChanged: Order!
   }
 `;

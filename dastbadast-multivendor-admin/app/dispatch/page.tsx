@@ -1,17 +1,18 @@
+// dastbadast-multivendor-admin/app/dispatch/page.tsx
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useQuery, useSubscription, useMutation } from "@apollo/client";
+import { useRouter } from "next/navigation";
 import {
   GET_MONITOR_ORDERS,
   GET_RIDERS,
   ASSIGN_RIDER,
   SUB_ZONE_ORDERS,
+  ALL_DELIVERIES_SUB,
 } from "@/lib/queries";
 import { useAuth } from "@/lib/auth-context";
 import { RoleGate } from "@/lib/hooks/useRequireAuth";
 import { ACTION_ACCESS, NAV_ACCESS } from "@/lib/page-access";
-import { useRouter } from "next/navigation";
-// ... остальные импорты как в существующей странице
 import {
   Loader2,
   RefreshCw,
@@ -20,10 +21,16 @@ import {
   CheckCircle2,
   Clock,
   ChefHat,
-  PackageCheck,
+  Package,
   Phone,
   MessageSquare,
   Wallet,
+  Map as MapIcon,
+  XCircle,
+  ChevronDown,
+  ChevronUp,
+  Circle,
+  CircleXIcon,
 } from "lucide-react";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -46,7 +53,7 @@ const STATUS_STYLES: Record<
   },
   ACCEPTED: {
     label: "Ожидает курьера",
-    style: "bg-soft-rating-soft text-soft-rating-dark border-soft-rating/20",
+    style: "bg-soft-warning-soft text-soft-warning-dark border-soft-warning/20",
     icon: ChefHat,
   },
   ASSIGNED: {
@@ -56,10 +63,49 @@ const STATUS_STYLES: Record<
   },
   PICKED: {
     label: "В пути",
-    style: "bg-soft-purple/10 text-soft-purple border-soft-purple/20",
-    icon: PackageCheck,
+    style: "bg-soft-success-soft text-soft-success border-soft-success/20",
+    icon: Package,
   },
 };
+
+// ⭐ NEW: локализация причин отмены
+const CANCEL_REASON_LABEL: Record<string, string> = {
+  AUTO_EXPIRED: "⏰ Истёк срок (5 мин без подтверждения)",
+};
+
+// ⭐ NEW: форматирование относительного времени ("5 мин назад", "2 ч назад")
+function timeAgo(dateString: string | Date | null | undefined): string {
+  if (!dateString) return "—";
+  const d = new Date(dateString);
+  if (isNaN(d.getTime())) return "—";
+  const ms = Date.now() - d.getTime();
+  if (ms < 0) return "только что";
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return "только что";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} мин назад`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} ч назад`;
+  const days = Math.floor(hr / 24);
+  if (days < 30) return `${days} дн назад`;
+  return d.toLocaleDateString("ru", { day: "numeric", month: "short" });
+}
+
+function cancelReasonLabel(reason: string | null | undefined): string {
+  if (!reason) return "Причина не указана";
+  if (CANCEL_REASON_LABEL[reason]) return CANCEL_REASON_LABEL[reason];
+  if (reason.length > 60) return reason.substring(0, 60) + "…";
+  return reason;
+}
+
+function getCancelIcon(reason: string | null | undefined): string {
+  if (reason === "AUTO_EXPIRED") return "⏰";
+  if (reason?.toLowerCase().includes("нет продукт")) return "🚫";
+  if (reason?.toLowerCase().includes("ресторан")) return "❌";
+  if (reason?.toLowerCase().includes("курьер")) return "🛵";
+  if (reason?.toLowerCase().includes("клиент")) return "👤";
+  return "✕";
+}
 
 export default function DispatchPage() {
   return (
@@ -71,8 +117,9 @@ export default function DispatchPage() {
 
 function DispatchInner() {
   const { hasRole } = useAuth();
+  const router = useRouter();
   const { data, refetch } = useQuery(GET_MONITOR_ORDERS, {
-    pollInterval: 10000,
+    pollInterval: 10_000,
   });
   const { data: ridersData, refetch: refetchRiders } = useQuery(GET_RIDERS, {
     variables: { available: true },
@@ -80,17 +127,49 @@ function DispatchInner() {
   const [assignRider, { loading: assigning }] = useMutation(ASSIGN_RIDER);
   const [assignFor, setAssignFor] = useState<string | null>(null);
 
+  // ⭐ NEW: состояние сворачиваемой секции "Отменённые заказы"
+  const [showCancelled, setShowCancelled] = useState(false);
+
+  useEffect(() => {
+    document.body.style.backgroundColor = "#FAF7F2";
+    return () => {
+      document.body.style.backgroundColor = "";
+    };
+  }, []);
+
+  // Подписка на изменения заказов в зоне (включая cancelOrder, expireIfPending)
   useSubscription(SUB_ZONE_ORDERS, {
     variables: { zoneId: null },
     onData: () => refetch(),
   });
 
-  // Право на назначение курьера
+  // ⭐ NEW: подписка на broadcast всех изменений заказов
+  useSubscription(ALL_DELIVERIES_SUB, {
+    onData: () => refetch(),
+  });
+
   const canAssignRider = hasRole(ACTION_ACCESS.assignRider);
 
-  const orders = (data?.allOrders || []).filter(
+  const allOrders = (data?.allOrders || []) as any[];
+
+  // Активные заказы — без CANCELLED, чтобы не путать диспетчера
+  const orders = allOrders.filter(
     (o: any) => !["DELIVERED", "CANCELLED"].includes(o.orderStatus),
   );
+
+  // ⭐ NEW: Отменённые заказы — отдельный массив, отсортирован по дате отмены
+  const cancelledOrders = useMemo(() => {
+    return allOrders
+      .filter((o: any) => o.orderStatus === "CANCELLED")
+      .sort((a: any, b: any) => {
+        const aTime =
+          a?.statusTimestamps?.cancelledAt || a?.updatedAt || a?.createdAt;
+        const bTime =
+          b?.statusTimestamps?.cancelledAt || b?.updatedAt || b?.createdAt;
+        return new Date(bTime).getTime() - new Date(aTime).getTime();
+      });
+  }, [allOrders]);
+
   const availableRiders = ridersData?.riders ?? [];
 
   const doAssign = async (orderId: string, riderId: string) => {
@@ -104,16 +183,18 @@ function DispatchInner() {
     }
   };
 
+  // ⭐ Обновлённые счётчики: добавлен `cancelled`
   const counts = {
     pending: orders.filter((o: any) => o.orderStatus === "PENDING").length,
     accepted: orders.filter((o: any) => o.orderStatus === "ACCEPTED").length,
     assigned: orders.filter((o: any) => o.orderStatus === "ASSIGNED").length,
     picked: orders.filter((o: any) => o.orderStatus === "PICKED").length,
+    cancelled: cancelledOrders.length,
   };
 
   return (
     <div className="space-y-6">
-      {/* Заголовок */}
+      {/* ───────── Шапка с кнопкой перехода на карту ───────── */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-extrabold text-soft-text tracking-tight">
@@ -135,10 +216,17 @@ function DispatchInner() {
             <RefreshCw className="w-3.5 h-3.5" />
             Обновить
           </button>
+          <button
+            onClick={() => router.push("/map")}
+            className="inline-flex items-center gap-1.5 bg-soft-info-soft text-soft-info border border-soft-info/30 px-3.5 py-1.5 rounded-full text-xs font-extrabold hover:bg-soft-info hover:text-white transition-all active:scale-95"
+          >
+            <MapIcon className="w-3.5 h-3.5" />
+            Карта
+          </button>
         </div>
       </div>
 
-      {/* Метрики */}
+      {/* ───────── Метрики (4 колонки: только АКТИВНЫЕ заказы) ───────── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <MetricPill
           icon={<Clock className="w-4 h-4" />}
@@ -150,7 +238,7 @@ function DispatchInner() {
           icon={<ChefHat className="w-4 h-4" />}
           label="Ожидают курьера"
           value={counts.accepted}
-          tint="bg-soft-rating-soft text-soft-rating-dark border-soft-rating/20"
+          tint="bg-soft-warning-soft text-soft-warning-dark border-soft-warning/20"
         />
         <MetricPill
           icon={<Bike className="w-4 h-4" />}
@@ -159,14 +247,20 @@ function DispatchInner() {
           tint="bg-soft-info-soft text-soft-info border-soft-info/20"
         />
         <MetricPill
-          icon={<PackageCheck className="w-4 h-4" />}
+          icon={<Package className="w-4 h-4" />}
           label="В пути"
           value={counts.picked}
-          tint="bg-soft-purple/10 text-soft-purple border-soft-purple/20"
+          tint="bg-soft-success-soft text-soft-success border-soft-success/20"
         />
+        {/* <MetricPill
+          icon={<Circle className="w-4 h-4" />}
+          label="Отменнено"
+          value={counts.cancelled}
+          tint="bg-soft-error-soft text-soft-error border-soft-error/20"
+        /> */}
       </div>
 
-      {/* Список заказов */}
+      {/* ───────── Список АКТИВНЫХ заказов ───────── */}
       {orders.length === 0 ? (
         <div className="bg-soft-surface border border-soft-border rounded-3xl p-10 text-center space-y-2 shadow-soft-sm">
           <div className="text-5xl mb-2">🎉</div>
@@ -219,16 +313,32 @@ function DispatchInner() {
                     )}
                   </div>
 
-                  <div className="text-right space-y-1.5">
-                    <div className="text-lg font-black text-soft-accent">
-                      {o.amounts?.total} сом.
+                  <div className="space-y-0.5">
+                    <div className="flex items-center justify-end gap-1.5 text-xs">
+                      <span className="text-soft-text-muted">🍽 Ресторан:</span>
+                      <span className="text-soft-text-soft font-bold">
+                        {o.amounts?.subtotal ?? 0} сом.
+                      </span>
                     </div>
+                    <div className="flex items-center justify-end gap-1.5 text-xs">
+                      <span className="text-soft-text-muted">🛵 Доставка:</span>
+                      <span className="text-soft-text-soft font-bold">
+                        {o.amounts?.deliveryFee ?? 0} сом.
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="text-right space-y-1.5">
                     <span
                       className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full font-bold border ${statusInfo.style}`}
                     >
                       <StatusIcon className="w-3 h-3" />
                       {statusInfo.label}
                     </span>
+
+                    <div className="text-lg font-extrabold text-soft-accent tracking-tight">
+                      {o.amounts?.total ?? 0} сом.
+                    </div>
                   </div>
                 </div>
 
@@ -285,7 +395,6 @@ function DispatchInner() {
                       ))}
                     </div>
                   </div>
-                  {/* Кнопка видна только если есть право на назначение */}
                   {needsManualAssign && canAssignRider && (
                     <button
                       onClick={() => setAssignFor(o.id)}
@@ -295,7 +404,6 @@ function DispatchInner() {
                       Назначить курьера
                     </button>
                   )}
-                  {/* Если нет права — показать подсказку */}
                   {needsManualAssign && !canAssignRider && (
                     <span className="text-[10px] text-soft-text-muted italic">
                       Требуется назначение (нет прав)
@@ -308,6 +416,67 @@ function DispatchInner() {
         </ul>
       )}
 
+      {/* ⭐ NEW: ───────── Секция "Отменённые заказы" (сворачиваемая) ───────── */}
+      {cancelledOrders.length > 0 && (
+        <section className="mt-8">
+          <button
+            onClick={() => setShowCancelled(!showCancelled)}
+            className="w-full flex-row items-center justify-between bg-soft-surface border border-soft-border rounded-2xl px-4 py-3.5 hover:bg-soft-surface-2 transition-colors shadow-soft-sm"
+            aria-label={
+              showCancelled
+                ? "Скрыть отменённые заказы"
+                : "Показать отменённые заказы"
+            }
+            style={{ display: "flex" }}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-soft-accent-soft flex items-center justify-center">
+                <XCircle className="w-5 h-5 text-soft-accent" />
+              </div>
+              <div className="text-left">
+                <p className="text-sm font-extrabold text-soft-text">
+                  Отменённые заказы
+                </p>
+                <p className="text-2xs text-soft-text-soft mt-0.5">
+                  {cancelledOrders.length}{" "}
+                  {cancelledOrders.length === 1
+                    ? "заказ"
+                    : cancelledOrders.length < 5
+                      ? "заказа"
+                      : "заказов"}{" "}
+                  · реалтайм через WebSocket
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="bg-soft-accent-soft border border-soft-accent/20 px-2.5 py-1 rounded-full">
+                <span className="text-xs font-extrabold text-soft-accent">
+                  {counts.cancelled}
+                </span>
+              </div>
+              {showCancelled ? (
+                <ChevronUp className="w-5 h-5 text-soft-text-soft" />
+              ) : (
+                <ChevronDown className="w-5 h-5 text-soft-text-soft" />
+              )}
+            </div>
+          </button>
+
+          {showCancelled && (
+            <div className="mt-3 space-y-2.5">
+              {cancelledOrders.slice(0, 20).map((o: any) => (
+                <CancelledOrderCard key={o.id} order={o} />
+              ))}
+              {cancelledOrders.length > 20 && (
+                <p className="text-2xs text-soft-text-muted text-center mt-3 italic">
+                  Показаны последние 20 из {cancelledOrders.length} отменённых
+                </p>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
       {assignFor && (
         <RiderPickerModal
           orderId={assignFor}
@@ -317,6 +486,107 @@ function DispatchInner() {
           onPick={doAssign}
         />
       )}
+    </div>
+  );
+}
+
+// ⭐ NEW: Компонент карточки отменённого заказа
+function CancelledOrderCard({ order: o }: { order: any }) {
+  const cancelledAt =
+    o?.statusTimestamps?.cancelledAt || o?.updatedAt || o?.createdAt;
+  const cancelEmoji = getCancelIcon(o.cancelReason);
+  const reason = cancelReasonLabel(o.cancelReason);
+  const isExpired = o.cancelReason === "AUTO_EXPIRED";
+
+  return (
+    <div className="bg-soft-surface border border-soft-accent/30 rounded-2xl p-3.5 shadow-soft-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap mb-1.5">
+            <span className="text-sm font-extrabold text-soft-text">
+              Заказ #{o.orderId}
+            </span>
+            <span className="flex items-center gap-1 bg-soft-accent-soft border border-soft-accent/20 px-2 py-0.5 rounded-full">
+              <span className="text-2xs font-extrabold text-soft-accent">
+                ✕ Отменён
+              </span>
+            </span>
+            {isExpired && (
+              <span className="flex items-center gap-1 bg-soft-warning-soft border border-soft-warning/30 px-2 py-0.5 rounded-full">
+                <span className="text-2xs font-extrabold text-soft-warning-dark">
+                  ⏰ Авто
+                </span>
+              </span>
+            )}
+          </div>
+          <p className="text-2xs text-soft-text-soft mb-1.5">
+            {timeAgo(cancelledAt)}
+          </p>
+          <div className="flex items-center gap-1.5">
+            <span className="text-base">{cancelEmoji}</span>
+            <p
+              className="text-xs text-soft-text-soft italic leading-4 flex-1"
+              style={{
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+              }}
+            >
+              {reason}
+            </p>
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <p className="text-base font-extrabold text-soft-text-soft line-through">
+            {o.amounts?.total ?? 0} сом.
+          </p>
+        </div>
+      </div>
+
+      {/* Краткая сводка: ресторан + клиент + (если был курьер) */}
+      <div className="mt-2.5 pt-2.5 border-t border-soft-border space-y-1">
+        {o.pickupAddress?.name && (
+          <p
+            className="text-2xs text-soft-text-soft"
+            title={o.pickupAddress.name}
+          >
+            <span className="text-soft-text-muted">🏪 </span>
+            {o.pickupAddress.name}
+          </p>
+        )}
+        {o.deliveryAddress?.address && (
+          <p
+            className="text-2xs text-soft-text-soft"
+            title={`${o.deliveryAddress.city ?? ""}, ${o.deliveryAddress.address}`}
+          >
+            <span className="text-soft-text-muted">📍 </span>
+            {o.deliveryAddress.city ? `${o.deliveryAddress.city}, ` : ""}
+            {o.deliveryAddress.address}
+          </p>
+        )}
+        {o.riderId && (
+          <p className="text-2xs text-soft-text-soft">
+            <span className="text-soft-text-muted">🛵 </span>
+            Курьер был назначен
+          </p>
+        )}
+        {o.items && o.items.length > 0 && (
+          <p
+            className="text-2xs text-soft-text-soft mt-1"
+            title={o.items
+              .map((i: any) => `${i.title} ×${i.quantity}`)
+              .join(", ")}
+          >
+            <span className="text-soft-text-muted">🍽 </span>
+            {o.items
+              .slice(0, 3)
+              .map((i: any) => `${i.title} ×${i.quantity}`)
+              .join(", ")}
+            {o.items.length > 3 ? ` · +${o.items.length - 3}` : ""}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -373,7 +643,8 @@ function RiderPickerModal({
           </h2>
           <button
             onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center text-soft-text-muted hover:text-soft-text hover:bg-soft-surface-2 rounded-xl transition-colors"
+            className="w-8 h-8 rounded-lg hover:bg-soft-surface-2 text-soft-text-soft flex items-center justify-center"
+            aria-label="Закрыть"
           >
             <X className="w-4 h-4" />
           </button>
@@ -390,6 +661,7 @@ function RiderPickerModal({
             {riders.map((r: any) => (
               <li key={r.id}>
                 <button
+                  type="button"
                   disabled={assigning}
                   onClick={() => onPick(orderId, r.id)}
                   className="w-full text-left bg-soft-surface-2 border border-soft-border hover:border-soft-accent hover:bg-soft-accent-soft rounded-2xl p-3 transition-all active:scale-[0.99] disabled:opacity-50"

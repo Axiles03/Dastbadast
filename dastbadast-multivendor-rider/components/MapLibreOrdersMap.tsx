@@ -71,6 +71,19 @@ type Props = {
   autoFit?: boolean;
   loading?: boolean;
   className?: string;
+  /**
+   * ⭐ ШАГ 5: реальный маршрут по дорогам (OSRM), [lat, lng][].
+   * Если не передан — карта рисует прямую линию курьер→точки (как раньше),
+   * см. fallback в routeGeoJSON ниже.
+   */
+  routePoints?: [number, number][] | null;
+  /**
+   * ⭐ ШАГ 5: режим "следовать за курьером" во время активной доставки —
+   * камера держит курьера в центре и следует за его позицией/направлением
+   * движения вместо того, чтобы каждый раз перефитить под все точки.
+   * Отключает autoFit, пока включён.
+   */
+  followRider?: boolean;
 };
 
 // ⭐ Кнопка "Моё местоположение": императивный API карты
@@ -94,6 +107,8 @@ export const MapLibreOrdersMap = forwardRef<MapLibreOrdersMapHandle, Props>(
       autoFit = true,
       loading = false,
       className,
+      routePoints = null,
+      followRider = false,
     },
     ref,
   ) {
@@ -116,8 +131,25 @@ export const MapLibreOrdersMap = forwardRef<MapLibreOrdersMapHandle, Props>(
       [isMapReady],
     );
 
-    // Генерируем GeoJSON для маршрута (курьер → ресторан → клиент)
+    // Генерируем GeoJSON для маршрута (курьер → ресторан → клиент).
+    // ⭐ ШАГ 5: если передан реальный маршрут по дорогам (routePoints,
+    // из OSRM) — используем его. Иначе — старый fallback: прямая линия
+    // между курьером и точками заказа.
     const routeGeoJSON = useMemo(() => {
+      if (routePoints && routePoints.length >= 2) {
+        return {
+          type: "Feature" as const,
+          geometry: {
+            type: "LineString" as const,
+            // routePoints — [lat, lng][], GeoJSON хочет [lng, lat][]
+            coordinates: routePoints.map(
+              ([lat, lng]) => [lng, lat] as [number, number],
+            ),
+          },
+          properties: {},
+        };
+      }
+
       const coords: [number, number][] = [];
       if (rider) coords.push([rider.longitude, rider.latitude]);
       const pickupCoords = pickupGeo?.location?.coordinates;
@@ -133,7 +165,7 @@ export const MapLibreOrdersMap = forwardRef<MapLibreOrdersMapHandle, Props>(
         geometry: { type: "LineString" as const, coordinates: coords },
         properties: {},
       };
-    }, [rider, pickupGeo, deliveryGeo]);
+    }, [routePoints, rider, pickupGeo, deliveryGeo]);
 
     // Передаём обновлённые данные в WebView через инжекцию JS
     useEffect(() => {
@@ -145,13 +177,14 @@ export const MapLibreOrdersMap = forwardRef<MapLibreOrdersMapHandle, Props>(
           ${JSON.stringify(markers)},
           ${JSON.stringify(rider)},
           ${JSON.stringify(routeGeoJSON)},
-          ${autoFit}
+          ${autoFit},
+          ${followRider}
         );
       }
       true;
     `;
       webViewRef.current.injectJavaScript(jsCode);
-    }, [isMapReady, markers, rider, routeGeoJSON, autoFit]);
+    }, [isMapReady, markers, rider, routeGeoJSON, autoFit, followRider]);
 
     // Обработка кликов по маркерам из WebView
     const handleMessage = (event: any) => {
@@ -257,7 +290,15 @@ export const MapLibreOrdersMap = forwardRef<MapLibreOrdersMapHandle, Props>(
           urgent: { emoji: '⚡' },
         };
 
-        window.updateMapFeatures = function (markers, rider, routeGeoJSON, autoFit) {
+        // ⭐ ШАГ 5: "следовать за курьером" — не флаим камеру целиком под
+        // все точки на каждом GPS-тике, а плавно перемещаем/поворачиваем
+        // её вслед за курьером (как в навигаторах). Once на активацию —
+        // резкий flyTo для первого захода в режим, дальше — короткий easeTo,
+        // синхронный с частотой обновления позиции (~раз в неск. секунд),
+        // чтобы не было рывков.
+        var followModeActive = false;
+
+        window.updateMapFeatures = function (markers, rider, routeGeoJSON, autoFit, followRider) {
           if (!map) return;
           try {
             // --- Курьер: один персистентный маркер, двигаем + вращаем ---
@@ -349,27 +390,46 @@ export const MapLibreOrdersMap = forwardRef<MapLibreOrdersMapHandle, Props>(
               if (map.getSource('route-source')) map.removeSource('route-source');
             }
 
-            // --- Авто-фит камеры под все точки ---
-            if (autoFit) {
-              var pts = [];
-              if (rider) pts.push([rider.longitude, rider.latitude]);
-              markers.forEach(function (m) {
-                pts.push([m.coordinate.longitude, m.coordinate.latitude]);
-              });
+            // --- Камера: "следовать за курьером" ИЛИ авто-фит под все точки ---
+            if (followRider && rider) {
+              var center = [rider.longitude, rider.latitude];
+              var bearing =
+                typeof rider.bearing === 'number' && !isNaN(rider.bearing)
+                  ? rider.bearing
+                  : map.getBearing();
 
-              if (pts.length === 1) {
-                map.flyTo({ center: pts[0], zoom: 15, duration: 600 });
-              } else if (pts.length > 1) {
-                var lngs = pts.map(function (p) { return p[0]; });
-                var lats = pts.map(function (p) { return p[1]; });
-                var bounds = [
-                  [Math.min.apply(null, lngs), Math.min.apply(null, lats)],
-                  [Math.max.apply(null, lngs), Math.max.apply(null, lats)],
-                ];
-                map.fitBounds(bounds, {
-                  padding: { top: 60, bottom: 180, left: 40, right: 40 },
-                  duration: 600,
+              if (!followModeActive) {
+                // Первый заход в follow-режим — резкий переход, дальше плавно
+                map.flyTo({ center: center, zoom: 17, bearing: bearing, pitch: 45, duration: 700 });
+                followModeActive = true;
+              } else {
+                // Плавно следуем без "прыжков" камеры на каждый GPS-тик
+                map.easeTo({ center: center, bearing: bearing, duration: 1000 });
+              }
+            } else {
+              followModeActive = false;
+              if (autoFit) {
+                var pts = [];
+                if (rider) pts.push([rider.longitude, rider.latitude]);
+                markers.forEach(function (m) {
+                  pts.push([m.coordinate.longitude, m.coordinate.latitude]);
                 });
+
+                if (pts.length === 1) {
+                  map.flyTo({ center: pts[0], zoom: 15, bearing: 0, pitch: 0, duration: 600 });
+                } else if (pts.length > 1) {
+                  var lngs = pts.map(function (p) { return p[0]; });
+                  var lats = pts.map(function (p) { return p[1]; });
+                  var bounds = [
+                    [Math.min.apply(null, lngs), Math.min.apply(null, lats)],
+                    [Math.max.apply(null, lngs), Math.max.apply(null, lats)],
+                  ];
+                  map.easeTo({ bearing: 0, pitch: 0, duration: 300 });
+                  map.fitBounds(bounds, {
+                    padding: { top: 60, bottom: 180, left: 40, right: 40 },
+                    duration: 600,
+                  });
+                }
               }
             }
           } catch (e) {

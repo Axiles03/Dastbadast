@@ -16,6 +16,8 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { cn } from "../lib/cn";
 import { type Order, getUrgency } from "./OrderCard";
+import { promptOpenInNavigator } from "../lib/navigate";
+import { extractLatLng } from "../lib/routing";
 
 type ActionButtonProps = {
   label: string;
@@ -276,6 +278,33 @@ export function OrderBottomSheet({
                     Ждём подтверждения клиента
                   </Text>
                 </View>
+              )}
+
+              {/* ⭐ ШАГ 5: "Открыть в навигаторе" — курьер едет по внешнему
+                  навигатору (живые пробки, голос), а не по карте в приложении.
+                  Цель — ресторан, пока не забрал, иначе клиент. */}
+              {(isAssigned || isDelivering) && (
+                <Pressable
+                  onPress={() => {
+                    const target = isDelivering
+                      ? order.deliveryAddress
+                      : order.pickupAddress;
+                    const point = extractLatLng(target ?? null);
+                    if (!point) return;
+                    const [lat, lng] = point;
+                    promptOpenInNavigator(
+                      { lat, lng },
+                      isDelivering
+                        ? (order.deliveryAddress?.address ?? "Клиент")
+                        : (order.pickupAddress?.name ?? "Ресторан"),
+                    );
+                  }}
+                  className="bg-info-soft border border-info/30 h-12 rounded-2xl items-center justify-center flex-row active:scale-[0.98]"
+                >
+                  <Text className="text-info-dark font-bold text-sm">
+                    🧭 Открыть в навигаторе
+                  </Text>
+                </Pressable>
               )}
 
               {(isAssigned || isDelivering || isAwaiting) && (

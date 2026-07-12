@@ -820,3 +820,212 @@ export const adminDashboardMetrics = async (_p, _a, ctx) => {
     topRiders: topRidersFull,
   };
 };
+
+// ⭐ Обновление ресторана
+export const updateRestaurant = async (_p, { id, input }, ctx) => {
+  requireRole(["SUPER_ADMIN", "OPERATIONS"])(ctx);
+
+  if (!mongoose.isValidObjectId(id)) {
+    throw new GraphQLError("Некорректный id", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  const r = await Restaurant.findById(id);
+  if (!r) {
+    throw new GraphQLError("Ресторан не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
+  }
+
+  if (input.name !== undefined) r.name = input.name.trim();
+  if (input.address !== undefined) r.address = input.address;
+  if (input.tax !== undefined) r.tax = input.tax;
+  if (input.minimumOrder !== undefined) r.minimumOrder = input.minimumOrder;
+  if (typeof input.isAvailable === "boolean") r.isAvailable = input.isAvailable;
+
+  if (input.lat !== undefined && input.lng !== undefined) {
+    r.location = { type: "Point", coordinates: [input.lng, input.lat] };
+  }
+
+  await r.save();
+  await invalidateCache("restaurants");
+  return r;
+};
+
+// ⭐ Обновление курьера
+export const updateRider = async (_p, { id, input }, ctx) => {
+  requireRole(["SUPER_ADMIN", "OPERATIONS"])(ctx);
+
+  if (!mongoose.isValidObjectId(id)) {
+    throw new GraphQLError("Некорректный id", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  const r = await Rider.findById(id);
+  if (!r) {
+    throw new GraphQLError("Курьер не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
+  }
+
+  if (typeof input.name === "string") r.name = input.name.trim();
+  if (typeof input.phone === "string") r.phone = input.phone.trim();
+  if (typeof input.photo === "string") r.photo = input.photo;
+
+  if (input.email !== undefined) {
+    const trimmed = String(input.email).trim().toLowerCase();
+    if (trimmed) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+        throw new GraphQLError("Некорректный email", {
+          extensions: { code: "BAD_USER_INPUT" },
+        });
+      }
+      const exists = await Rider.findOne({
+        email: trimmed,
+        _id: { $ne: r._id },
+      });
+      if (exists) {
+        throw new GraphQLError("Этот email уже используется", {
+          extensions: { code: "BAD_USER_INPUT" },
+        });
+      }
+      r.email = trimmed;
+    } else {
+      r.email = "";
+    }
+  }
+
+  if (typeof input.isActive === "boolean") r.isActive = input.isActive;
+  if (input.zoneId !== undefined) r.zoneId = input.zoneId || null;
+
+  await r.save();
+  return r;
+};
+
+// ⭐ Блокировка/разблокировка курьера
+export const toggleRiderActive = async (_p, { id, isActive }, ctx) => {
+  requireRole(["SUPER_ADMIN", "OPERATIONS"])(ctx);
+
+  if (!mongoose.isValidObjectId(id)) {
+    throw new GraphQLError("Некорректный id", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  const r = await Rider.findById(id);
+  if (!r) {
+    throw new GraphQLError("Курьер не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
+  }
+
+  r.isActive = !!isActive;
+  await r.save();
+  return r;
+};
+
+// ⭐ Финансы курьера (агрегация)
+export const riderFinancials = async (_p, { riderId }, ctx) => {
+  requireRole(["SUPER_ADMIN", "FINANCE", "OPERATIONS"])(ctx);
+
+  if (!mongoose.isValidObjectId(riderId)) {
+    throw new GraphQLError("Некорректный id", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  const r = await Rider.findById(riderId).select(
+    "name balance totalDeliveries",
+  );
+  if (!r) {
+    throw new GraphQLError("Курьер не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
+  }
+
+  const stats = await Order.aggregate([
+    {
+      $match: {
+        riderId: r._id,
+        orderStatus: "DELIVERED",
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalEarned: { $sum: "$amounts.deliveryFee" },
+        totalDeliveries: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const totalEarned = stats[0]?.totalEarned || 0;
+  const totalDeliveries = stats[0]?.totalDeliveries || 0;
+  const averageDeliveryFee =
+    totalDeliveries > 0 ? totalEarned / totalDeliveries : 0;
+
+  return {
+    riderId: r._id.toString(),
+    riderName: r.name || "—",
+    balance: r.balance || 0,
+    totalEarned: +Number(totalEarned).toFixed(2),
+    totalDeliveries,
+    averageDeliveryFee: +Number(averageDeliveryFee).toFixed(2),
+  };
+};
+
+// ⭐ НОВОЕ: все курьеры с последней локацией (для карты диспетчера)
+// Требует роли SUPER_ADMIN / OPERATIONS / DISPATCHER.
+export const allRidersWithLocation = async (_p, _a, ctx) => {
+  requireRole(["SUPER_ADMIN", "OPERATIONS", "DISPATCHER"])(ctx);
+  // includeInactive: false — берём только активных и онлайн
+  return Rider.find({ isActive: true })
+    .select(
+      "username name phone email photo available lastLocationAt location zoneId",
+    )
+    .sort({ available: -1, lastLocationAt: -1 })
+    .lean();
+};
+
+// ⭐ НОВОЕ: активные заказы с координатами (для карты)
+export const ordersForMap = async (_p, { status }, ctx) => {
+  requireRole(["SUPER_ADMIN", "OPERATIONS", "DISPATCHER"])(ctx);
+  const filter = {
+    orderStatus: {
+      $in: [
+        "PENDING",
+        "ACCEPTED",
+        "ASSIGNED",
+        "PICKED",
+        "AWAITING_CONFIRMATION",
+      ],
+    },
+  };
+  if (status) filter.orderStatus = status;
+  return Order.find(filter)
+    .select(
+      "orderId orderStatus items amounts pickupAddress deliveryAddress riderId createdAt statusTimestamps",
+    )
+    .sort({ createdAt: -1 })
+    .limit(200)
+    .lean();
+};
+
+// ⭐ НОВОЕ: текущая локация одного курьера (snapshot)
+export const riderLocationOnMap = async (_p, { riderId }, ctx) => {
+  requireRole(["SUPER_ADMIN", "OPERATIONS", "DISPATCHER"])(ctx);
+  if (!mongoose.isValidObjectId(riderId)) return null;
+  const r = await Rider.findById(riderId)
+    .select("location lastLocationAt")
+    .lean();
+  if (!r?.location?.coordinates) return null;
+  const [lng, lat] = r.location.coordinates;
+  if (lat === 0 && lng === 0) return null;
+  return {
+    lat,
+    lng,
+    updatedAt: r.lastLocationAt?.toISOString?.() ?? new Date().toISOString(),
+  };
+};

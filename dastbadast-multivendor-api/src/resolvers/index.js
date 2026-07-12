@@ -41,6 +41,7 @@ import {
 } from "../utils/delivery-price.js";
 import { Order } from "../models/Order.js";
 import { etaForRiderToAddress } from "../utils/eta.js";
+import { fetchRouteGeometry } from "../utils/geoapify.js"; // ⭐ ШАГ 5
 // ⭐ ШАГ 3 NEW: Rider model для резолвера etaToCustomer
 import { Rider } from "../models/Rider.js";
 import {
@@ -100,6 +101,13 @@ import {
   updateZone,
   deleteZone,
   adminDashboardMetrics,
+  updateRestaurant,
+  updateRider,
+  toggleRiderActive,
+  riderFinancials,
+  allRidersWithLocation,
+  ordersForMap,
+  riderLocationOnMap,
 } from "./admin.js";
 import {
   meRider,
@@ -114,6 +122,8 @@ import {
   changeRiderPassword,
   stopRiderLocationStream, // ⭐ ФИКС: было в rider.js, но не импортировано
   rider as riderOne,
+  riderLocationStream,
+  allOrdersChanged,
 } from "./rider.js";
 import {
   orderStatusChanged,
@@ -197,6 +207,10 @@ export const resolvers = {
     myPushTokens,
     calculateDeliveryPrice: calculateDeliveryPriceQuery,
     calculateDeliveryPriceBreakdown: calculateDeliveryPriceBreakdownQuery,
+    riderFinancials,
+    allRidersWithLocation,
+    ordersForMap,
+    riderLocationOnMap,
   },
   Mutation: {
     createUser,
@@ -253,6 +267,10 @@ export const resolvers = {
     refreshOrderStatus, // ⭐ был импортирован из order.js, но не подключён
     stopRiderLocationStream,
     updateMyRestaurant,
+    updateRestaurant,
+    updateRider,
+    toggleRiderActive,
+    refreshOrderStatus,
   },
 
   Subscription: {
@@ -266,6 +284,8 @@ export const resolvers = {
     subscriptionRiderOrderCompleted,
     newChatMessage,
     courierSearchNotify,
+    riderLocationStream,
+    allOrdersChanged,
   },
   Restaurant: {
     id: mongoId,
@@ -327,13 +347,28 @@ export const resolvers = {
         parent.deliveryAddress?.location?.coordinates,
       ),
 
-    // ⭐ ШАГ 4: заготовка под полилинию (прямая линия).
-    // В Шаге 5 заменим на OSRM с реальными поворотами.
-    routeGeometry: (parent) => {
+    // ⭐⭐⭐ ШАГ 5: реальная геометрия маршрута ПО ДОРОГАМ (Geoapify Routing
+    // API, тот же провайдер, что уже используется для стоимости доставки
+    // в delivery-price.js — переиспользуем ключ/кеш/таймаут-инфраструктуру).
+    // Раньше здесь была прямая линия (LineString из 2 точек) — теперь это
+    // только fallback на случай, если Geoapify недоступен/не настроен
+    // (нет GEOAPIFY_API_KEY, таймаут, HTTP-ошибка и т.п.), чтобы карта
+    // никогда не оставалась без линии маршрута вовсе.
+    routeGeometry: async (parent) => {
       const from = parent.pickupAddress?.location?.coordinates;
       const to = parent.deliveryAddress?.location?.coordinates;
       if (!Array.isArray(from) || from.length < 2) return null;
       if (!Array.isArray(to) || to.length < 2) return null;
+
+      const geometry = await fetchRouteGeometry(from, to);
+      if (geometry) {
+        return {
+          type: "LineString",
+          coordinates: geometry.coordinates,
+        };
+      }
+
+      // Fallback: прямая линия (как было раньше на Шаге 4)
       return {
         type: "LineString",
         coordinates: [from, to],

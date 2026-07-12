@@ -21,6 +21,44 @@ export const GET_RESTAURANTS = gql`
       address
       isAvailable
       minimumOrder
+      minimumOrder
+      tax
+      location
+      zoneId
+    }
+  }
+`;
+
+export const GET_RESTAURANT_DETAIL = gql`
+  query GetRestaurantDetail($id: ID!) {
+    restaurant(id: $id) {
+      id
+      name
+      slug
+      address
+      minimumOrder
+      tax
+      isAvailable
+      location
+      workingHours {
+        open
+        close
+        isAlwaysOpen
+      }
+      isOpenNow
+    }
+  }
+`;
+
+export const UPDATE_RESTAURANT = gql`
+  mutation UpdateRestaurant($id: ID!, $input: UpdateRestaurantInput!) {
+    updateRestaurant(id: $id, input: $input) {
+      id
+      name
+      address
+      minimumOrder
+      tax
+      isAvailable
     }
   }
 `;
@@ -44,6 +82,71 @@ export const GET_RIDERS = gql`
       name
       available
       phone
+      email
+      photo
+      isActive
+      zoneId
+      averageRating
+      totalRatings
+      totalDeliveries
+    }
+  }
+`;
+
+export const GET_RIDER_DETAIL = gql`
+  query GetRiderDetail($id: ID!) {
+    rider(id: $id) {
+      id
+      username
+      name
+      phone
+      email
+      photo
+      available
+      isActive
+      zoneId
+      averageRating
+      totalRatings
+      totalDeliveries
+      balance
+      createdAt
+    }
+  }
+`;
+
+export const GET_RIDER_FINANCIALS = gql`
+  query GetRiderFinancials($riderId: ID!) {
+    riderFinancials(riderId: $riderId) {
+      riderId
+      riderName
+      balance
+      totalEarned
+      totalDeliveries
+      averageDeliveryFee
+    }
+  }
+`;
+
+export const UPDATE_RIDER = gql`
+  mutation UpdateRider($id: ID!, $input: UpdateRiderInput!) {
+    updateRider(id: $id, input: $input) {
+      id
+      username
+      name
+      phone
+      email
+      photo
+      isActive
+      zoneId
+    }
+  }
+`;
+
+export const TOGGLE_RIDER_ACTIVE = gql`
+  mutation ToggleRiderActive($id: ID!, $isActive: Boolean!) {
+    toggleRiderActive(id: $id, isActive: $isActive) {
+      id
+      isActive
     }
   }
 `;
@@ -55,6 +158,7 @@ export const GET_MONITOR_ORDERS = gql`
       orderId
       orderStatus
       createdAt
+      updatedAt
       note
       riderId
       deliveryAddress {
@@ -67,13 +171,24 @@ export const GET_MONITOR_ORDERS = gql`
         location
       }
       amounts {
-        total
+        subtotal
         tax
+        deliveryFee
+        total
       }
       items {
         title
         quantity
+        price
       }
+      statusTimestamps {
+        cancelledAt
+        acceptedAt
+        assignedAt
+        pickedAt
+        deliveredAt
+      }
+      cancelReason 
     }
   }
 `;
@@ -117,6 +232,9 @@ export const GET_CONFIGURATION = gql`
       currencySymbol
       taxPercent
       deliveryRate
+      deliveryBaseKm
+      deliveryBasePrice
+      deliveryPerKmPrice
       skipEmailVerification
       skipMobileVerification
       testOtp
@@ -131,6 +249,9 @@ export const UPDATE_CONFIGURATION = gql`
       currencySymbol
       taxPercent
       deliveryRate
+      deliveryBaseKm
+      deliveryBasePrice
+      deliveryPerKmPrice
       testOtp
     }
   }
@@ -363,6 +484,93 @@ export const ADMIN_DASHBOARD = gql`
         deliveredCount
         earnings
       }
+    }
+  }
+`;
+
+// ⭐ НОВОЕ для Фазы 2: Live-карта диспетчера
+export const ALL_RIDERS_WITH_LOCATION = gql`
+  query AllRidersWithLocation {
+    allRidersWithLocation {
+      id
+      username
+      name
+      phone
+      email
+      photo
+      available
+      isActive
+      lastLocationAt
+      location
+      zoneId
+      totalDeliveries
+      averageRating
+      totalRatings
+    }
+  }
+`;
+
+export const ORDERS_FOR_MAP = gql`
+  query OrdersForMap($status: OrderStatus) {
+    ordersForMap(status: $status) {
+      id
+      orderId
+      orderStatus
+      createdAt
+      riderId
+      pickupAddress {
+        name
+        address
+        city
+        location
+      }
+      deliveryAddress {
+        address
+        city
+        location
+      }
+      items {
+        title
+        price
+        quantity
+      }
+      amounts {
+        total
+        deliveryFee
+      }
+      statusTimestamps {
+        pendingAt
+        acceptedAt
+        assignedAt
+        pickedAt
+        deliveredAt
+      }
+    }
+  }
+`;
+
+// ⭐ Broadcast всех изменений заказов (real-time)
+export const ALL_DELIVERIES_SUB = gql`
+  subscription AllOrdersChanged {
+    allOrdersChanged {
+      _id
+      orderId
+      orderStatus
+    }
+  }
+`;
+
+// ⭐ Live-локация курьера (для отслеживания)
+export const RIDER_LOCATION_STREAM = gql`
+  subscription RiderLocationStream($riderId: ID!) {
+    riderLocationStream(riderId: $riderId) {
+      riderId
+      lat
+      lng
+      bearing
+      speedKmh
+      updatedAt
+      stopped
     }
   }
 `;
