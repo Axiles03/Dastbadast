@@ -6,6 +6,8 @@ import { pubsub, TOPICS } from "../pubsub.js";
 const ALLOWED_STATUSES = [
   "ASSIGNED",
   "PICKED",
+  "EN_ROUTE_TO_DROP_OFF",
+  "ARRIVED_AT_DROP_OFF",
   "AWAITING_CONFIRMATION",
   "DELIVERED",
 ];

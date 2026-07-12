@@ -1,12 +1,16 @@
 // dastbadast-multivendor-rider/components/MapTabContent.tsx
 //
-import { useState, useMemo, useCallback } from "react";
-import { View, Text, Pressable } from "react-native";
+import { useState, useMemo, useCallback, useRef } from "react";
+import { View, Text, Pressable, ActivityIndicator } from "react-native";
 // ⭐ ШАГ 3: импортируем НОВЫЙ MapView (на WebView), а не react-native-maps
-import { MapLibreOrdersMap } from "./MapLibreOrdersMap";
+import {
+  MapLibreOrdersMap,
+  type MapLibreOrdersMapHandle,
+} from "./MapLibreOrdersMap";
 import { OrderBottomSheet } from "./OrderBottomSheet";
 import { extractLatLng } from "../lib/routing";
 import { cn } from "../lib/cn";
+import { getCurrentDeviceLocation } from "../lib/gps";
 import type { Order, OrderAddress } from "./OrderCard";
 // ⭐ ФИКС: убран `import dotenv from "dotenv"` — это Node.js-пакет
 // (использует `fs`), которого нет в React Native рантайме; он тут даже не
@@ -90,15 +94,52 @@ export function MapTabContent(props: Props) {
     ? (allOrders.find((o) => o.id === selectedId) ?? null)
     : null;
 
+  // ⭐⭐⭐ Кнопка "Моё местоположение": запрашивает текущую GPS-точку
+  // устройства напрямую (не дожидаясь серверного broadcast/подписки)
+  // и центрирует карту на ней.
+  const mapRef = useRef<MapLibreOrdersMapHandle>(null);
+  const [locating, setLocating] = useState(false);
+
+  const onLocateMe = useCallback(async () => {
+    if (locating) return;
+    setLocating(true);
+    try {
+      const pos = await getCurrentDeviceLocation();
+      if (pos) {
+        mapRef.current?.flyTo(pos.lat, pos.lng, 16);
+      } else if (riderPos) {
+        // Фолбэк: последняя известная позиция из подписки, если свежий
+        // GPS-запрос не удался (permission denied и т.п.)
+        mapRef.current?.flyTo(riderPos.latitude, riderPos.longitude, 16);
+      }
+    } finally {
+      setLocating(false);
+    }
+  }, [locating, riderPos]);
+
   return (
     <View className="flex-1 bg-soft-bg relative">
       <MapLibreOrdersMap
+        ref={mapRef}
         markers={markers}
         rider={riderPos}
         pickupGeo={focused?.pickupAddress ?? null}
         deliveryGeo={focused?.deliveryAddress ?? null}
         autoFit
       />
+
+      {/* ⭐ Кнопка "Моё местоположение" — плавающая, справа над переключателями вкладок */}
+      <Pressable
+        onPress={onLocateMe}
+        disabled={locating}
+        className="absolute right-3 bottom-52 w-12 h-12 bg-soft-surface border border-border rounded-full items-center justify-center shadow-soft-md active:opacity-80"
+      >
+        {locating ? (
+          <ActivityIndicator color="#F26A4A" size="small" />
+        ) : (
+          <Text className="text-xl">📍</Text>
+        )}
+      </Pressable>
 
       <View className="absolute left-3 right-3 bottom-36 flex-row gap-2">
         <Pressable

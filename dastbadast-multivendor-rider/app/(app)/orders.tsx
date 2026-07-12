@@ -60,6 +60,9 @@ export default function OrdersScreen() {
   const [listMode, setListMode] = useState<boolean>(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [permissionModalOpen, setPermissionModalOpen] = useState(false);
+  const [backgroundBannerVisible, setBackgroundBannerVisible] = useState(false);
+  const [backgroundBannerDismissed, setBackgroundBannerDismissed] =
+    useState(false);
   const [now, setNow] = useState(Date.now());
 
   // ⭐⭐⭐ FIX: вынес на верхний уровень — был внутри useEffect в шаге 5
@@ -166,6 +169,13 @@ export default function OrdersScreen() {
       const result = await startGpsLoop(client);
       if (!result.ok && result.reason === "denied") {
         setAvailable(false);
+      } else if (result.ok && !result.backgroundGranted) {
+        // ⭐ Ненавязчиво, не блокируем работу — foreground GPS работает,
+        // но без background permission позиция перестаёт обновляться,
+        // как только курьер сворачивает приложение. Баннер можно закрыть.
+        setBackgroundBannerVisible(true);
+      } else {
+        setBackgroundBannerVisible(false);
       }
     })();
     return () => {
@@ -294,9 +304,14 @@ export default function OrdersScreen() {
             if (result.reason === "denied") {
               setPermissionModalOpen(true);
             }
+          } else if (!result.backgroundGranted) {
+            setBackgroundBannerVisible(true);
+          } else {
+            setBackgroundBannerVisible(false);
           }
         } else {
           await stopGpsLoop();
+          setBackgroundBannerVisible(false);
         }
       } catch (e: any) {
         Alert.alert("Ошибка", e?.message ?? "");
@@ -415,6 +430,36 @@ export default function OrdersScreen() {
         onOpenSettings={() => router.push("/profile")}
       />
 
+      {backgroundBannerVisible && !backgroundBannerDismissed && (
+        <View className="flex-row items-center gap-2 bg-warning-soft border-b border-warning/30 px-3 py-2">
+          <Text className="text-base">⚠️</Text>
+          <Text className="flex-1 text-2xs text-text-soft leading-4">
+            Фоновая геолокация выключена — позиция перестаёт обновляться, когда
+            приложение свёрнуто. Включите «Разрешить всегда» в настройках.
+          </Text>
+          <Pressable
+            onPress={async () => {
+              try {
+                await Linking.openSettings();
+              } catch {
+                Alert.alert("Не удалось открыть настройки");
+              }
+            }}
+            className="px-2.5 py-1.5 bg-accent rounded-xl"
+          >
+            <Text className="text-2xs font-extrabold text-text-inverse">
+              Настройки
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setBackgroundBannerDismissed(true)}
+            className="px-1.5 py-1.5"
+          >
+            <Text className="text-text-muted font-extrabold text-sm">✕</Text>
+          </Pressable>
+        </View>
+      )}
+
       {listMode && (
         <View className="flex-row bg-soft-surface border-b border-border">
           <Pressable
@@ -484,7 +529,10 @@ export default function OrdersScreen() {
       ) : (
         <MapTabContent
           available={available}
-          onTab={setTab}
+          onTab={(t) => {
+            setTab(t);
+            setListMode(true); // ⭐ переключаемся в список выбранной вкладки
+          }}
           pool={pool}
           myOrders={myOrders}
           selectedId={selectedId}

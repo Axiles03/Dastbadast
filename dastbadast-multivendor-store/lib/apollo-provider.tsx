@@ -87,6 +87,16 @@ export function getApolloClient(): ApolloClient {
     link: splitLink,
     cache: new InMemoryCache({
       typePolicies: {
+        Query: {
+          fields: {
+            restaurantOrders: {
+              keyArgs: ["status"], // разные статусы — разные записи кэша
+              merge(_existing, incoming) {
+                return incoming; // это не пагинация — просто заменяем список
+              },
+            },
+          },
+        },
         OrderAmounts: { merge: (_e, i) => i },
         Order: {
           fields: {
@@ -107,5 +117,9 @@ type ApolloProviderClientProps = {
 
 export function ApolloProviderClient({ children }: ApolloProviderClientProps) {
   const client = useMemo(() => getApolloClient(), []);
-  return <ApolloProvider client={client} children={undefined}>{children}</ApolloProvider>;
+  return (
+    <ApolloProvider client={client} children={undefined}>
+      {children}
+    </ApolloProvider>
+  );
 }

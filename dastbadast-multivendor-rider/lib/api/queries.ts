@@ -78,10 +78,12 @@ export const AVAILABLE_ORDERS = gql`
         name
         address
         city
+        location
       }
       deliveryAddress {
         address
         city
+        location
       }
       items {
         foodId
@@ -115,10 +117,12 @@ export const MY_ORDERS = gql`
         name
         address
         city
+        location
       }
       deliveryAddress {
         address
         city
+        location
       }
       items {
         foodId

@@ -64,6 +64,7 @@ export const GET_MONITOR_ORDERS = gql`
       pickupAddress {
         name
         address
+        location
       }
       amounts {
         total

@@ -210,6 +210,16 @@ export function OrderBottomSheet({
               </Text>
             </View>
 
+            {/* после блока с адресами в OrderBottomSheet.tsx */}
+            <View className="flex-row justify-between items-center bg-accent-soft rounded-2xl p-3.5 mt-3">
+              <Text className="text-sm font-bold text-text-soft">
+                💰 Доставка
+              </Text>
+              <Text className="text-lg font-extrabold text-accent">
+                {order.amounts?.deliveryFee ?? "—"} сом.
+              </Text>
+            </View>
+
             {/* Items (placeholder) */}
             <View className="bg-soft-surface-2 border border-border rounded-2xl p-3.5 mt-3">
               <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider mb-1.5">

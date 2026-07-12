@@ -4,6 +4,7 @@ import { Order } from "../models/Order.js";
 import { Rider } from "../models/Rider.js";
 import { signRiderToken } from "../middleware/auth.js";
 import { pubsub, TOPICS } from "../pubsub.js";
+import { bearingDeg } from "../utils/geo.js";
 import {
   setRiderLocationInRedis,
   getRiderLocationFromRedis,
@@ -100,32 +101,32 @@ export const updateRiderLocation = async (_p, { input }, ctx) => {
     updatedAt,
   });
 
-  // Сохраняем в БД (всегда — для истории)
-  r.location = { type: "Point", coordinates: [lng, lat] };
-  r.lastLocationAt = new Date();
-  if (typeof bearing === "number") r.bearing = bearing;
-  await r.save();
+  // ⭐⭐⭐ FIX: раньше здесь был безусловный `r.save()` НА КАЖДЫЙ пинг
+  // (каждые ~10 сек на курьера) — это полностью сводило на нет смысл
+  // Redis-буфера и cron-flush'а (см. rider-location-flush.job.js): вместо
+  // заявленных "12 записей/час/курьер" Mongo реально получал ~360.
+  // Источник правды для "живой" позиции — Redis (уже записан выше).
+  // В Mongo пишем редко, отдельным throttled-fallback'ом на случай, если
+  // cron почему-то не успел отработать 5 минут подряд (Redis недоступен,
+  // деплой, и т.п.) — это ограничивает Mongo снизу разумной частотой
+  // независимо от того, работает cron или нет.
+  const lastMongoWriteAt = r.lastLocationAt?.getTime() ?? 0;
+  const NEED_TO_PERSIST_FALLBACK = now - lastMongoWriteAt > 4 * 60 * 1000; // 4 мин
 
-  // Обновляем кэш
+  if (NEED_TO_PERSIST_FALLBACK) {
+    r.location = { type: "Point", coordinates: [lng, lat] };
+    r.lastLocationAt = new Date();
+    if (typeof bearing === "number") r.bearing = bearing;
+    await r.save();
+  }
+
+  // Обновляем in-memory кэш (используется для throttling/broadcast-решений)
   lastRiderLocation.set(r._id.toString(), {
     at: now,
     lat,
     lng,
     bearing: newBearing ?? prev?.bearing ?? 0,
   });
-
-  // ⭐ 6) ШАГ 5 (атомарный, раз в 5 мин) — но пока пишем в Mongo,
-  //    если прошло > 5 мин с последней записи (cron не успел).
-  //    Это fallback для случая, когда cron не работает.
-  const lastMongoWriteAt = r.lastLocationAt?.getTime() ?? 0;
-  const NEED_TO_PERSIST = now - lastMongoWriteAt > 4 * 60 * 1000; // 4 мин
-
-  if (NEED_TO_PERSIST) {
-    r.location = { type: "Point", coordinates: [lng, lat] };
-    r.lastLocationAt = new Date();
-    if (typeof bearing === "number") r.bearing = bearing;
-    await r.save();
-  }
 
   if (!shouldBroadcast) return r;
 

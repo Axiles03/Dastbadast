@@ -31,7 +31,14 @@
 //      проекта.
 //   5. Нет зум-контролов — добавлены (NavigationControl).
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  forwardRef,
+} from "react";
 import { View, StyleSheet, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -66,48 +73,73 @@ type Props = {
   className?: string;
 };
 
+// ⭐ Кнопка "Моё местоположение": императивный API карты
+export type MapLibreOrdersMapHandle = {
+  flyTo: (lat: number, lng: number, zoom?: number) => void;
+};
+
 const DUSHANBE: [number, number] = [68.783, 38.574]; // [lng, lat]
 
 // ⭐ Бесплатный, без ключа, векторный стиль. MapLibre сам добавляет
 // обязательную атрибуцию OpenFreeMap/OSM при использовании этого style.json.
 const MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 
-export function MapLibreOrdersMap({
-  markers,
-  rider = null,
-  pickupGeo = null,
-  deliveryGeo = null,
-  autoFit = true,
-  loading = false,
-  className,
-}: Props) {
-  const webViewRef = useRef<WebView>(null);
-  const [isMapReady, setIsMapReady] = useState(false);
+export const MapLibreOrdersMap = forwardRef<MapLibreOrdersMapHandle, Props>(
+  function MapLibreOrdersMap(
+    {
+      markers,
+      rider = null,
+      pickupGeo = null,
+      deliveryGeo = null,
+      autoFit = true,
+      loading = false,
+      className,
+    },
+    ref,
+  ) {
+    const webViewRef = useRef<WebView>(null);
+    const [isMapReady, setIsMapReady] = useState(false);
 
-  // Генерируем GeoJSON для маршрута (курьер → ресторан → клиент)
-  const routeGeoJSON = useMemo(() => {
-    const coords: [number, number][] = [];
-    if (rider) coords.push([rider.longitude, rider.latitude]);
-    const pickupCoords = pickupGeo?.location?.coordinates;
-    if (pickupCoords?.length === 2)
-      coords.push([pickupCoords[0], pickupCoords[1]]);
-    const deliveryCoords = deliveryGeo?.location?.coordinates;
-    if (deliveryCoords?.length === 2)
-      coords.push([deliveryCoords[0], deliveryCoords[1]]);
+    // ⭐ Кнопка "Моё местоположение" вызывает это через ref, минуя
+    // серверный broadcast — не нужно ждать подписку/следующий GPS-тик.
+    useImperativeHandle(
+      ref,
+      () => ({
+        flyTo: (lat: number, lng: number, zoom = 16) => {
+          if (!isMapReady || !webViewRef.current) return;
+          webViewRef.current.injectJavaScript(`
+          if (window.flyToPoint) { window.flyToPoint(${lat}, ${lng}, ${zoom}); }
+          true;
+        `);
+        },
+      }),
+      [isMapReady],
+    );
 
-    if (coords.length < 2) return null;
-    return {
-      type: "Feature" as const,
-      geometry: { type: "LineString" as const, coordinates: coords },
-      properties: {},
-    };
-  }, [rider, pickupGeo, deliveryGeo]);
+    // Генерируем GeoJSON для маршрута (курьер → ресторан → клиент)
+    const routeGeoJSON = useMemo(() => {
+      const coords: [number, number][] = [];
+      if (rider) coords.push([rider.longitude, rider.latitude]);
+      const pickupCoords = pickupGeo?.location?.coordinates;
+      if (pickupCoords?.length === 2)
+        coords.push([pickupCoords[0], pickupCoords[1]]);
+      const deliveryCoords = deliveryGeo?.location?.coordinates;
+      if (deliveryCoords?.length === 2)
+        coords.push([deliveryCoords[0], deliveryCoords[1]]);
 
-  // Передаём обновлённые данные в WebView через инжекцию JS
-  useEffect(() => {
-    if (!isMapReady || !webViewRef.current) return;
+      if (coords.length < 2) return null;
+      return {
+        type: "Feature" as const,
+        geometry: { type: "LineString" as const, coordinates: coords },
+        properties: {},
+      };
+    }, [rider, pickupGeo, deliveryGeo]);
 
-    const jsCode = `
+    // Передаём обновлённые данные в WebView через инжекцию JS
+    useEffect(() => {
+      if (!isMapReady || !webViewRef.current) return;
+
+      const jsCode = `
       if (window.updateMapFeatures) {
         window.updateMapFeatures(
           ${JSON.stringify(markers)},
@@ -118,30 +150,30 @@ export function MapLibreOrdersMap({
       }
       true;
     `;
-    webViewRef.current.injectJavaScript(jsCode);
-  }, [isMapReady, markers, rider, routeGeoJSON, autoFit]);
+      webViewRef.current.injectJavaScript(jsCode);
+    }, [isMapReady, markers, rider, routeGeoJSON, autoFit]);
 
-  // Обработка кликов по маркерам из WebView
-  const handleMessage = (event: any) => {
-    try {
-      const data = JSON.parse(event.nativeEvent.data);
-      if (data.type === "MAP_READY") {
-        setIsMapReady(true);
-      } else if (data.type === "MARKER_PRESS") {
-        const clickedMarker = markers.find((m) => m.id === data.id);
-        if (clickedMarker && clickedMarker.onPress) {
-          clickedMarker.onPress();
+    // Обработка кликов по маркерам из WebView
+    const handleMessage = (event: any) => {
+      try {
+        const data = JSON.parse(event.nativeEvent.data);
+        if (data.type === "MAP_READY") {
+          setIsMapReady(true);
+        } else if (data.type === "MARKER_PRESS") {
+          const clickedMarker = markers.find((m) => m.id === data.id);
+          if (clickedMarker && clickedMarker.onPress) {
+            clickedMarker.onPress();
+          }
+        } else if (data.type === "MAP_ERROR" && __DEV__) {
+          console.warn("[MapLibreOrdersMap]", data.message);
         }
-      } else if (data.type === "MAP_ERROR" && __DEV__) {
-        console.warn("[MapLibreOrdersMap]", data.message);
+      } catch (e) {
+        console.error("Ошибка парсинга сообщения из WebView:", e);
       }
-    } catch (e) {
-      console.error("Ошибка парсинга сообщения из WebView:", e);
-    }
-  };
+    };
 
-  const mapHtml = useMemo(
-    () => `
+    const mapHtml = useMemo(
+      () => `
     <!DOCTYPE html>
     <html>
     <head>
@@ -198,7 +230,7 @@ export function MapLibreOrdersMap({
             zoom: 13,
             attributionControl: true,
           });
-          map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+          map.addControl(new maplibregl.NavigationControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: false, showCompass: false }), 'top-right');
           map.on('error', function (e) {
             notifyError((e && e.error && e.error.message) || 'unknown map error');
           });
@@ -344,55 +376,66 @@ export function MapLibreOrdersMap({
             notifyError('update failed: ' + e.message);
           }
         };
+
+        // ⭐ Кнопка "Моё местоположение" в RN вызывает это через injectJavaScript
+        window.flyToPoint = function (lat, lng, zoom) {
+          if (!map) return;
+          try {
+            map.flyTo({ center: [lng, lat], zoom: zoom || 16, duration: 700 });
+          } catch (e) {
+            notifyError('flyTo failed: ' + e.message);
+          }
+        };
       </script>
     </body>
     </html>
   `,
-    [],
-  );
+      [],
+    );
 
-  return (
-    <View style={styles.container} className={className}>
-      <WebView
-        ref={webViewRef}
-        originWhitelist={["*"]}
-        source={{ html: mapHtml }}
-        style={StyleSheet.absoluteFill}
-        onMessage={handleMessage}
-        javaScriptEnabled={true}
-        domStorageEnabled={true}
-        renderError={(
-          errorDomain: string | undefined,
-          errorCode: number,
-          errorDesc: string,
-        ) => (
-          <View style={styles.fallback}>
-            <Text style={styles.fallbackEmoji}>🗺</Text>
-            <Text style={styles.fallbackTitle}>Ошибка карты</Text>
-            <Text style={styles.fallbackSubtitle}>
-              {errorDomain ?? "WebView"} · {errorCode} · {errorDesc}
-            </Text>
-            <Text style={styles.fallbackSubtitle}>
-              Проверьте интернет-соединение
-            </Text>
-          </View>
-        )}
-        renderLoading={() => (
-          <View style={styles.fallback}>
+    return (
+      <View style={styles.container} className={className}>
+        <WebView
+          ref={webViewRef}
+          originWhitelist={["*"]}
+          source={{ html: mapHtml }}
+          style={StyleSheet.absoluteFill}
+          onMessage={handleMessage}
+          javaScriptEnabled={true}
+          domStorageEnabled={true}
+          renderError={(
+            errorDomain: string | undefined,
+            errorCode: number,
+            errorDesc: string,
+          ) => (
+            <View style={styles.fallback}>
+              <Text style={styles.fallbackEmoji}>🗺</Text>
+              <Text style={styles.fallbackTitle}>Ошибка карты</Text>
+              <Text style={styles.fallbackSubtitle}>
+                {errorDomain ?? "WebView"} · {errorCode} · {errorDesc}
+              </Text>
+              <Text style={styles.fallbackSubtitle}>
+                Проверьте интернет-соединение
+              </Text>
+            </View>
+          )}
+          renderLoading={() => (
+            <View style={styles.fallback}>
+              <ActivityIndicator color="#F26A4A" size="large" />
+              <Text style={styles.fallbackSubtitle}>Загрузка карты…</Text>
+            </View>
+          )}
+        />
+
+        {loading && (
+          <View style={styles.loadingOverlay} pointerEvents="none">
             <ActivityIndicator color="#F26A4A" size="large" />
-            <Text style={styles.fallbackSubtitle}>Загрузка карты…</Text>
           </View>
         )}
-      />
-
-      {loading && (
-        <View style={styles.loadingOverlay} pointerEvents="none">
-          <ActivityIndicator color="#F26A4A" size="large" />
-        </View>
-      )}
-    </View>
-  );
-}
+      </View>
+    );
+  },
+);
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#FAF7F2" },
