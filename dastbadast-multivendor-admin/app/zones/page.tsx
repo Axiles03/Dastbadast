@@ -258,9 +258,9 @@ function ZonesInner() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div className="grid gap-5">
         {/* Карта */}
-        <div className="bg-soft-surface border border-soft-border rounded-3xl overflow-hidden shadow-soft-sm h-[500px] lg:h-auto lg:sticky lg:top-20">
+        <div className="bg-soft-surface border border-soft-border rounded-3xl overflow-hidden shadow-soft-sm h-[400px] lg:h-[500px] lg:sticky lg:top-20">
           <ZoneEditorMap
             zones={mapZones}
             draftPolygon={draftPolygon}

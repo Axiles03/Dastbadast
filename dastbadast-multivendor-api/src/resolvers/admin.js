@@ -243,7 +243,7 @@ export const assignRider = async (_p, { input }, ctx) => {
 
 // =================== ACCOUNTING (read) ===================
 
-export const adminAccounting = async (_p, _a, ctx) => {
+export const adminAccounting = async (_p, { from, to } = {}, ctx) => {
   requireRole(["SUPER_ADMIN", "FINANCE", "ANALYST"])(ctx);
 
   const cfgDoc = await Configuration.findById("singleton")
