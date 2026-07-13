@@ -30,7 +30,7 @@ async function findZoneForPoint(lng, lat) {
 }
 
 /* ============================================================
- *  profile / addresses / selectedAddress (без изменений)
+ *  profile / addresses / selectedAddress
  * ============================================================ */
 
 export const profile = async (_p, _a, ctx) => {
@@ -50,7 +50,7 @@ export const selectedAddress = async (_p, _a, ctx) => {
 };
 
 /* ============================================================
- *  createUser / login
+ *  createUser / login  ⭐ FIX: блокируем заблокированных
  * ============================================================ */
 
 export const createUser = async (_p, { input }) => {
@@ -98,6 +98,12 @@ export const login = async (_p, { input }) => {
     throw new GraphQLError("Неверные данные", {
       extensions: { code: "UNAUTHENTICATED" },
     });
+  // ⭐ FIX: блокируем вход заблокированным пользователям
+  if (user.isActive === false) {
+    throw new GraphQLError("Аккаунт заблокирован. Обратитесь в поддержку.", {
+      extensions: { code: "FORBIDDEN" },
+    });
+  }
   const token = signToken(user);
   return { token, user };
 };
@@ -215,20 +221,7 @@ export const selectAddress = async (_p, { id }, ctx) => {
 };
 
 /* ============================================================
- *  ⭐ adminUsers — ИСПРАВЛЕНО:
- *  1) Aggregation pipeline возвращает `count`, а не `totalOrders`.
- *  2) totalSpent считается по ВСЕМ заказам (включая cancelled),
- *     потому что тип AdminUser.totalSpent = общая сумма всех заказов
- *     (так он использовался в UI ещё до моих правок — "Потрачено" с
- *     индикатором "Крупные"). ВАЖНО: totalOrders в UI считает только
- *     DELIVERED (как в старой версии). Чтобы не было путаницы,
- *     aggregation возвращает ОБА значения:
- *       count        — всего заказов (включая CANCELLED) — для totalOrders в UI
- *       delivered    — доставлено (для потенциальных будущих отчётов)
- *  3) cancelled считается отдельно.
- *  4) Используем `id` через String(...), чтобы GraphQL не падал на ObjectId.
- *  5) Если $match — пустой объект (нет фильтра), Mongo ругается в новых
- *     версиях; используем {$match: {}} явно.
+ *  adminUsers — ИСПРАВЛЕННАЯ ВЕРСИЯ (count, не totalOrders)
  * ============================================================ */
 
 export const adminUsers = async (_p, { filter }, ctx) => {
@@ -253,23 +246,17 @@ export const adminUsers = async (_p, { filter }, ctx) => {
     .limit(limit)
     .lean();
 
-  // Собираем ID пользователей для агрегации по заказам
   const userIds = users.map((u) => u._id);
 
-  // ⭐⭐⭐ ИСПРАВЛЕННАЯ АГРЕГАЦИЯ: count (а не totalOrders) + cancelled
   const orderStats = await Order.aggregate([
     { $match: { userId: { $in: userIds } } },
     {
       $group: {
         _id: "$userId",
-        // totalOrders: ВСЕ заказы (включая CANCELLED) — для UI счётчика "Заказов"
         totalOrders: { $sum: 1 },
-        // totalSpent: ВСЕ заказы — общая сумма, как в старой версии
         totalSpent: { $sum: "$amounts.total" },
-        // firstOrderAt / lastOrderAt — по ВСЕМ заказам
         firstOrderAt: { $min: "$createdAt" },
         lastOrderAt: { $max: "$createdAt" },
-        // cancelled: отдельно — для возможных будущих отчётов
         cancelled: {
           $sum: {
             $cond: [{ $eq: ["$orderStatus", "CANCELLED"] }, 1, 0],
@@ -285,8 +272,6 @@ export const adminUsers = async (_p, { filter }, ctx) => {
     total,
     users: users.map((u) => {
       const stats = statsMap.get(String(u._id)) || {};
-      // ⭐ Безопасные дефолты — если у юзера нет заказов, stats будет {},
-      // и каждое поле получит 0 / null / undefined. Никаких ReferenceError.
       const totalOrders = Number(stats.totalOrders) || 0;
       const totalSpent = Number(stats.totalSpent) || 0;
       return {
@@ -300,15 +285,10 @@ export const adminUsers = async (_p, { filter }, ctx) => {
         totalOrders,
         totalSpent: +totalSpent.toFixed(2),
         lastOrderAt: stats.lastOrderAt || null,
-        // ⚠️ avgOrderValue в схеме НЕТ — клиент считает локально (totalSpent/totalOrders)
       };
     }),
   };
 };
-
-/* ============================================================
- *  adminUserDetail — без изменений (возвращает user + orders)
- * ============================================================ */
 
 export const adminUserDetail = async (_p, { id }, ctx) => {
   requireRole(["SUPER_ADMIN", "SUPPORT"])(ctx);
@@ -441,10 +421,6 @@ export const updateUser = async (_p, { input }, ctx) => {
   return user;
 };
 
-/* ============================================================
- *  userLTV (жизненная ценность) — без изменений
- * ============================================================ */
-
 export const userLTV = async (_p, { userId }, ctx) => {
   requireRole(["SUPER_ADMIN", "FINANCE", "ANALYST", "SUPPORT"])(ctx);
 
@@ -542,10 +518,6 @@ export const userLTV = async (_p, { userId }, ctx) => {
     isPredictionReliable,
   };
 };
-
-/* ============================================================
- *  userOrderFrequency — без изменений
- * ============================================================ */
 
 export const userOrderFrequency = async (_p, { userId }, ctx) => {
   requireRole(["SUPER_ADMIN", "FINANCE", "ANALYST", "SUPPORT"])(ctx);
@@ -649,10 +621,6 @@ export const userOrderFrequency = async (_p, { userId }, ctx) => {
   };
 };
 
-/* ============================================================
- *  userCohorts — без изменений
- * ============================================================ */
-
 export const userCohorts = async (_p, { months: monthsArg }, ctx) => {
   requireRole(["SUPER_ADMIN", "FINANCE", "ANALYST"])(ctx);
 
@@ -748,10 +716,6 @@ export const userCohorts = async (_p, { months: monthsArg }, ctx) => {
   return { cohorts, months };
 };
 
-/* ============================================================
- *  churnRate — без изменений
- * ============================================================ */
-
 export const churnRate = async (_p, { period: periodArg }, ctx) => {
   requireRole(["SUPER_ADMIN", "FINANCE", "ANALYST"])(ctx);
 
@@ -846,10 +810,6 @@ export const churnRate = async (_p, { period: periodArg }, ctx) => {
     avgOrdersPerRetained,
   };
 };
-
-/* ============================================================
- *  demandForecast — без изменений
- * ============================================================ */
 
 export const demandForecast = async (_p, { days: daysArg }, ctx) => {
   requireRole(["SUPER_ADMIN", "FINANCE", "ANALYST"])(ctx);

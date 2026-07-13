@@ -13,3 +13,4 @@ build/
 docs/
 repomix-output.xml
 repomix-output.json
+graphql-out/
