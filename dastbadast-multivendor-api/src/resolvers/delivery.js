@@ -12,6 +12,82 @@ import { Restaurant } from "../models/Restaurant.js";
 import { pubsub, TOPICS } from "../pubsub.js";
 import { dispatchCourierSearch } from "./order-search.js";
 import { etaForRiderToAddress } from "../utils/eta.js";
+import { haversineKm } from "../utils/geo.js";
+import { getRiderLocationFromRedis } from "../services/rider-location.service.js";
+
+// ⭐⭐⭐ NEW: multi-stop dispatch — курьер, который УЖЕ везёт один заказ,
+// может взять второй, только если он приблизился к клиенту первого заказа
+// не дальше этого радиуса. До этого multi-stop был вообще запрещён —
+// claimOrder/acceptDelivery блокировали любой второй заказ, пока не
+// завершится первый (см. "active > 0" ниже).
+const MULTI_STOP_PROXIMITY_KM = 2;
+// Пока не поддерживаем "стек" из 3+ заказов одновременно — только 1+1.
+const MAX_CONCURRENT_ORDERS = 2;
+
+const ACTIVE_STATUSES = [
+  "ASSIGNED",
+  "PICKED",
+  "EN_ROUTE_TO_DROP_OFF",
+  "ARRIVED_AT_DROP_OFF",
+];
+
+/**
+ * ⭐ NEW: проверяет, может ли курьер взять ЕЩЁ ОДИН заказ поверх уже
+ * имеющихся активных. Правила:
+ *  - 0 активных → можно (обычный кейс)
+ *  - 1 активный → можно, ТОЛЬКО если курьер сейчас в радиусе
+ *    MULTI_STOP_PROXIMITY_KM от точки доставки текущего заказа
+ *    (т.е. уже почти закончил первый — есть смысл довесить второй по пути)
+ *  - 2+ активных → нельзя (лимит MVP)
+ * Бросает GraphQLError с понятной причиной, если взять нельзя.
+ */
+async function assertCanTakeAnotherOrder(rider) {
+  const active = await Order.find({
+    riderId: rider._id,
+    orderStatus: { $in: ACTIVE_STATUSES },
+  }).lean();
+
+  if (active.length === 0) return;
+
+  if (active.length >= MAX_CONCURRENT_ORDERS) {
+    throw new GraphQLError(
+      `Нельзя взять больше ${MAX_CONCURRENT_ORDERS} заказов одновременно`,
+      { extensions: { code: "BAD_STATE" } },
+    );
+  }
+
+  // Ровно 1 активный заказ — проверяем близость к его точке доставки.
+  const current = active[0];
+  const destCoords = current.deliveryAddress?.location?.coordinates;
+  if (!destCoords || destCoords.length < 2) {
+    // Нет координат — не можем проверить близость, безопаснее запретить.
+    throw new GraphQLError("Сначала завершите текущий заказ", {
+      extensions: { code: "BAD_STATE" },
+    });
+  }
+
+  // Берём самую свежую позицию курьера: сначала Redis (real-time), иначе
+  // последняя сохранённая в Mongo (может отставать на минуты).
+  const liveLoc = await getRiderLocationFromRedis(rider._id.toString());
+  const riderLat = liveLoc?.lat ?? rider.location?.coordinates?.[1];
+  const riderLng = liveLoc?.lng ?? rider.location?.coordinates?.[0];
+  if (typeof riderLat !== "number" || typeof riderLng !== "number") {
+    throw new GraphQLError("Сначала завершите текущий заказ", {
+      extensions: { code: "BAD_STATE" },
+    });
+  }
+
+  const [destLng, destLat] = destCoords;
+  const distanceKm = haversineKm(riderLat, riderLng, destLat, destLng);
+
+  if (distanceKm > MULTI_STOP_PROXIMITY_KM) {
+    throw new GraphQLError(
+      `Второй заказ можно взять, только если вы в ${MULTI_STOP_PROXIMITY_KM} км ` +
+        `от точки доставки текущего заказа (сейчас ${distanceKm.toFixed(1)} км)`,
+      { extensions: { code: "TOO_FAR_FOR_MULTI_STOP" } },
+    );
+  }
+}
 
 /* ================== HELPERS ================== */
 
@@ -56,7 +132,17 @@ const ALLOWED_TRANSITIONS = {
   PREPARING: ["READY_FOR_PICKUP", "CANCELLED"],
   READY_FOR_PICKUP: ["ASSIGNED", "CANCELLED"],
   ASSIGNED: ["PICKED", "CANCELLED"],
-  PICKED: ["EN_ROUTE_TO_DROP_OFF", "AWAITING_CONFIRMATION", "CANCELLED"],
+  // ⭐ FIX: раньше отсюда был путь ТОЛЬКО в EN_ROUTE_TO_DROP_OFF, но ни одна
+  // мутация никогда не выставляет EN_ROUTE_TO_DROP_OFF — в реальности курьер
+  // едет сразу PICKED → (у двери клиента). Из-за этого arriveAtDropOff всегда
+  // падал с BAD_STATE. Разрешаем PICKED → ARRIVED_AT_DROP_OFF напрямую —
+  // это нужно и для ручной кнопки "Я на месте", и для нового авто-геофенса.
+  PICKED: [
+    "EN_ROUTE_TO_DROP_OFF",
+    "ARRIVED_AT_DROP_OFF",
+    "AWAITING_CONFIRMATION",
+    "CANCELLED",
+  ],
   EN_ROUTE_TO_DROP_OFF: ["ARRIVED_AT_DROP_OFF", "AWAITING_CONFIRMATION"],
   ARRIVED_AT_DROP_OFF: ["AWAITING_CONFIRMATION"],
   AWAITING_CONFIRMATION: ["DELIVERED"],
@@ -177,23 +263,11 @@ export const acceptDelivery = async (_p, { orderId }, ctx) => {
     });
   }
 
-  // Проверка: у курьера не должно быть активных заказов
-  const active = await Order.countDocuments({
-    riderId: rider._id,
-    orderStatus: {
-      $in: [
-        "ASSIGNED",
-        "PICKED",
-        "EN_ROUTE_TO_DROP_OFF",
-        "ARRIVED_AT_DROP_OFF",
-      ],
-    },
-  });
-  if (active > 0) {
-    throw new GraphQLError("Сначала завершите текущий заказ", {
-      extensions: { code: "BAD_STATE" },
-    });
-  }
+  // ⭐⭐⭐ CHANGED: раньше здесь была жёсткая проверка "активных заказов
+  // не должно быть вообще" — multi-stop был полностью запрещён. Теперь
+  // разрешаем второй заказ, если курьер уже близко к точке доставки первого
+  // (см. assertCanTakeAnotherOrder / MULTI_STOP_PROXIMITY_KM).
+  await assertCanTakeAnotherOrder(rider);
 
   // Race-condition safe: атомарное обновление
   const order = await Order.findOneAndUpdate(
@@ -217,9 +291,12 @@ export const acceptDelivery = async (_p, { orderId }, ctx) => {
     });
   }
 
-  // Резервируем курьера
-  rider.available = false;
-  await rider.save();
+  // ⭐ CHANGED: r.available/rider.available больше НЕ трогаем здесь — это
+  // переключатель "курьер онлайн/оффлайн" (toggleRider), не "занятость".
+  // Раньше здесь стояло rider.available=false, из-за чего курьер не мог
+  // пройти проверку `!rider.available` выше для второго заказа —
+  // multi-stop был архитектурно невозможен. Занятость теперь считается
+  // только через assertCanTakeAnotherOrder (кол-во активных + близость).
 
   // ⭐ Рассчитываем ETA до ресторана и публикуем в подписке
   const restaurant = await Restaurant.findById(order.restaurantId).lean();
@@ -324,6 +401,7 @@ export const arriveAtDropOff = async (_p, { orderId }, ctx) => {
   order.orderStatus = "ARRIVED_AT_DROP_OFF";
   order.statusTimestamps = order.statusTimestamps || {};
   order.statusTimestamps.arrivedAtDropOffAt = new Date();
+  order.statusTimestamps.arrivedAtDropOffSource = "MANUAL";
   await order.save();
 
   pubsub.publish(TOPICS.ORDER_TRACK(order._id.toString()), {
@@ -368,9 +446,12 @@ export const markDelivered = async (_p, { orderId }, ctx) => {
 
   await order.save();
 
-  // Освобождаем курьера: он снова доступен для новых заказов
-  rider.available = true;
-  await rider.save();
+  // ⭐ CHANGED: раньше здесь стояло rider.available=true — но это ломает
+  // сценарий, когда курьер сам выключился ("не в сети") пока довозил заказ:
+  // после доставки он снова становился "доступен" ПОМИМО своей воли.
+  // available — это переключатель самого курьера (toggleRider), а не
+  // производная от завершения доставки. Готовность брать новые заказы
+  // теперь определяется только количеством активных заказов.
 
   pubsub.publish(TOPICS.ORDER_TRACK(order._id.toString()), {
     subscriptionOrder: order,

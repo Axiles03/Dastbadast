@@ -13,11 +13,13 @@ import {
   ActivityIndicator,
   ScrollView,
 } from "react-native";
+import { useQuery } from "@apollo/client/react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { cn } from "../lib/cn";
 import { type Order, getUrgency } from "./OrderCard";
 import { promptOpenInNavigator } from "../lib/navigate";
 import { extractLatLng } from "../lib/routing";
+import { RIDER_EARNINGS_SUMMARY } from "../lib/api/queries";
 
 type ActionButtonProps = {
   label: string;
@@ -108,6 +110,35 @@ export function OrderBottomSheet({
   useEffect(() => {
     if (selectedId && !order) onClose();
   }, [selectedId, order, onClose]);
+
+  // ⭐ NEW: сводка заработка (заказ + смена) — раньше на экране заказа не
+  // было ничего, кроме amounts.deliveryFee. isClaimable исключает заказы,
+  // которые курьер ещё не взял (сводка для них не имеет смысла).
+  const isClaimableForEarnings = !order
+    ? true
+    : ["PENDING", "ACCEPTED"].includes(order.orderStatus);
+  const { data: earningsData } = useQuery<{
+    riderEarningsSummary: {
+      order: {
+        orderId: string;
+        deliveryFee: number;
+        distanceKm: number | null;
+        tip: number | null;
+      } | null;
+      shift: {
+        shiftStartedAt: string | null;
+        deliveriesCount: number;
+        totalEarned: number;
+        onlineMinutes: number;
+      };
+    };
+  }>(RIDER_EARNINGS_SUMMARY, {
+    variables: { orderId: order?.id },
+    skip: !order || isClaimableForEarnings,
+    fetchPolicy: "cache-and-network",
+    pollInterval: 30_000,
+  });
+  const earnings = earningsData?.riderEarningsSummary ?? null;
 
   if (!order) return null;
 
@@ -221,6 +252,40 @@ export function OrderBottomSheet({
                 {order.amounts?.deliveryFee ?? "—"} сом.
               </Text>
             </View>
+
+            {/* ⭐ NEW: сводка заработка за смену — раньше на экране заказа
+                показывался только гонорар за ОДИН заказ, без контекста смены */}
+            {earnings?.shift && (
+              <View className="flex-row bg-soft-surface-2 border border-border rounded-2xl p-3.5 mt-3">
+                <View className="flex-1 items-center">
+                  <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider">
+                    За смену
+                  </Text>
+                  <Text className="text-base font-extrabold text-text mt-0.5">
+                    {earnings.shift.totalEarned} сом.
+                  </Text>
+                </View>
+                <View className="w-px bg-border mx-2" />
+                <View className="flex-1 items-center">
+                  <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider">
+                    Доставок
+                  </Text>
+                  <Text className="text-base font-extrabold text-text mt-0.5">
+                    {earnings.shift.deliveriesCount}
+                  </Text>
+                </View>
+                <View className="w-px bg-border mx-2" />
+                <View className="flex-1 items-center">
+                  <Text className="text-2xs text-text-muted font-bold uppercase tracking-wider">
+                    В смене
+                  </Text>
+                  <Text className="text-base font-extrabold text-text mt-0.5">
+                    {Math.floor(earnings.shift.onlineMinutes / 60)}ч{" "}
+                    {earnings.shift.onlineMinutes % 60}м
+                  </Text>
+                </View>
+              </View>
+            )}
 
             {/* Items (placeholder) */}
             <View className="bg-soft-surface-2 border border-border rounded-2xl p-3.5 mt-3">

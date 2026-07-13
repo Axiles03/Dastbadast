@@ -375,18 +375,22 @@ export const GET_CHAT_MESSAGES = gql`
       orderId
       senderType
       text
+      imageUrl
+      readAt
       createdAt
     }
   }
 `;
 
 export const SEND_CHAT_MESSAGE = gql`
-  mutation SendChatMessage($orderId: ID!, $text: String!) {
-    sendChatMessage(orderId: $orderId, text: $text) {
+  mutation SendChatMessage($orderId: ID!, $text: String, $imageUrl: String) {
+    sendChatMessage(orderId: $orderId, text: $text, imageUrl: $imageUrl) {
       id
       orderId
       senderType
       text
+      imageUrl
+      readAt
       createdAt
     }
   }
@@ -399,8 +403,18 @@ export const SUB_CHAT = gql`
       orderId
       senderType
       text
+      imageUrl
+      readAt
       createdAt
     }
+  }
+`;
+
+// ⭐ NEW: пометить чат прочитанным — используется, когда клиент открывает
+// секцию чата на экране заказа (см. orders/[id].tsx).
+export const MARK_CHAT_READ = gql`
+  mutation MarkChatRead($orderId: ID!) {
+    markChatRead(orderId: $orderId)
   }
 `;
 

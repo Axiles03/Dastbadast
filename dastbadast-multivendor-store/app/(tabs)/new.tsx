@@ -9,13 +9,19 @@ import {
   Modal,
   TouchableOpacity,
 } from "react-native";
-import { useQuery, useMutation, useSubscription } from "@apollo/client/react";
+import {
+  useQuery,
+  useMutation,
+  useSubscription,
+  useLazyQuery,
+} from "@apollo/client/react";
 import {
   RESTAURANT_ORDERS,
   ACCEPT_ORDER,
   CANCEL_ORDER,
   SUB_PLACE_ORDER,
   MARK_ORDER_READY,
+  KITCHEN_LOAD,
 } from "../../lib/api/graphql/queries";
 import { useAuth } from "../../lib/auth-context";
 import Toast from "react-native-toast-message";
@@ -81,6 +87,20 @@ export default function NewOrders() {
     order: any;
   } | null>(null);
   const [prepTime, setPrepTime] = useState<number>(DEFAULT_PREP_TIME);
+  // ⭐ NEW: загрузка кухни — подтягиваем актуальные данные в момент открытия
+  // модалки (а не статичный список), чтобы предложить реалистичное время.
+  type KitchenLoadData = {
+    kitchenLoad: {
+      queueLength: number;
+      avgActualPrepMin: number | null;
+      suggestedPrepTime: number;
+      isBusy: boolean;
+    };
+  };
+  const [fetchKitchenLoad, { data: kitchenData }] =
+    useLazyQuery<KitchenLoadData>(KITCHEN_LOAD, {
+      fetchPolicy: "network-only",
+    });
 
   // Просто открывает модалку — без Alert
   const onAccept = useCallback(
@@ -94,8 +114,14 @@ export default function NewOrders() {
       }
       setPrepTime(DEFAULT_PREP_TIME);
       setPrepModal({ orderId, order });
+      // ⭐ Тянем актуальную загрузку кухни и как только придёт — подставляем
+      // рекомендованное время (если пользователь ещё не выбрал своё вручную).
+      fetchKitchenLoad().then((res) => {
+        const suggested = res.data?.kitchenLoad?.suggestedPrepTime;
+        if (typeof suggested === "number") setPrepTime(suggested);
+      });
     },
-    [data],
+    [data, fetchKitchenLoad],
   );
 
   const confirmAccept = async () => {
@@ -141,7 +167,7 @@ export default function NewOrders() {
     },
     [cancelOrder, refetch],
   );
-  
+
   const [markReady, { loading: markingReady }] = useMutation(MARK_ORDER_READY);
 
   const orders = data?.restaurantOrders ?? [];
@@ -164,7 +190,6 @@ export default function NewOrders() {
       </View>
     );
   }
-
 
   return (
     <SafeAreaView className="flex-1 bg-soft-bg">
@@ -349,6 +374,7 @@ export default function NewOrders() {
           onConfirm={confirmAccept}
           onClose={() => setPrepModal(null)}
           busy={acLoading}
+          kitchenLoad={kitchenData?.kitchenLoad ?? null}
         />
       )}
     </SafeAreaView>
@@ -365,6 +391,7 @@ function PrepTimeModal({
   onConfirm,
   onClose,
   busy,
+  kitchenLoad,
 }: {
   visible: boolean;
   order: any;
@@ -373,6 +400,12 @@ function PrepTimeModal({
   onConfirm: () => void;
   onClose: () => void;
   busy: boolean;
+  kitchenLoad?: {
+    queueLength: number;
+    avgActualPrepMin: number | null;
+    suggestedPrepTime: number;
+    isBusy: boolean;
+  } | null;
 }) {
   if (!visible || !order) return null;
 
@@ -439,6 +472,36 @@ function PrepTimeModal({
               </View>
             )}
           </View>
+
+          {/* ⭐ NEW: загрузка кухни — раньше тут был только статичный список без
+              какого-либо учёта реальной очереди заказов */}
+          {kitchenLoad && (
+            <View
+              className={cn(
+                "mt-4 rounded-xl px-3 py-2.5 border",
+                kitchenLoad.isBusy
+                  ? "bg-red-soft border-red/30"
+                  : "bg-soft-surface-2 border-border",
+              )}
+            >
+              <Text className="text-xs font-bold text-text">
+                {kitchenLoad.isBusy
+                  ? "🔥 Кухня загружена"
+                  : "🍳 Загрузка кухни"}
+                {": "}
+                {kitchenLoad.queueLength}{" "}
+                {kitchenLoad.queueLength === 1
+                  ? "активный заказ"
+                  : "активных заказов"}
+              </Text>
+              <Text className="text-2xs text-text-muted mt-0.5">
+                {kitchenLoad.avgActualPrepMin
+                  ? `Обычно готовите за ~${kitchenLoad.avgActualPrepMin} мин · `
+                  : ""}
+                Рекомендуем {kitchenLoad.suggestedPrepTime} мин с учётом очереди
+              </Text>
+            </View>
+          )}
 
           {/* Заголовок выбора */}
           <Text className="text-sm font-extrabold text-text mt-5">

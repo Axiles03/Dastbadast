@@ -13,6 +13,8 @@ import {
   RIDER_LOCATION_QUERY,
   CONFIRM_ORDER_RECEIVED,
   SEND_CHAT_MESSAGE,
+  MARK_CHAT_READ,
+  SUB_CHAT_TYPING,
   REFRESH_ORDER_STATUS,
   ORDER_FRAGMENT,
   SUB_ORDER_UPDATED,
@@ -37,6 +39,8 @@ type ChatMessage = {
   orderId: string;
   senderType: "USER" | "RIDER";
   text: string;
+  imageUrl?: string | null;
+  readAt?: string | null;
   createdAt: string;
 };
 
@@ -85,6 +89,9 @@ function TrackingInner() {
   const [chatOpen, setChatOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [liveMessages, setLiveMessages] = useState<ChatMessage[]>([]);
+  // ⭐ NEW: индикатор "курьер печатает…" и состояние отправки фото
+  const [peerTyping, setPeerTyping] = useState(false);
+  const [sendingPhoto, setSendingPhoto] = useState(false);
   const [riderPos, setRiderPos] = useState<RiderPos | null>(null);
   const [etaMin, setEtaMin] = useState<number | null>(null);
   const [timeLeftMs, setTimeLeftMs] = useState<number | null>(null);
@@ -129,7 +136,7 @@ function TrackingInner() {
       return unsubscribe;
     });
   }, [id, subscribeToMore]);
-  
+
   const { data: cfg } = useQuery(GET_CONFIGURATION);
   const { data: chatData } = useQuery<{ chatMessages: ChatMessage[] }>(
     GET_CHAT_MESSAGES,
@@ -139,6 +146,8 @@ function TrackingInner() {
   const [confirmReceived, { loading: confirming }] = useMutation(
     CONFIRM_ORDER_RECEIVED,
   );
+  // ⭐ NEW: пометить чат прочитанным
+  const [markChatRead] = useMutation(MARK_CHAT_READ);
 
   // ⭐⭐⭐ FIX: безопасные дефолты для всех вложенных полей
   const o = data?.order ?? null;
@@ -183,6 +192,31 @@ function TrackingInner() {
       setChatOpen(true);
     },
   });
+
+  // ⭐ NEW: индикатор "курьер печатает…"
+  useSubscription<{
+    chatTypingStatus: {
+      orderId: string;
+      senderType: "USER" | "RIDER";
+      isTyping: boolean;
+    };
+  }>(SUB_CHAT_TYPING, {
+    variables: { orderId: id },
+    skip: !id,
+    onData: ({ data: subData }) => {
+      const ev = subData?.data?.chatTypingStatus;
+      if (!ev) return;
+      if (ev.senderType === "RIDER") setPeerTyping(!!ev.isTyping);
+    },
+  });
+
+  // ⭐ NEW: помечаем чат прочитанным, когда панель открыта (и при открытии,
+  // и повторно при получении нового сообщения, пока панель уже открыта)
+  useEffect(() => {
+    if (chatOpen && id) {
+      markChatRead({ variables: { orderId: id } }).catch(() => {});
+    }
+  }, [chatOpen, id, markChatRead, liveMessages.length]);
 
   useSubscription(SUB_RIDER_LOCATION, {
     variables: { riderId: riderId || "" },
@@ -236,6 +270,35 @@ function TrackingInner() {
       setDraft(txt);
     }
   }, [draft, o]);
+
+  // ⭐ NEW: отправка фото из чата (например, скрин/фото для бесконтактной
+  // доставки). ⚠️ MVP: кодируем файл в base64 data-URI, как и в мобильных
+  // приложениях — для прода нужно загружать в объектное хранилище
+  // (S3/Cloudinary) и слать сюда только готовую ссылку.
+  const sendPhoto = useCallback(
+    async (file: File) => {
+      if (!o) return;
+      setSendingPhoto(true);
+      try {
+        const dataUri: string = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Не удалось прочитать файл"));
+          reader.readAsDataURL(file);
+        });
+        const client = getApolloClient();
+        await client.mutate({
+          mutation: SEND_CHAT_MESSAGE,
+          variables: { orderId: o.id, imageUrl: dataUri },
+        });
+      } catch (e: any) {
+        alert(`Не удалось отправить фото: ${e?.message ?? e}`);
+      } finally {
+        setSendingPhoto(false);
+      }
+    },
+    [o],
+  );
 
   useEffect(() => {
     if (riderLocData?.rider?.location?.coordinates) {
@@ -599,7 +662,9 @@ function TrackingInner() {
                   💬 Чат по заказу #{o.orderId}
                 </h3>
                 <p className="text-xs text-soft-text-soft">
-                  {messages.length} сообщений
+                  {peerTyping
+                    ? "Курьер печатает…"
+                    : `${messages.length} сообщений`}
                 </p>
               </div>
               <button
@@ -626,18 +691,31 @@ function TrackingInner() {
                       className={`flex ${mine ? "justify-end" : "justify-start"}`}
                     >
                       <div
-                        className={`max-w-[75%] px-3.5 py-2 rounded-2xl text-sm ${mine ? "bg-soft-accent text-white rounded-br-sm" : "bg-soft-surface-2 border border-soft-border text-soft-text rounded-bl-sm"}`}
+                        className={`max-w-[75%] px-3.5 py-2 rounded-2xl text-sm ${mine ? "bg-soft-accent text-white rounded-br-sm" : "bg-soft-surface-2 border border-soft-border text-soft-text rounded-bl-sm"} ${m.imageUrl ? "p-1.5" : ""}`}
                       >
-                        <div className="whitespace-pre-wrap break-words">
-                          {m.text}
-                        </div>
+                        {m.imageUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={m.imageUrl}
+                            alt="Фото"
+                            className="rounded-xl max-w-[220px] max-h-[220px] object-cover"
+                          />
+                        ) : null}
+                        {m.text ? (
+                          <div
+                            className={`whitespace-pre-wrap break-words ${m.imageUrl ? "mt-1.5 px-1.5" : ""}`}
+                          >
+                            {m.text}
+                          </div>
+                        ) : null}
                         <div
-                          className={`text-[10px] mt-0.5 ${mine ? "text-white/70" : "text-soft-text-muted"}`}
+                          className={`text-[10px] mt-0.5 ${m.imageUrl ? "px-1.5 pb-0.5" : ""} ${mine ? "text-white/70" : "text-soft-text-muted"}`}
                         >
                           {new Date(m.createdAt).toLocaleTimeString("ru", {
                             hour: "2-digit",
                             minute: "2-digit",
                           })}
+                          {mine && m.readAt ? " · прочитано" : ""}
                         </div>
                       </div>
                     </div>
@@ -646,6 +724,23 @@ function TrackingInner() {
               )}
             </div>
             <div className="p-3 border-t border-soft-border flex gap-2">
+              {/* ⭐ NEW: отправка фото (например, у двери при бесконтактной доставке) */}
+              <label
+                className={`shrink-0 w-11 h-11 flex items-center justify-center rounded-xl border border-soft-border bg-soft-surface-2 cursor-pointer ${sendingPhoto ? "opacity-50 pointer-events-none" : "hover:bg-soft-surface-3"}`}
+              >
+                {sendingPhoto ? "…" : "📷"}
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  disabled={sendingPhoto}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) sendPhoto(file);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
               <input
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}

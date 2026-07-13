@@ -3,7 +3,7 @@
 // Stub dispatcher: in-memory антиспам + логирование.
 // Полная реализация шаблонов и триггеров — в следующем спринте.
 
-import { sendPushToOwner } from "./pushService.js";
+import { sendPushToOwner, templateFor } from "./pushService.js";
 
 const dedupCache = new Map();
 const DEDUP_TTL_MS = 60_000;
@@ -24,11 +24,21 @@ export async function notify({ to, toId, event, vars = {}, extra = {} }) {
   if (!toId) return;
   if (!shouldSend(to, toId, event, vars.orderId)) return;
 
+  const template = templateFor(event);
+  const title = template?.title ?? event;
+  // ⭐ Если у шаблона body === null, значит вызывающая сторона должна была
+  // передать готовый текст через extra.body (например, текст чат-сообщения
+  // или подпись "📷 Фото"). Иначе fallback на старое поведение (JSON vars).
+  const body =
+    template && template.body !== null && template.body !== undefined
+      ? template.body
+      : (extra.body ?? JSON.stringify(vars));
+
   await sendPushToOwner({
     ownerType: to,
     ownerId: toId,
-    title: event,
-    body: JSON.stringify(vars),
+    title,
+    body,
     data: { ...extra, event },
   });
 }
@@ -96,6 +106,27 @@ export const notifyRestaurantNewOrder = (a) =>
     toId: a.ownerId,
     event: "NEW_ORDER_TO_RESTAURANT",
     vars: a,
+  });
+
+// ⭐⭐⭐ NEW: пуш о новом сообщении в чате заказа — той стороне, которая
+// сообщение НЕ отправляла (клиенту, если писал курьер, и наоборот).
+// dedup (shouldSend) не даёт заспамить, если обе стороны активно строчат —
+// не чаще 1 пуша на orderId раз в DEDUP_TTL_MS (см. выше).
+export const notifyNewChatMessage = ({
+  toType, // "user" | "rider"
+  toId,
+  orderId,
+  preview, // короткий текст для тела пуша ("Привет!" или "📷 Фото")
+}) =>
+  notify({
+    to: toType,
+    toId,
+    event:
+      toType === "user"
+        ? "NEW_CHAT_MESSAGE_TO_USER"
+        : "NEW_CHAT_MESSAGE_TO_RIDER",
+    vars: { orderId },
+    extra: { orderId, body: preview },
   });
 
 import { registerRegistry } from "../../cleanup-cron.js";

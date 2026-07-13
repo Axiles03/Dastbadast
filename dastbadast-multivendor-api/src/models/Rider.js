@@ -52,6 +52,10 @@ const RiderSchema = new mongoose.Schema(
       default: null,
     },
     available: { type: Boolean, default: true },
+    // ⭐ NEW: момент, когда курьер последний раз включил "В сети" —
+    // используется для подсчёта сводки заработка за текущую смену.
+    // Сбрасывается в null, когда курьер уходит "не в сети".
+    shiftStartedAt: { type: Date, default: null },
 
     location: {
       type: LocationSchema,

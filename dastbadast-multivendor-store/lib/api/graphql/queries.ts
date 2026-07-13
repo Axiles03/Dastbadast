@@ -107,6 +107,19 @@ export const MARK_ORDER_READY = gql`
   }
 `;
 
+// ⭐ NEW: загрузка кухни — для модалки выбора времени приготовления
+// (раньше модалка показывала статичный список 20..60 без учёта очереди).
+export const KITCHEN_LOAD = gql`
+  query KitchenLoad {
+    kitchenLoad {
+      queueLength
+      avgActualPrepMin
+      suggestedPrepTime
+      isBusy
+    }
+  }
+`;
+
 export const MY_MENU = gql`
   query MyMenu {
     meRestaurant {

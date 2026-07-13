@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
   TextInput,
+  Image,
 } from "react-native";
 import { useQuery, useSubscription, useMutation } from "@apollo/client/react";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -22,6 +23,7 @@ import {
   RIDER_LOCATION_QUERY,
   CONFIRM_ORDER_RECEIVED,
   SEND_CHAT_MESSAGE,
+  MARK_CHAT_READ,
   REFRESH_ORDER_STATUS,
 } from "../../../lib/api/queries";
 import { getApolloClient } from "../../../lib/apollo-provider";
@@ -50,6 +52,8 @@ type ChatMessage = {
   orderId: string;
   senderType: "USER" | "RIDER";
   text: string;
+  imageUrl?: string | null;
+  readAt?: string | null;
   createdAt: string;
 };
 
@@ -182,6 +186,13 @@ export default function TrackingPage() {
   const [confirmReceived, { loading: confirming }] = useMutation(
     CONFIRM_ORDER_RECEIVED,
   );
+  // ⭐ NEW: пометить чат прочитанным при открытии панели чата
+  const [markChatRead] = useMutation(MARK_CHAT_READ);
+  useEffect(() => {
+    if (chatOpen && id) {
+      markChatRead({ variables: { orderId: id } }).catch(() => {});
+    }
+  }, [chatOpen, id, markChatRead]);
 
   // ⭐ ШАГ 5: live countdown для статуса ACCEPTED (готовка на кухне)
   const { data: prepEtaData } = useQuery<{ restaurantPrepEta: number | null }>(
@@ -191,7 +202,7 @@ export default function TrackingPage() {
       }
     `,
     {
-      variables: { id },
+      variables: { orderId: id },
       skip: !id,
       pollInterval: 30_000, // ⭐ Обновлять каждые 30 сек
     },
@@ -692,24 +703,38 @@ export default function TrackingPage() {
                           mine
                             ? "bg-accent rounded-br-sm"
                             : "bg-soft-surface-2 border border-border rounded-bl-sm"
-                        }`}
+                        } ${m.imageUrl ? "p-1.5" : ""}`}
                       >
-                        <Text
-                          className={`text-sm ${
-                            mine ? "text-text-inverse" : "text-text"
-                          }`}
-                        >
-                          {m.text}
-                        </Text>
+                        {m.imageUrl ? (
+                          <Image
+                            source={{ uri: m.imageUrl }}
+                            style={{
+                              width: 180,
+                              height: 180,
+                              borderRadius: 14,
+                            }}
+                            resizeMode="cover"
+                          />
+                        ) : null}
+                        {m.text ? (
+                          <Text
+                            className={`text-sm ${
+                              m.imageUrl ? "mt-1.5 px-1.5" : ""
+                            } ${mine ? "text-text-inverse" : "text-text"}`}
+                          >
+                            {m.text}
+                          </Text>
+                        ) : null}
                         <Text
                           className={`text-2xs mt-0.5 ${
-                            mine ? "text-text-inverse/80" : "text-text-muted"
-                          }`}
+                            m.imageUrl ? "px-1.5 pb-0.5" : ""
+                          } ${mine ? "text-text-inverse/80" : "text-text-muted"}`}
                         >
                           {new Date(m.createdAt).toLocaleTimeString("ru", {
                             hour: "2-digit",
                             minute: "2-digit",
                           })}
+                          {mine && m.readAt ? " · прочитано" : ""}
                         </Text>
                       </View>
                     </View>

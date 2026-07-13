@@ -14,7 +14,12 @@ const ChatMessageSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
-    text: { type: String, required: true, trim: true, maxlength: 1000 },
+    text: { type: String, trim: true, maxlength: 1000, default: "" },
+    // ⭐ NEW: фото (например, фото у двери при бесконтактной доставке).
+    imageUrl: { type: String, default: null },
+    // ⭐ NEW: когда получатель (не отправитель) открыл/увидел чат ПОСЛЕ
+    // этого сообщения — null, пока не прочитано.
+    readAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

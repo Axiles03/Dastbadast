@@ -121,6 +121,13 @@ const OrderSchema = new mongoose.Schema(
       pickedAt: Date,
       enRouteToDropOffAt: Date,
       arrivedAtDropOffAt: Date,
+      // ⭐ NEW: "MANUAL" (кнопка "Я на месте") или "GEOFENCE_AUTO" (авто-детект
+      // по геолокации курьера) — для аналитики и отладки.
+      arrivedAtDropOffSource: {
+        type: String,
+        enum: ["MANUAL", "GEOFENCE_AUTO", null],
+        default: null,
+      },
       deliveredAt: Date,
       cancelledAt: Date,
       prepTime: { type: Number, default: null },

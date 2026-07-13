@@ -421,3 +421,69 @@ export const refreshOrderStatus = async (_p, { id }, ctx) => {
   await autoConfirmIfExpired(o);
   return Order.findById(id);
 };
+
+// ⭐⭐⭐ NEW: загрузка кухни ресторана — для модалки выбора времени
+// приготовления в приложении ресторана. Раньше модалка показывала
+// статичный список 20..60 мин без какого-либо учёта реальной очереди.
+// Здесь считаем: сколько заказов сейчас реально готовится/ждёт готовки,
+// и на основе среднего фактического времени готовки за последние заказы
+// даём рекомендованное время для НОВОГО заказа.
+export const kitchenLoad = async (_p, _a, ctx) => {
+  const restaurant = requireRestaurant(ctx);
+
+  const activeStatuses = ["ACCEPTED", "PREPARING"];
+  const activeOrders = await Order.find({
+    restaurantId: restaurant._id,
+    orderStatus: { $in: activeStatuses },
+  })
+    .select("statusTimestamps orderStatus")
+    .lean();
+
+  const queueLength = activeOrders.length;
+
+  // Среднее фактическое время готовки последних 20 доставленных/готовых
+  // заказов (acceptedAt → readyAt), как ориентир "сколько кухня
+  // реально тратит времени", а не то, что ресторан когда-то выбрал вручную.
+  const recentDone = await Order.find({
+    restaurantId: restaurant._id,
+    "statusTimestamps.acceptedAt": { $ne: null },
+    "statusTimestamps.readyAt": { $ne: null },
+  })
+    .sort({ "statusTimestamps.readyAt": -1 })
+    .limit(20)
+    .select("statusTimestamps")
+    .lean();
+
+  let avgActualPrepMin = null;
+  if (recentDone.length > 0) {
+    const durations = recentDone
+      .map((o) => {
+        const a = o.statusTimestamps?.acceptedAt;
+        const r = o.statusTimestamps?.readyAt;
+        if (!a || !r) return null;
+        return (new Date(r).getTime() - new Date(a).getTime()) / 60_000;
+      })
+      .filter((v) => typeof v === "number" && v > 0 && v < 180);
+    if (durations.length > 0) {
+      avgActualPrepMin =
+        durations.reduce((s, v) => s + v, 0) / durations.length;
+    }
+  }
+
+  // ⭐ Формула рекомендации: базовое время (среднее фактическое, либо 30
+  // мин по умолчанию, если истории ещё нет) + запас за каждый заказ в
+  // очереди сверх первого (кухня же не готовит все заказы параллельно
+  // одинаково быстро). Округляем вверх до ближайших 5 минут, ограничиваем
+  // диапазоном 20..60 (тот же диапазон, что был в старом статичном списке).
+  const base = avgActualPrepMin ?? 30;
+  const queuePenalty = Math.max(0, queueLength - 1) * 5;
+  let suggested = Math.ceil((base + queuePenalty) / 5) * 5;
+  suggested = Math.min(60, Math.max(20, suggested));
+
+  return {
+    queueLength,
+    avgActualPrepMin: avgActualPrepMin ? Math.round(avgActualPrepMin) : null,
+    suggestedPrepTime: suggested,
+    isBusy: queueLength >= 3, // ⭐ порог "кухня загружена" для UI-бейджа
+  };
+};

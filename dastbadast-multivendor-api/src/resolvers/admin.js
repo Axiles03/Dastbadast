@@ -169,28 +169,76 @@ export const assignRider = async (_p, { input }, ctx) => {
       extensions: { code: "BAD_USER_INPUT" },
     });
   }
-  order.riderId = rider._id;
-  order.orderStatus = NEXT_AFTER_ASSIGN;
-  order.statusTimestamps = order.statusTimestamps || {};
-  order.statusTimestamps.assignedAt = new Date();
-  rider.available = false;
-  await Promise.all([order.save(), rider.save()]);
 
-  pubsub.publish(TOPICS.ORDER_TRACK(order._id.toString()), {
-    subscriptionOrder: order,
+  // ⭐⭐⭐ FIX (race condition): раньше здесь был read-then-write
+  // (order.riderId = rider._id; ...; await order.save()), который НЕ атомарен.
+  // Если два диспетчера одновременно назначали РАЗНЫХ курьеров на один заказ
+  // (или диспетчер и сам курьер через claimOrder/acceptDelivery), оба запроса
+  // проходили проверку ASSIGN_FROM.includes(order.orderStatus) по "старому"
+  // прочитанному документу, и оба сохраняли — второй save() молча перетирал
+  // первый (last-write-wins), при этом ОБА клиента получали pubsub-событие
+  // "вам назначен заказ", то есть по факту заказ "достался" двум курьерам.
+  // Атомарный findOneAndUpdate с условием по orderStatus + riderId:null
+  // гарантирует, что успешно обновится только ОДИН из конкурентных запросов —
+  // остальные получат null и ALREADY_CLAIMED.
+  const updated = await Order.findOneAndUpdate(
+    {
+      _id: order._id,
+      orderStatus: { $in: ASSIGN_FROM },
+      riderId: null,
+    },
+    {
+      $set: {
+        riderId: rider._id,
+        orderStatus: NEXT_AFTER_ASSIGN,
+        "statusTimestamps.assignedAt": new Date(),
+      },
+    },
+    { new: true },
+  );
+  if (!updated) {
+    throw new GraphQLError(
+      "Заказ уже назначен другому курьеру или изменил статус",
+      { extensions: { code: "ALREADY_CLAIMED" } },
+    );
+  }
+
+  // Резервируем курьера атомарно тоже — если он в этот же миг взял другой
+  // заказ сам (claimOrder), available уже будет false и условие не совпадёт,
+  // но заказ мы уже успешно назначили, поэтому просто пытаемся отметить занятость.
+  const riderUpdated = await Rider.findOneAndUpdate(
+    { _id: rider._id, available: true },
+    { $set: { available: false } },
+    { new: true },
+  );
+  if (!riderUpdated) {
+    // Курьер параллельно уже стал занят другим заказом — откатываем назначение,
+    // чтобы не оставить курьера "занятым чем-то, о чём он не знает".
+    await Order.findByIdAndUpdate(updated._id, {
+      $set: { riderId: null, orderStatus: order.orderStatus },
+      $unset: { "statusTimestamps.assignedAt": "" },
+    });
+    throw new GraphQLError(
+      "Курьер только что взял другой заказ, попробуйте назначить другого",
+      { extensions: { code: "RIDER_UNAVAILABLE" } },
+    );
+  }
+
+  pubsub.publish(TOPICS.ORDER_TRACK(updated._id.toString()), {
+    subscriptionOrder: updated,
   });
-  pubsub.publish(TOPICS.ORDER_STATUS_CHANGED(order.userId.toString()), {
-    orderStatusChanged: order,
+  pubsub.publish(TOPICS.ORDER_STATUS_CHANGED(updated.userId.toString()), {
+    orderStatusChanged: updated,
   });
   pubsub.publish(TOPICS.RIDER_ASSIGNED(rider._id.toString()), {
-    subscriptionAssignedRider: order,
+    subscriptionAssignedRider: updated,
   });
-  if (order.zoneId) {
-    pubsub.publish(TOPICS.ZONE_ORDERS(order.zoneId.toString()), {
-      subscriptionZoneOrders: order,
+  if (updated.zoneId) {
+    pubsub.publish(TOPICS.ZONE_ORDERS(updated.zoneId.toString()), {
+      subscriptionZoneOrders: updated,
     });
   }
-  return order;
+  return updated;
 };
 
 // =================== ACCOUNTING (read) ===================

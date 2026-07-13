@@ -1,7 +1,12 @@
 // dastbadast-multivendor-api/src/resolvers/index.js
 import { configuration, updateConfiguration } from "./configuration.js";
 import { deliveryZone } from "./zone-public.js";
-import { chatMessages, sendChatMessage } from "./chat.js";
+import {
+  chatMessages,
+  sendChatMessage,
+  markChatRead,
+  sendTypingStatus,
+} from "./chat.js";
 import { getCart, saveCart, estimateDelivery } from "./cart.js";
 // ⭐ ФИКС: этот импорт отсутствовал вовсе — весь модуль delivery.js
 // (флоу ресторан готовит -> курьер принял/забрал/приехал/доставил)
@@ -73,6 +78,7 @@ import {
   restaurantLogin,
   confirmOrderReceived,
   refreshOrderStatus,
+  kitchenLoad,
 } from "./order.js";
 import { acceptOrder, cancelOrder } from "./order-actions.js";
 import { foodReviews, addFoodReview, foodRatingStats } from "./food-review.js";
@@ -181,6 +187,7 @@ export const resolvers = {
       const remaining = Math.max(0, Math.ceil(t.prepTime - elapsedMin));
       return remaining;
     },
+    kitchenLoad,
     restaurants,
     restaurant,
     foodReviews,

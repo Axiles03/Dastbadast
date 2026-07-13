@@ -127,6 +127,32 @@ export const newChatMessage = {
   resolve: (p) => p.newChatMessage,
 };
 
+// ⭐ NEW: typing indicator ("собеседник печатает…")
+export const chatTypingStatus = {
+  subscribe: (_p, { orderId }) => {
+    if (!orderId) {
+      throw new GraphQLError("orderId обязателен", {
+        extensions: { code: "BAD_USER_INPUT" },
+      });
+    }
+    return pubsub.asyncIterator(TOPICS.CHAT_TYPING(orderId));
+  },
+  resolve: (p) => p.chatTypingStatus,
+};
+
+// ⭐ NEW: read receipts ("прочитано")
+export const chatReadStatusChanged = {
+  subscribe: (_p, { orderId }) => {
+    if (!orderId) {
+      throw new GraphQLError("orderId обязателен", {
+        extensions: { code: "BAD_USER_INPUT" },
+      });
+    }
+    return pubsub.asyncIterator(TOPICS.CHAT_READ(orderId));
+  },
+  resolve: (p) => p.chatReadStatusChanged,
+};
+
 // ⭐⭐⭐ НОВОЕ: уведомления автопоиска курьера
 // Курьер подписывается на этот канал и получает список заказов,
 // которые были разосланы ему при автопоиске.

@@ -16,6 +16,9 @@ export const TOPICS = {
   ZONE_ORDERS: (zoneId) => `ZONE_ORDERS_${zoneId || "all"}`,
   AVAILABLE_ORDERS: (zoneId) => `AVAILABLE_ORDERS_${zoneId || "all"}`,
   CHAT: (orderId) => `CHAT_${orderId}`,
+  // ⭐ NEW: typing indicator и read receipts для чата
+  CHAT_TYPING: (orderId) => `CHAT_TYPING_${orderId}`,
+  CHAT_READ: (orderId) => `CHAT_READ_${orderId}`,
 
   COURIER_SEARCH_NOTIFY: "COURIER_SEARCH_NOTIFY",
   ALL_DELIVERIES: "ALL_DELIVERIES",

@@ -428,18 +428,22 @@ export const GET_CHAT_MESSAGES = gql`
       orderId
       senderType
       text
+      imageUrl
+      readAt
       createdAt
     }
   }
 `;
 
 export const SEND_CHAT_MESSAGE = gql`
-  mutation SendChatMessage($orderId: ID!, $text: String!) {
-    sendChatMessage(orderId: $orderId, text: $text) {
+  mutation SendChatMessage($orderId: ID!, $text: String, $imageUrl: String) {
+    sendChatMessage(orderId: $orderId, text: $text, imageUrl: $imageUrl) {
       id
       orderId
       senderType
       text
+      imageUrl
+      readAt
       createdAt
     }
   }
@@ -452,7 +456,34 @@ export const SUB_CHAT = gql`
       orderId
       senderType
       text
+      imageUrl
+      readAt
       createdAt
+    }
+  }
+`;
+
+// ⭐ NEW: пометить чат прочитанным — вызывается, когда клиент открывает
+// панель чата на странице отслеживания заказа.
+export const MARK_CHAT_READ = gql`
+  mutation MarkChatRead($orderId: ID!) {
+    markChatRead(orderId: $orderId)
+  }
+`;
+
+// ⭐ NEW: индикатор "печатает" (типизация под сторону курьера)
+export const SEND_TYPING_STATUS = gql`
+  mutation SendTypingStatus($orderId: ID!, $isTyping: Boolean!) {
+    sendTypingStatus(orderId: $orderId, isTyping: $isTyping)
+  }
+`;
+
+export const SUB_CHAT_TYPING = gql`
+  subscription SubChatTyping($orderId: ID!) {
+    chatTypingStatus(orderId: $orderId) {
+      orderId
+      senderType
+      isTyping
     }
   }
 `;

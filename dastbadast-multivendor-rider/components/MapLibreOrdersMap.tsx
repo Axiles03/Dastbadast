@@ -277,6 +277,28 @@ export const MapLibreOrdersMap = forwardRef<MapLibreOrdersMapHandle, Props>(
         // подмигивание/подтормаживание карты).
         var pointMarkers = {};
         var riderMarker = null;
+        var lastRiderBearing = null; // ⭐ FIX: последний известный compass bearing курьера
+
+        function applyRiderArrowRotation() {
+          if (!riderMarker) return;
+          var arrowEl = riderMarker.getElement().querySelector('.rider-arrow');
+          if (!arrowEl) return;
+          if (typeof lastRiderBearing === 'number' && !isNaN(lastRiderBearing)) {
+            var mapBearing = map.getBearing();
+            var relativeBearing = ((lastRiderBearing - mapBearing) % 360 + 360) % 360;
+            arrowEl.style.display = 'block';
+            arrowEl.style.transform = 'translateX(-50%) rotate(' + relativeBearing + 'deg)';
+          } else {
+            arrowEl.style.display = 'none';
+          }
+        }
+
+        if (map) {
+          // ⭐ FIX: если пользователь сам крутит карту жестом (rotate gesture),
+          // стрелка курьера должна пересчитаться относительно нового bearing карты,
+          // иначе она "застынет" в старом направлении до следующего GPS-тика.
+          map.on('rotate', applyRiderArrowRotation);
+        }
 
         if (map) {
           map.on('load', function () {
@@ -315,16 +337,17 @@ export const MapLibreOrdersMap = forwardRef<MapLibreOrdersMapHandle, Props>(
               } else {
                 riderMarker.setLngLat([rider.longitude, rider.latitude]);
               }
-              var arrowEl = riderMarker.getElement().querySelector('.rider-arrow');
-              if (arrowEl) {
-                if (typeof rider.bearing === 'number' && !isNaN(rider.bearing)) {
-                  arrowEl.style.display = 'block';
-                  arrowEl.style.transform =
-                    'translateX(-50%) rotate(' + rider.bearing + 'deg)';
-                } else {
-                  arrowEl.style.display = 'none';
-                }
-              }
+              lastRiderBearing =
+                typeof rider.bearing === 'number' && !isNaN(rider.bearing)
+                  ? rider.bearing
+                  : null;
+              // ⭐ FIX: раньше стрелку крутили на абсолютный compass bearing, но
+              // маркер MapLibre остаётся "на экране" (rotationAlignment='viewport')
+              // и НЕ поворачивается вместе с картой. В режиме "следовать за курьером"
+              // карта САМА уже повёрнута на bearing (см. map.easeTo/flyTo ниже),
+              // поэтому стрелка получала двойной поворот и указывала не туда.
+              // applyRiderArrowRotation() вращает её относительно map.getBearing().
+              applyRiderArrowRotation();
             } else if (riderMarker) {
               riderMarker.remove();
               riderMarker = null;

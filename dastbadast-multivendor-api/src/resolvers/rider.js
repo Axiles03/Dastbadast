@@ -9,13 +9,21 @@ import {
   setRiderLocationInRedis,
   getRiderLocationFromRedis,
 } from "../services/rider-location.service.js";
-
+import { notify } from "../lib/notifications/dispatcher.js";
 
 // ⭐⭐⭐ Константы для real-time трекинга
 const RIDER_LOCATION_THROTTLE_MS = 10_000; // минимум между обновлениями (10 сек)
 const NEAR_DROP_OFF_RADIUS_M = 500; // радиус geofence "рядом с клиентом"
+// ⭐ NEW: отдельный, более узкий радиус для АВТОМАТИЧЕСКОГО перехода в
+// ARRIVED_AT_DROP_OFF. 500м "рядом" — это только пуш "курьер уже близко",
+// а не "он на месте". Для авто-детекта прибытия нужен более строгий радиус,
+// иначе статус будет переключаться ещё на подъезде/соседнем доме.
+const AUTO_ARRIVED_RADIUS_M = 60;
 const BEARING_CHANGE_THRESHOLD_DEG = 15; // минимальное изменение направления для бродкаста
 const MIN_DISTANCE_FOR_BROADCAST_M = 25; // минимальное смещение для бродкаста
+
+// Статусы, из которых авто-геофенс может перевести заказ в ARRIVED_AT_DROP_OFF
+const AUTO_ARRIVAL_FROM_STATUSES = ["PICKED", "EN_ROUTE_TO_DROP_OFF"];
 
 // Кэш последней позиции курьера для throttling
 const lastRiderLocation = new Map(); // riderId -> { at: number, lat, lng, bearing }
@@ -156,7 +164,7 @@ export const updateRiderLocation = async (_p, { input }, ctx) => {
     const [destLng, destLat] = destCoords;
     const distanceToCustomer = haversineKm(lat, lng, destLat, destLng) * 1000;
 
-    // ⭐ Курьер в радиусе 500 м от клиента → триггер уведомления
+    // ⭐ Курьер в радиусе 500 м от клиента → триггер уведомления "уже близко"
     if (distanceToCustomer <= NEAR_DROP_OFF_RADIUS_M) {
       const wasAlreadyNear = prev
         ? haversineKm(prev.lat, prev.lng, destLat, destLng) * 1000 <=
@@ -172,6 +180,54 @@ export const updateRiderLocation = async (_p, { input }, ctx) => {
             timestamp: new Date().toISOString(),
           },
         });
+      }
+    }
+
+    // ⭐⭐⭐ NEW: авто-детект "курьер приехал к клиенту" по геозоне.
+    // Раньше переход в ARRIVED_AT_DROP_OFF был только ручной (кнопка в
+    // приложении курьера). Теперь, как только курьер оказывается в узком
+    // радиусе AUTO_ARRIVED_RADIUS_M от точки доставки, статус переключается
+    // автоматически — курьеру не нужно нажимать кнопку самому.
+    // Атомарный findOneAndUpdate с условием по orderStatus защищает от
+    // повторных срабатываний на каждый следующий GPS-пинг и от гонки с
+    // ручной кнопкой "Я на месте" (arriveAtDropOff), которая могла сработать
+    // на долю секунды раньше.
+    if (
+      distanceToCustomer <= AUTO_ARRIVED_RADIUS_M &&
+      AUTO_ARRIVAL_FROM_STATUSES.includes(o.orderStatus)
+    ) {
+      const updatedOrder = await Order.findOneAndUpdate(
+        {
+          _id: o._id,
+          riderId: r._id,
+          orderStatus: { $in: AUTO_ARRIVAL_FROM_STATUSES },
+        },
+        {
+          $set: {
+            orderStatus: "ARRIVED_AT_DROP_OFF",
+            "statusTimestamps.arrivedAtDropOffAt": new Date(),
+            "statusTimestamps.arrivedAtDropOffSource": "GEOFENCE_AUTO",
+          },
+        },
+        { new: true },
+      );
+
+      if (updatedOrder) {
+        pubsub.publish(TOPICS.ORDER_TRACK(updatedOrder._id.toString()), {
+          subscriptionOrder: updatedOrder,
+        });
+        pubsub.publish(
+          TOPICS.ORDER_STATUS_CHANGED(updatedOrder.userId.toString()),
+          { orderStatusChanged: updatedOrder },
+        );
+
+        // Пуш клиенту: курьер на месте
+        notify({
+          to: "user",
+          toId: updatedOrder.userId,
+          event: "ORDER_ARRIVED_AT_DROP_OFF",
+          vars: { orderId: updatedOrder._id.toString() },
+        }).catch(() => {});
       }
     }
   }
@@ -211,6 +267,71 @@ export const riderLogin = async (_p, { input }) => {
 
 export const meRider = async (_p, _a, ctx) => requireRider(ctx);
 
+// ⭐⭐⭐ NEW: сводка заработка курьера — для экрана заказа (заказ + смена).
+// Раньше на экране заказа показывался только amounts.deliveryFee одного
+// заказа (и то не всегда — см. описанный баг), сводки за смену не было
+// вовсе. Здесь считаем и то, и другое одним запросом.
+export const riderEarningsSummary = async (_p, { orderId }, ctx) => {
+  const r = requireRider(ctx);
+
+  let orderEarnings = null;
+  if (orderId) {
+    const order = await Order.findById(orderId).lean();
+    if (order && order.riderId?.toString() === r._id.toString()) {
+      let distanceKm = null;
+      const from = order.pickupAddress?.location?.coordinates;
+      const to = order.deliveryAddress?.location?.coordinates;
+      if (from?.length === 2 && to?.length === 2) {
+        distanceKm = +haversineKm(from[1], from[0], to[1], to[0]).toFixed(2);
+      }
+      orderEarnings = {
+        orderId: order._id.toString(),
+        deliveryFee: order.amounts?.deliveryFee ?? 0,
+        distanceKm,
+        tip: null, // чаевые пока не реализованы в модели заказа
+      };
+    }
+  }
+
+  // ⭐ Смена: с момента последнего "В сети" (shiftStartedAt). Если курьер
+  // сейчас offline (shiftStartedAt=null) — считаем сводку за сегодня,
+  // чтобы экран не был пустым сразу после выхода из смены.
+  const shiftStart =
+    r.shiftStartedAt ??
+    (() => {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      return d;
+    })();
+
+  const deliveredToday = await Order.find({
+    riderId: r._id,
+    orderStatus: "DELIVERED",
+    "statusTimestamps.deliveredAt": { $gte: shiftStart },
+  })
+    .select("amounts.deliveryFee")
+    .lean();
+
+  const totalEarned = deliveredToday.reduce(
+    (sum, o) => sum + (o.amounts?.deliveryFee ?? 0),
+    0,
+  );
+
+  const onlineMinutes = r.shiftStartedAt
+    ? Math.max(0, Math.round((Date.now() - r.shiftStartedAt.getTime()) / 60000))
+    : 0;
+
+  return {
+    order: orderEarnings,
+    shift: {
+      shiftStartedAt: r.shiftStartedAt ? r.shiftStartedAt.toISOString() : null,
+      deliveriesCount: deliveredToday.length,
+      totalEarned: +totalEarned.toFixed(2),
+      onlineMinutes,
+    },
+  };
+};
+
 export const riderOrders = async (_p, { status }, ctx) => {
   const r = requireRider(ctx);
   const filter = { riderId: r._id };
@@ -231,6 +352,40 @@ export const availableOrdersForRiders = async (_p, _a, ctx) => {
   return Order.find(baseFilter).sort({ createdAt: 1 }).limit(50);
 };
 
+// ⭐⭐⭐ NEW: разрешаем взять ВТОРОЙ заказ через claimOrder, только если
+// курьер сейчас в пределах 2 км от точки доставки уже имеющегося заказа
+// (аналог проверки в acceptDelivery/delivery.js — держим оба места в синхроне).
+const MULTI_STOP_PROXIMITY_KM = 2;
+async function assertMultiStopProximity(rider) {
+  const current = await Order.findOne({
+    riderId: rider._id,
+    orderStatus: { $in: ["ASSIGNED", "PICKED", "EN_ROUTE_TO_DROP_OFF"] },
+  }).lean();
+  const destCoords = current?.deliveryAddress?.location?.coordinates;
+  if (!destCoords || destCoords.length < 2) {
+    throw new GraphQLError("Сначала завершите текущий заказ", {
+      extensions: { code: "BAD_STATE" },
+    });
+  }
+  const liveLoc = await getRiderLocationFromRedis(rider._id.toString());
+  const riderLat = liveLoc?.lat ?? rider.location?.coordinates?.[1];
+  const riderLng = liveLoc?.lng ?? rider.location?.coordinates?.[0];
+  if (typeof riderLat !== "number" || typeof riderLng !== "number") {
+    throw new GraphQLError("Сначала завершите текущий заказ", {
+      extensions: { code: "BAD_STATE" },
+    });
+  }
+  const [destLng, destLat] = destCoords;
+  const distanceKm = haversineKm(riderLat, riderLng, destLat, destLng);
+  if (distanceKm > MULTI_STOP_PROXIMITY_KM) {
+    throw new GraphQLError(
+      `Второй заказ можно взять, только если вы в ${MULTI_STOP_PROXIMITY_KM} км ` +
+        `от точки доставки текущего заказа (сейчас ${distanceKm.toFixed(1)} км)`,
+      { extensions: { code: "TOO_FAR_FOR_MULTI_STOP" } },
+    );
+  }
+}
+
 export const claimOrder = async (_p, { orderId }, ctx) => {
   const r = requireRider(ctx);
   if (!r.available) {
@@ -240,12 +395,19 @@ export const claimOrder = async (_p, { orderId }, ctx) => {
   }
   const active = await Order.countDocuments({
     riderId: r._id,
-    orderStatus: { $in: ["ASSIGNED", "PICKED"] },
+    orderStatus: { $in: ["ASSIGNED", "PICKED", "EN_ROUTE_TO_DROP_OFF"] },
   });
-  if (active > 0) {
-    throw new GraphQLError("Сначала завершите текущий заказ", {
+  // ⭐⭐⭐ CHANGED: раньше 1+ активных заказов блокировали claim ПОЛНОСТЬЮ —
+  // multi-stop был невозможен. Теперь второй заказ разрешён, если курьер
+  // близко (≤2 км) к точке доставки текущего — см. проверку через
+  // assertMultiStopProximity ниже. 2+ активных всё ещё блокируются.
+  if (active >= 2) {
+    throw new GraphQLError("Нельзя взять больше 2 заказов одновременно", {
       extensions: { code: "BAD_STATE" },
     });
+  }
+  if (active === 1) {
+    await assertMultiStopProximity(r);
   }
 
   const order = await Order.findOneAndUpdate(
@@ -265,8 +427,11 @@ export const claimOrder = async (_p, { orderId }, ctx) => {
     });
   }
 
-  r.available = false;
-  await r.save();
+  // ⭐ CHANGED: r.available больше НЕ трогаем здесь — это переключатель
+  // "курьер онлайн/оффлайн", который управляется только самим курьером
+  // через toggleRider. Раньше claim выставлял available=false, из-за
+  // чего курьер физически не мог пройти проверку "!r.available" выше
+  // для второго заказа — multi-stop был архитектурно невозможен.
 
   pubsub.publish(TOPICS.ORDER_TRACK(order._id.toString()), {
     subscriptionOrder: order,
@@ -340,7 +505,15 @@ export const updateOrderStatusRider = async (_p, { input }, ctx) => {
 
 export const toggleRider = async (_p, { available }, ctx) => {
   const r = requireRider(ctx);
+  const goingOnline = !!available && !r.available;
+  const goingOffline = !available && r.available;
   r.available = !!available;
+  // ⭐ NEW: старт/конец смены — используется в riderEarningsSummary
+  if (goingOnline) {
+    r.shiftStartedAt = new Date();
+  } else if (goingOffline) {
+    r.shiftStartedAt = null;
+  }
   await r.save();
   return r;
 };
@@ -455,8 +628,6 @@ export const rider = async (_p, { id }, ctx) => {
   publicProfile.lastLocationAt = null;
   return publicProfile;
 };
-
-
 
 export const riderLocationStream = {
   subscribe: async (_p, { riderId }) => {

@@ -928,10 +928,49 @@ export const typeDefs = /* GraphQL */ `
     trendPct: Float!
   }
 
+  type KitchenLoadInfo {
+    queueLength: Int!
+    avgActualPrepMin: Int
+    suggestedPrepTime: Int!
+    isBusy: Boolean!
+  }
+
+  type TypingStatusEvent {
+    orderId: ID!
+    senderType: String!
+    isTyping: Boolean!
+  }
+
+  type ChatReadStatusEvent {
+    orderId: ID!
+    readerType: String!
+    readAt: String!
+  }
+
+  type RiderOrderEarnings {
+    orderId: ID!
+    deliveryFee: Float!
+    distanceKm: Float
+    tip: Float
+  }
+
+  type RiderShiftEarnings {
+    shiftStartedAt: String
+    deliveriesCount: Int!
+    totalEarned: Float!
+    onlineMinutes: Int!
+  }
+
+  type RiderEarningsSummary {
+    order: RiderOrderEarnings
+    shift: RiderShiftEarnings!
+  }
+
   type Query {
     configuration: Configuration
     deliveryZone: DeliveryZone
     restaurantPrepEta(orderId: ID!): Int
+    kitchenLoad: KitchenLoadInfo!
     restaurants(zoneId: ID): [Restaurant!]!
     restaurant(id: ID!): Restaurant
     foodReviews(foodId: ID!): [FoodReview!]!
@@ -968,6 +1007,7 @@ export const typeDefs = /* GraphQL */ `
       baseKm: Float
       perKmPrice: Float
     ): DeliveryPriceBreakdown
+    riderEarningsSummary(orderId: ID): RiderEarningsSummary!
     getCart: Cart
     estimateDelivery(restaurantId: ID!, addressId: ID!): EstimateDeliveryResult!
     riderFinancials(riderId: ID!): RiderFinancials!
@@ -1014,6 +1054,9 @@ export const typeDefs = /* GraphQL */ `
     changeRiderPassword(input: ChangeRiderPasswordInput!): Boolean!
     updateConfiguration(input: ConfigurationInput!): Configuration!
     sendChatMessage(orderId: ID!, text: String!): ChatMessage!
+    markChatRead(orderId: ID!): Boolean!
+    sendTypingStatus(orderId: ID!, isTyping: Boolean!): Boolean!
+
     createOwner(input: CreateOwnerInput!): Owner!
     updateOwner(id: ID!, input: UpdateOwnerInput!): Owner!
     deactivateOwner(id: ID!): Boolean!
@@ -1055,6 +1098,8 @@ export const typeDefs = /* GraphQL */ `
     subscriptionRiderLocation(riderId: ID!): RiderLocationUpdate!
     subscriptionRiderOrderCompleted(riderId: ID!): Order!
     newChatMessage(orderId: ID!): ChatMessage!
+    chatTypingStatus(orderId: ID!): TypingStatusEvent!
+    chatReadStatusChanged(orderId: ID!): ChatReadStatusEvent!
     courierSearchNotify: CourierSearchEvent!
     deliveryStatusChanged(orderId: ID!): DeliveryEvent!
     allDeliveries: Order!

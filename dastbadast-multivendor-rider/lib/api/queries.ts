@@ -204,17 +204,21 @@ export const CHAT_MESSAGES = gql`
       orderId
       senderType
       text
+      imageUrl
+      readAt
       createdAt
     }
   }
 `;
 
 export const SEND_CHAT_MESSAGE = gql`
-  mutation SendChatMessage($orderId: ID!, $text: String!) {
-    sendChatMessage(orderId: $orderId, text: $text) {
+  mutation SendChatMessage($orderId: ID!, $text: String, $imageUrl: String) {
+    sendChatMessage(orderId: $orderId, text: $text, imageUrl: $imageUrl) {
       id
       senderType
       text
+      imageUrl
+      readAt
       createdAt
     }
   }
@@ -226,7 +230,44 @@ export const SUB_CHAT = gql`
       id
       senderType
       text
+      imageUrl
+      readAt
       createdAt
+    }
+  }
+`;
+
+// ⭐ NEW: пометить чат прочитанным (вызывается при открытии/фокусе экрана —
+// заодно служит presence-сигналом, чтобы не слать push, пока чат открыт)
+export const MARK_CHAT_READ = gql`
+  mutation MarkChatRead($orderId: ID!) {
+    markChatRead(orderId: $orderId)
+  }
+`;
+
+// ⭐ NEW: индикатор "печатает"
+export const SEND_TYPING_STATUS = gql`
+  mutation SendTypingStatus($orderId: ID!, $isTyping: Boolean!) {
+    sendTypingStatus(orderId: $orderId, isTyping: $isTyping)
+  }
+`;
+
+export const SUB_CHAT_TYPING = gql`
+  subscription SubChatTyping($orderId: ID!) {
+    chatTypingStatus(orderId: $orderId) {
+      orderId
+      senderType
+      isTyping
+    }
+  }
+`;
+
+export const SUB_CHAT_READ = gql`
+  subscription SubChatRead($orderId: ID!) {
+    chatReadStatusChanged(orderId: $orderId) {
+      orderId
+      readerType
+      readAt
     }
   }
 `;
@@ -275,6 +316,29 @@ export const MY_TODAY_EARNINGS = gql`
       }
       statusTimestamps {
         deliveredAt
+      }
+    }
+  }
+`;
+
+// ⭐ NEW: сводка заработка — заказ + текущая смена, для экрана заказа.
+// Заменяет неиспользуемый MY_TODAY_EARNINGS (который так и не был подключён
+// ни к одному экрану — считать "сегодня" на клиенте было неудобно и лишне,
+// раз бэкенд теперь считает это сам).
+export const RIDER_EARNINGS_SUMMARY = gql`
+  query RiderEarningsSummary($orderId: ID) {
+    riderEarningsSummary(orderId: $orderId) {
+      order {
+        orderId
+        deliveryFee
+        distanceKm
+        tip
+      }
+      shift {
+        shiftStartedAt
+        deliveriesCount
+        totalEarned
+        onlineMinutes
       }
     }
   }
