@@ -27,6 +27,121 @@ async function bootstrap() {
   // 2) Создаём app + httpServer + apollo (всё в server.js)
   const { app, httpServer, apollo, wsCleanup } = await createServer();
 
+  app.get("/api/admin/accounting/export.csv", async (req, res) => {
+    try {
+      // ⭐ Авторизация: только SUPER_ADMIN / FINANCE / ANALYST
+      // Парсим Bearer token из заголовка вручную — этот роут не GraphQL,
+      // поэтому Apollo context не заполняется автоматически.
+      const ctx = await resolveContextFromAuthHeader(req.headers.authorization);
+      requireRole(["SUPER_ADMIN", "FINANCE", "ANALYST"])(ctx);
+
+      const { from, to } = req.query;
+      let dateFilter = {};
+      if (from || to) {
+        const fromDate = from ? new Date(from) : null;
+        const toDate = to ? new Date(to) : null;
+        if (fromDate && toDate && fromDate > toDate) {
+          return res.status(400).send("'from' должна быть раньше 'to'");
+        }
+        dateFilter = {
+          ...(fromDate && { $gte: fromDate }),
+          ...(toDate && {
+            $lte: new Date(toDate.getTime() + 24 * 60 * 60 * 1000 - 1),
+          }),
+        };
+      }
+      // ⭐ Стримим CSV в res (не держим всё в памяти).
+      // CSV с разделителем `;` — корректно открывается в Excel на Windows
+      // (запятая конфликтует с десятичными разделителями в TJS-локали).
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="accounting-${Date.now()}.csv"`,
+      );
+      // BOM для Excel — чтобы кириллица отображалась корректно
+      res.write("\uFEFF");
+
+      // Заголовки
+      res.write(
+        "ID заказа;Дата создания;Ресторан;Клиент;Телефон;Сумма;Доставка;Комиссия платформы;Курьер;Статус;Способ оплаты\n",
+      );
+
+      // ⭐ Cursor-based stream — НЕ грузим все заказы в память, а идём
+      // курсором порциями по 1000. На проде с десятками тысяч заказов
+      // это критично для RAM-сервера.
+      const cursor = Order.find({
+        orderStatus: "DELIVERED",
+        ...dateFilter,
+      })
+        .populate("restaurantId", "name")
+        .populate("riderId", "name username")
+        .populate("userId", "name phone")
+        .sort({ createdAt: -1 })
+        .cursor();
+
+      let count = 0;
+      const cfgDoc = await Configuration.findById("singleton")
+        .select("taxPercent")
+        .lean();
+      const taxPercent = Number(
+        typeof cfgDoc?.taxPercent === "number" ? cfgDoc.taxPercent : 10,
+      );
+
+      for await (const order of cursor) {
+        const subtotal = order.amounts?.subtotal ?? 0;
+        const deliveryFee = order.amounts?.deliveryFee ?? 0;
+        const commission = +(subtotal * (taxPercent / 100)).toFixed(2);
+
+        // ⭐ Экранирование CSV-значений: если в поле есть `;` или `"` или
+        // перенос строки — оборачиваем в кавычки и удваиваем внутренние
+        // кавычки (стандарт RFC 4180).
+        const csvEscape = (val) => {
+          if (val == null) return "";
+          const s = String(val);
+          if (s.includes(";") || s.includes('"') || s.includes("\n")) {
+            return `"${s.replace(/"/g, '""')}"`;
+          }
+          return s;
+        };
+
+        res.write(
+          [
+            csvEscape(order.orderId),
+            csvEscape(new Date(order.createdAt).toLocaleString("ru-RU")),
+            csvEscape(order.restaurantId?.name ?? "—"),
+            csvEscape(order.userId?.name ?? "—"),
+            csvEscape(order.userId?.phone ?? ""),
+            csvEscape(subtotal.toFixed(2)),
+            csvEscape(deliveryFee.toFixed(2)),
+            csvEscape(commission.toFixed(2)),
+            csvEscape(
+              order.riderId ? order.riderId.name || order.riderId.username : "",
+            ),
+            csvEscape(order.orderStatus),
+            csvEscape(order.paymentMethod),
+          ].join(";") + "\n",
+        );
+        count++;
+      }
+
+      res.end();
+      debugLog("export", "csv exported", { count, from, to });
+    } catch (e) {
+      debugLog("export", "failed", { message: e?.message });
+      if (!res.headersSent) {
+        if (e.extensions?.code === "UNAUTHENTICATED") {
+          res.status(401).send("Unauthorized");
+        } else if (e.extensions?.code === "FORBIDDEN") {
+          res.status(403).send("Forbidden");
+        } else {
+          res.status(500).send("Internal error");
+        }
+      } else {
+        res.end();
+      }
+    }
+  });
+
   // 3) Запускаем cron-задачи
   startRiderLocationFlushJob();
   startMemoryCleanupJob();

@@ -13,6 +13,7 @@ import { signOwnerToken } from "../middleware/auth.js";
 import { requireRole, requireOwner } from "../middleware/rbac.js";
 import { pubsub, TOPICS } from "../pubsub.js";
 import { invalidateCache } from "../middleware/cache.js";
+import { Parser } from "json2csv";
 
 const VALID_OWNER_ROLES = [
   "SUPER_ADMIN",
@@ -203,6 +204,38 @@ export const adminAccounting = async (_p, _a, ctx) => {
   const taxPercent = Number(
     typeof cfgDoc?.taxPercent === "number" ? cfgDoc.taxPercent : 10,
   );
+
+  let dateFilter = {};
+  if (from || to) {
+    const fromDate = from ? new Date(from) : null;
+    const toDate = to ? new Date(to) : null;
+    if (fromDate && isNaN(fromDate.getTime())) {
+      throw new GraphQLError("Некорректный формат 'from'", {
+        extensions: { code: "BAD_USER_INPUT" },
+      });
+    }
+    if (toDate && isNaN(toDate.getTime())) {
+      throw new GraphQLError("Некорректный формат 'to'", {
+        extensions: { code: "BAD_USER_INPUT" },
+      });
+    }
+    if (fromDate && toDate && fromDate > toDate) {
+      throw new GraphQLError("'from' должна быть раньше 'to'", {
+        extensions: { code: "BAD_USER_INPUT" },
+      });
+    }
+    // ВАЖНО: '$lte: new Date(to)' в Mongo сам по себе не включает весь
+    // последний день (timestamp — это конкретный момент). Чтобы "to" был
+    // inclusive до конца дня, прибавляем 1 день ИЛИ используем поле
+    // `statusTimestamps.deliveredAt` (но это nullable). Самое надёжное —
+    // ставить верхнюю границу на конец дня.
+    dateFilter = {
+      ...(fromDate && { $gte: fromDate }),
+      ...(toDate && {
+        $lte: new Date(toDate.getTime() + 24 * 60 * 60 * 1000 - 1),
+      }),
+    };
+  }
 
   const restaurantRows = await Order.aggregate([
     { $match: { orderStatus: "DELIVERED" } },

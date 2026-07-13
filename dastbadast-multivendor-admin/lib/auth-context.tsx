@@ -1,5 +1,14 @@
+// dastbadast-multivendor-admin/lib/auth-context.tsx
 "use client";
-import { createContext, useContext, useEffect, useState, ReactNode, useCallback, useMemo } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  ReactNode,
+  useCallback,
+  useMemo,
+} from "react";
 import { storage } from "./security";
 
 type Permissions = {
@@ -12,7 +21,7 @@ type Permissions = {
   canManageUsers: boolean;
 };
 
-type OwnerType =
+export type OwnerType =
   | "SUPER_ADMIN"
   | "DISPATCHER"
   | "FINANCE"
@@ -32,9 +41,10 @@ type AuthState = {
   token: string | null;
   owner: Owner | null;
   loading: boolean;
+  /** ⭐ NEW: true после чтения localStorage, до этого момента `owner === null` */
+  hydrated: boolean;
   setAuth: (token: string, owner: Owner) => void;
   logout: () => void;
-  // ===== Новое: проверки прав =====
   hasRole: (role: OwnerType | OwnerType[]) => boolean;
   hasPermission: (perm: keyof Permissions) => boolean;
 };
@@ -45,14 +55,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [owner, setOwner] = useState<Owner | null>(null);
   const [loading, setLoading] = useState(true);
+  const [hydrated, setHydrated] = useState(false); // ⭐ NEW
 
   useEffect(() => {
     setToken(storage.get("dbd_admin_token"));
     const u = storage.get("dbd_admin_owner");
     if (u) {
       try {
-        const parsed = JSON.parse(u);
-        // Миграция: если ownerType отсутствует (старый токен), считаем SUPER_ADMIN
+        const parsed = JSON.parse(u) as Owner;
         if (!parsed.userType) parsed.userType = "SUPER_ADMIN";
         if (parsed.isActive === undefined) parsed.isActive = true;
         setOwner(parsed);
@@ -61,10 +71,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
     setLoading(false);
+    setHydrated(true); // ⭐ NEW
   }, []);
 
   const setAuth = (t: string, o: Owner) => {
-    // Дефолтный userType для обратной совместимости
     const normalized: Owner = {
       ...o,
       userType: o.userType || "SUPER_ADMIN",
@@ -83,12 +93,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setOwner(null);
   };
 
-  // ===== Новые методы =====
-
   const hasRole = useCallback(
     (role: OwnerType | OwnerType[]) => {
       if (!owner) return false;
-      // SUPER_ADMIN имеет доступ ко всему
       if (owner.userType === "SUPER_ADMIN") return true;
       if (Array.isArray(role)) return role.includes(owner.userType);
       return owner.userType === role;
@@ -100,7 +107,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (perm: keyof Permissions) => {
       if (!owner) return false;
       if (owner.userType === "SUPER_ADMIN") return true;
-      // Гранулярные permissions могут быть не заданы для старых токенов
       return !!owner.permissions?.[perm];
     },
     [owner],
@@ -111,12 +117,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       token,
       owner,
       loading,
+      hydrated, // ⭐ NEW
       setAuth,
       logout,
       hasRole,
       hasPermission,
     }),
-    [token, owner, loading, hasRole, hasPermission],
+    [token, owner, loading, hydrated, hasRole, hasPermission],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -127,5 +134,3 @@ export function useAuth() {
   if (!v) throw new Error("useAuth must be inside AuthProvider");
   return v;
 }
-
-export type { OwnerType, Permissions };

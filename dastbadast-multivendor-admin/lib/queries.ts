@@ -1,3 +1,4 @@
+// dastbadast-multivendor-admin/lib/queries.ts
 import { gql } from "@apollo/client";
 
 export const OWNER_LOGIN = gql`
@@ -20,7 +21,6 @@ export const GET_RESTAURANTS = gql`
       name
       address
       isAvailable
-      minimumOrder
       minimumOrder
       tax
       location
@@ -188,7 +188,7 @@ export const GET_MONITOR_ORDERS = gql`
         pickedAt
         deliveredAt
       }
-      cancelReason 
+      cancelReason
     }
   }
 `;
@@ -219,6 +219,16 @@ export const SUB_ZONE_ORDERS = gql`
   subscription SubZone($zoneId: ID) {
     subscriptionZoneOrders(zoneId: $zoneId) {
       id
+      orderId
+      orderStatus
+    }
+  }
+`;
+
+export const ALL_DELIVERIES_SUB = gql`
+  subscription AllOrdersChanged {
+    allOrdersChanged {
+      _id
       orderId
       orderStatus
     }
@@ -257,9 +267,10 @@ export const UPDATE_CONFIGURATION = gql`
   }
 `;
 
+// ⭐ ИЗМЕНЕНО: добавлены опциональные переменные $from, $to
 export const ADMIN_ACCOUNTING = gql`
-  query AdminAccounting {
-    adminAccounting {
+  query AdminAccounting($from: String, $to: String) {
+    adminAccounting(from: $from, to: $to) {
       totalRevenue
       totalDelivered
       totalCommission
@@ -391,6 +402,97 @@ export const ADMIN_USER_DETAIL = gql`
   }
 `;
 
+export const USER_LTV = gql`
+  query UserLTV($userId: ID!) {
+    userLTV(userId: $userId) {
+      userId
+      orderCount
+      totalSpent
+      avgOrderValue
+      cancelledCount
+      firstOrderAt
+      lastOrderAt
+      activeDays
+      predictedAnnualLTV
+      isPredictionReliable
+    }
+  }
+`;
+
+// ⭐ NEW: Частота заказов клиента
+export const USER_ORDER_FREQUENCY = gql`
+  query UserOrderFrequency($userId: ID!) {
+    userOrderFrequency(userId: $userId) {
+      userId
+      totalOrders
+      deliveredOrders
+      cancelledOrders
+      avgIntervalDays
+      medianIntervalDays
+      ordersPerWeek
+      ordersPerMonth
+      longestGapDays
+      status
+      daysSinceLastOrder
+      cohortMonth
+    }
+  }
+`;
+
+// ⭐ NEW: Когортный анализ retention (по всем пользователям)
+export const USER_COHORTS = gql`
+  query UserCohorts($months: Int) {
+    userCohorts(months: $months) {
+      months
+      cohorts {
+        month
+        totalUsers
+        retentionByMonth
+      }
+    }
+  }
+`;
+
+// ⭐ NEW: Churn rate
+export const CHURN_RATE = gql`
+  query ChurnRate($period: Int) {
+    churnRate(period: $period) {
+      period
+      activeAtStart
+      churned
+      retained
+      churnRatePct
+      retentionRatePct
+      avgOrdersPerRetained
+    }
+  }
+`;
+
+// ⭐ NEW: Прогноз спроса
+export const DEMAND_FORECAST = gql`
+  query DemandForecast($days: Int) {
+    demandForecast(days: $days) {
+      history {
+        date
+        revenue
+        orders
+      }
+      forecast {
+        date
+        predictedRevenue
+        predictedOrders
+        isForecast
+      }
+      totals {
+        avgDailyRevenue
+        avgDailyOrders
+        totalForecastRevenue
+        trendPct
+      }
+    }
+  }
+`;
+
 export const TOGGLE_USER_ACTIVE = gql`
   mutation ToggleUserActive($id: ID!, $isActive: Boolean!) {
     toggleUserActive(id: $id, isActive: $isActive) {
@@ -488,7 +590,6 @@ export const ADMIN_DASHBOARD = gql`
   }
 `;
 
-// ⭐ НОВОЕ для Фазы 2: Live-карта диспетчера
 export const ALL_RIDERS_WITH_LOCATION = gql`
   query AllRidersWithLocation {
     allRidersWithLocation {
@@ -549,18 +650,6 @@ export const ORDERS_FOR_MAP = gql`
   }
 `;
 
-// ⭐ Broadcast всех изменений заказов (real-time)
-export const ALL_DELIVERIES_SUB = gql`
-  subscription AllOrdersChanged {
-    allOrdersChanged {
-      _id
-      orderId
-      orderStatus
-    }
-  }
-`;
-
-// ⭐ Live-локация курьера (для отслеживания)
 export const RIDER_LOCATION_STREAM = gql`
   subscription RiderLocationStream($riderId: ID!) {
     riderLocationStream(riderId: $riderId) {

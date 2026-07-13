@@ -15,7 +15,8 @@
     "seed": "node scripts/seed.js",
     "migrate-geo-index": "node scripts/migrate-geo-index.js",
     "migrate-order-status": "node scripts/migrate-order-status.js",
-    "migrate-indexes": "node scripts/recommend-indexes.js"
+    "migrate-indexes": "node scripts/recommend-indexes.js",
+    "cleanup-empty-users": "node scripts/cleanup-empty-users.js"
   },
   "dependencies": {
     "@apollo/server": "^5.5.1",
@@ -32,6 +33,7 @@
     "graphql-subscriptions": "^3.0.0",
     "graphql-ws": "^5.16.0",
     "ioredis": "^5.11.1",
+    "json2csv": "^6.0.0-alpha.2",
     "jsonwebtoken": "^9.0.2",
     "lru-cache": "^11.5.1",
     "lucide-react": "^1.17.0",

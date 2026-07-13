@@ -72,7 +72,7 @@ async function run() {
   });
 
   // ==========================================
-  // 👥 5 ПОЛЬЗОВАТЕЛЕЙ (Users)
+  // 👥 15 ПОЛЬЗОВАТЕЛЕЙ (Users)
   // ==========================================
   const demoUserHash = await bcrypt.hash("user123", 10);
 
@@ -112,47 +112,102 @@ async function run() {
       passwordHash: demoUserHash,
       isActive: true,
     },
+    {
+      name: "Рустам",
+      email: "rustam@dastbadast.tj",
+      phone: "+992900006666",
+      passwordHash: demoUserHash,
+      isActive: true,
+    },
+    {
+      name: "Нигина",
+      email: "nigina@dastbadast.tj",
+      phone: "+992900007777",
+      passwordHash: demoUserHash,
+      isActive: true,
+    },
+    {
+      name: "Далер",
+      email: "daler@dastbadast.tj",
+      phone: "+992900008888",
+      passwordHash: demoUserHash,
+      isActive: true,
+    },
+    {
+      name: "Ситора",
+      email: "sitora@dastbadast.tj",
+      phone: "+992900009999",
+      passwordHash: demoUserHash,
+      isActive: true,
+    },
+    {
+      name: "Хуршед",
+      email: "khurshed@dastbadast.tj",
+      phone: "+992900010000",
+      passwordHash: demoUserHash,
+      isActive: true,
+    },
+    {
+      name: "Тахмина",
+      email: "tahmina@dastbadast.tj",
+      phone: "+992900011111",
+      passwordHash: demoUserHash,
+      isActive: true,
+    },
+    {
+      name: "Джамшед",
+      email: "jamshed@dastbadast.tj",
+      phone: "+992900022222",
+      passwordHash: demoUserHash,
+      isActive: true,
+    },
+    {
+      name: "Парвина",
+      email: "parvina@dastbadast.tj",
+      phone: "+992900033333",
+      passwordHash: demoUserHash,
+      isActive: true,
+    },
+    {
+      name: "Фирдавс",
+      email: "firdavs@dastbadast.tj",
+      phone: "+992900044444",
+      passwordHash: demoUserHash,
+      isActive: true,
+    },
+    {
+      name: "Лайло",
+      email: "laylo@dastbadast.tj",
+      phone: "+992900055555",
+      passwordHash: demoUserHash,
+      isActive: true,
+    },
   ];
 
   const createdUsers = await User.insertMany(usersData);
 
   // ==========================================
-  // 🛵 3 КУРЬЕРА (Riders)
+  // 🛵 10 КУРЬЕРОВ (Riders)
   // ==========================================
   const riderHash = await bcrypt.hash("rider123", 10);
 
-  await Rider.insertMany([
-    {
-      username: "courier1",
-      phone: "+992900111222",
+  const ridersData = Array.from({ length: 10 }, (_, i) => {
+    const num = i + 1;
+    return {
+      username: `courier${num}`,
+      phone: `+992900111${String(num).padStart(3, "0")}`,
       passwordHash: riderHash,
-      name: "Курьер Один",
+      name: `Курьер №${num}`,
       zoneId: zone._id,
       available: true,
       isActive: true,
-    },
-    {
-      username: "courier2",
-      phone: "+992900222333",
-      passwordHash: riderHash,
-      name: "Курьер Два",
-      zoneId: zone._id,
-      available: true,
-      isActive: true,
-    },
-    {
-      username: "courier3",
-      phone: "+992900333444",
-      passwordHash: riderHash,
-      name: "Курьер Три",
-      zoneId: zone._id,
-      available: true,
-      isActive: true,
-    },
-  ]);
+    };
+  });
+
+  await Rider.insertMany(ridersData);
 
   // ==========================================
-  // 🏪 5 РЕСТОРАНОВ С КАТЕГОРИЯМИ И БЛЮДАМИ
+  // 🏪 10 РЕСТОРАНОВ С КАТЕГОРИЯМИ И БЛЮДАМИ
   // ==========================================
   const restPasswordHash = await bcrypt.hash("store123", 10);
 
@@ -210,15 +265,6 @@ async function run() {
       restaurantId: rest1._id,
     },
     {
-      title: "Лагман",
-      description: "Густой лагман с лапшой",
-      price: 50,
-      image:
-        "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=400",
-      categoryId: cat1Main._id,
-      restaurantId: rest1._id,
-    },
-    {
       title: "Чай зелёный",
       description: "Свежий горячий чай",
       price: 12,
@@ -248,11 +294,6 @@ async function run() {
     image: "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=400",
     restaurantId: rest2._id,
   });
-  const cat2Desserts = await Category.create({
-    title: "Десерты",
-    image: "https://images.unsplash.com/photo-1551024601-bec78aea704b?w=400",
-    restaurantId: rest2._id,
-  });
 
   await Food.insertMany([
     {
@@ -271,15 +312,6 @@ async function run() {
       image:
         "https://images.unsplash.com/photo-1612874742237-6526221588e3?w=400",
       categoryId: cat2Pizza._id,
-      restaurantId: rest2._id,
-    },
-    {
-      title: "Тирамису",
-      description: "Нежный кофейный десерт",
-      price: 45,
-      image:
-        "https://images.unsplash.com/photo-1571877227200-a0d98ea607e9?w=400",
-      categoryId: cat2Desserts._id,
       restaurantId: rest2._id,
     },
   ]);
@@ -304,11 +336,6 @@ async function run() {
     image: "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400",
     restaurantId: rest3._id,
   });
-  const cat3Snacks = await Category.create({
-    title: "Закуски",
-    image: "https://images.unsplash.com/photo-1573080496219-bb080dd4f877?w=400",
-    restaurantId: rest3._id,
-  });
 
   await Food.insertMany([
     {
@@ -326,15 +353,7 @@ async function run() {
       price: 20,
       image:
         "https://images.unsplash.com/photo-1573080496219-bb080dd4f877?w=400",
-      categoryId: cat3Snacks._id,
-      restaurantId: rest3._id,
-    },
-    {
-      title: "Наггетсы",
-      description: "Куриные наггетсы в панировке",
-      price: 30,
-      image: "https://images.unsplash.com/photo-1562967914-608f82629710?w=400",
-      categoryId: cat3Snacks._id,
+      categoryId: cat3Burgers._id,
       restaurantId: rest3._id,
     },
   ]);
@@ -396,13 +415,8 @@ async function run() {
   });
 
   const cat5Coffee = await Category.create({
-    title: "Кофе",
+    title: "Кофе и Выпечка",
     image: "https://images.unsplash.com/photo-1509042239860-f550ce710b93?w=400",
-    restaurantId: rest5._id,
-  });
-  const cat5Bakery = await Category.create({
-    title: "Выпечка",
-    image: "https://images.unsplash.com/photo-1509440159596-0249088772ff?w=400",
     restaurantId: rest5._id,
   });
 
@@ -421,8 +435,215 @@ async function run() {
       description: "Французский круассан на масле",
       price: 18,
       image: "https://images.unsplash.com/photo-1555507036-ab1f4038808a?w=400",
-      categoryId: cat5Bakery._id,
+      categoryId: cat5Coffee._id,
       restaurantId: rest5._id,
+    },
+  ]);
+
+  // --- РЕСТОРАН 6: Шашлычный Рай ---
+  const rest6 = await Restaurant.create({
+    name: "Шашлычный Рай",
+    slug: "shashlyk-ray",
+    image: "https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=600",
+    address: "ул. Карамова 45, Душанбе",
+    location: { type: "Point", coordinates: [68.75, 38.6] },
+    zoneId: zone._id,
+    username: "shashlykray",
+    passwordHash: restPasswordHash,
+    tax: 7,
+    minimumOrder: 55,
+    isAvailable: true,
+  });
+
+  const cat6Grill = await Category.create({
+    title: "Мясо на углях",
+    image: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400",
+    restaurantId: rest6._id,
+  });
+
+  await Food.insertMany([
+    {
+      title: "Люля-Кебаб",
+      description: "Нежный фарш из говядины со специями",
+      price: 40,
+      image: "https://images.unsplash.com/photo-1560614382-33500b6c3241?w=400",
+      categoryId: cat6Grill._id,
+      restaurantId: rest6._id,
+    },
+    {
+      title: "Шашлык из курицы",
+      description: "Сочное куриное бедро в маринаде",
+      price: 35,
+      image:
+        "https://images.unsplash.com/photo-1532550907401-a500c9a57435?w=400",
+      categoryId: cat6Grill._id,
+      restaurantId: rest6._id,
+    },
+  ]);
+
+  // --- РЕСТОРАН 7: Плов Центр ---
+  const rest7 = await Restaurant.create({
+    name: "Плов Центр",
+    slug: "plov-center",
+    image: "https://images.unsplash.com/photo-1547592180-85f173990554?w=600",
+    address: "ул. Негмата Карабаева 12, Душанбе",
+    location: { type: "Point", coordinates: [68.76, 38.53] },
+    zoneId: zone._id,
+    username: "plovcenter",
+    passwordHash: restPasswordHash,
+    tax: 8,
+    minimumOrder: 45,
+    isAvailable: true,
+  });
+
+  const cat7Plov = await Category.create({
+    title: "Национальные блюда",
+    image: "https://images.unsplash.com/photo-1603133872875-684f208fbfa9?w=400",
+    restaurantId: rest7._id,
+  });
+
+  await Food.insertMany([
+    {
+      title: "Плов Ош-Палов",
+      description: "Традиционный таджикский плов",
+      price: 60,
+      image:
+        "https://images.unsplash.com/photo-1603133872875-684f208fbfa9?w=400",
+      categoryId: cat7Plov._id,
+      restaurantId: rest7._id,
+    },
+    {
+      title: "Шурпа",
+      description: "Наваристый мясной суп с овощами",
+      price: 40,
+      image: "https://images.unsplash.com/photo-1547592180-85f173990554?w=400",
+      categoryId: cat7Plov._id,
+      restaurantId: rest7._id,
+    },
+  ]);
+
+  // --- РЕСТОРАН 8: Wok & Roll ---
+  const rest8 = await Restaurant.create({
+    name: "Wok & Roll",
+    slug: "wok-roll",
+    image: "https://images.unsplash.com/photo-1512058564366-18510be2db19?w=600",
+    address: "пр. Рудаки 88, Душанбе",
+    location: { type: "Point", coordinates: [68.78, 38.59] },
+    zoneId: zone._id,
+    username: "wokroll",
+    passwordHash: restPasswordHash,
+    tax: 9,
+    minimumOrder: 65,
+    isAvailable: true,
+  });
+
+  const cat8Wok = await Category.create({
+    title: "Азиатская лапша",
+    image: "https://images.unsplash.com/photo-1585032226651-759b368d7246?w=400",
+    restaurantId: rest8._id,
+  });
+
+  await Food.insertMany([
+    {
+      title: "Wok с Курицей",
+      description: "Пшеничная лапша с овощами и соусом терияки",
+      price: 50,
+      image:
+        "https://images.unsplash.com/photo-1525755662778-989d0524087e?w=400",
+      categoryId: cat8Wok._id,
+      restaurantId: rest8._id,
+    },
+    {
+      title: "Спринг-роллы",
+      description: "Хрустящие мини-рулетики с овощами",
+      price: 30,
+      image: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400",
+      categoryId: cat8Wok._id,
+      restaurantId: rest8._id,
+    },
+  ]);
+
+  // --- РЕСТОРАН 9: Кондитерская Sweet Life ---
+  const rest9 = await Restaurant.create({
+    name: "Sweet Life",
+    slug: "sweet-life",
+    image: "https://images.unsplash.com/photo-1578985545062-69928b1d9587?w=600",
+    address: "ул. Шотэмур 32, Душанбе",
+    location: { type: "Point", coordinates: [68.79, 38.57] },
+    zoneId: zone._id,
+    username: "sweetlife",
+    passwordHash: restPasswordHash,
+    tax: 5,
+    minimumOrder: 40,
+    isAvailable: true,
+  });
+
+  const cat9Desserts = await Category.create({
+    title: "Десерты и Торты",
+    image: "https://images.unsplash.com/photo-1551024601-bec78aea704b?w=400",
+    restaurantId: rest9._id,
+  });
+
+  await Food.insertMany([
+    {
+      title: "Торт Медовик",
+      description: "Классический медовый торт со сметанным кремом",
+      price: 35,
+      image:
+        "https://images.unsplash.com/photo-1606313564200-e75d5e30476c?w=400",
+      categoryId: cat9Desserts._id,
+      restaurantId: rest9._id,
+    },
+    {
+      title: "Эклер",
+      description: "Французский эклер с заварным кремом",
+      price: 18,
+      image:
+        "https://images.unsplash.com/photo-1612203985729-70726954388c?w=400",
+      categoryId: cat9Desserts._id,
+      restaurantId: rest9._id,
+    },
+  ]);
+
+  // --- РЕСТОРАН 10: Shawarma City ---
+  const rest10 = await Restaurant.create({
+    name: "Shawarma City",
+    slug: "shawarma-city",
+    image: "https://images.unsplash.com/photo-1626700051175-6518c4793f4f?w=600",
+    address: "ул. Борбад 72, Душанбе",
+    location: { type: "Point", coordinates: [68.74, 38.54] },
+    zoneId: zone._id,
+    username: "shawarmacity",
+    passwordHash: restPasswordHash,
+    tax: 6,
+    minimumOrder: 35,
+    isAvailable: true,
+  });
+
+  const cat10Fast = await Category.create({
+    title: "Стрит-фуд",
+    image: "https://images.unsplash.com/photo-1561651823-34fed022540d?w=400",
+    restaurantId: rest10._id,
+  });
+
+  await Food.insertMany([
+    {
+      title: "Шаурма Классическая",
+      description: "Куриное мясо, овощи, фирменный соус в лаваше",
+      price: 32,
+      image:
+        "https://images.unsplash.com/photo-1626700051175-6518c4793f4f?w=400",
+      categoryId: cat10Fast._id,
+      restaurantId: rest10._id,
+    },
+    {
+      title: "Картофельные дольки",
+      description: "Запеченный картофель со специями",
+      price: 18,
+      image:
+        "https://images.unsplash.com/photo-1573080496219-bb080dd4f877?w=400",
+      categoryId: cat10Fast._id,
+      restaurantId: rest10._id,
     },
   ]);
 
@@ -447,111 +668,46 @@ async function run() {
   ]);
 
   // === Тестовые админы для проверки ролей ===
-  const dispatchPasswordHash = await bcrypt.hash("dispatch123", 10);
-  await Owner.create({
-    email: "dispatch@dastbadast.tj",
-    passwordHash: dispatchPasswordHash,
-    userType: "DISPATCHER",
-    permissions: {
-      canManageRestaurants: false,
-      canManageRiders: true,
-      canManageZones: false,
-      canManageConfiguration: false,
-      canViewAccounting: false,
-      canAssignRiders: true,
-      canManageUsers: false,
-    },
-    isActive: true,
-  });
-
-  const financePasswordHash = await bcrypt.hash("finance123", 10);
-  await Owner.create({
-    email: "finance@dastbadast.tj",
-    passwordHash: financePasswordHash,
-    userType: "FINANCE",
-    permissions: {
-      canManageRestaurants: false,
-      canManageRiders: false,
-      canManageZones: false,
-      canManageConfiguration: true,
-      canViewAccounting: true,
-      canAssignRiders: false,
-      canManageUsers: false,
-    },
-    isActive: true,
-  });
-
-  const operationsPasswordHash = await bcrypt.hash("operations123", 10);
-  await Owner.create({
-    email: "operations@dastbadast.tj",
-    passwordHash: operationsPasswordHash,
-    userType: "OPERATIONS",
-    permissions: {
-      canManageRestaurants: true,
-      canManageRiders: true,
-      canManageZones: true,
-      canManageConfiguration: false,
-      canViewAccounting: false,
-      canAssignRiders: true,
-      canManageUsers: false,
-    },
-    isActive: true,
-  });
-
-  const supportPasswordHash = await bcrypt.hash("support123", 10);
-  await Owner.create({
-    email: "support@dastbadast.tj",
-    passwordHash: supportPasswordHash,
-    userType: "SUPPORT",
-    permissions: {
-      canManageRestaurants: false,
-      canManageRiders: false,
-      canManageZones: false,
-      canManageConfiguration: false,
-      canViewAccounting: false,
-      canAssignRiders: false,
-      canManageUsers: true,
-    },
-    isActive: true,
-  });
-
-  const analystPasswordHash = await bcrypt.hash("analyst123", 10);
-  await Owner.create({
-    email: "analyst@dastbadast.tj",
-    passwordHash: analystPasswordHash,
-    userType: "ANALYST",
-    permissions: {
-      canManageRestaurants: false,
-      canManageRiders: false,
-      canManageZones: false,
-      canManageConfiguration: false,
-      canViewAccounting: true,
-      canAssignRiders: false,
-      canManageUsers: false,
-    },
-    isActive: true,
-  });
+  const roles = ["DISPATCHER", "FINANCE", "OPERATIONS", "SUPPORT", "ANALYST"];
+  for (const role of roles) {
+    const rHash = await bcrypt.hash(`${role.toLowerCase()}123`, 10);
+    await Owner.create({
+      email: `${role.toLowerCase()}@dastbadast.tj`,
+      passwordHash: rHash,
+      userType: role,
+      permissions: {
+        canManageRestaurants: ["OPERATIONS"].includes(role),
+        canManageRiders: ["DISPATCHER", "OPERATIONS"].includes(role),
+        canManageZones: ["OPERATIONS"].includes(role),
+        canManageConfiguration: ["FINANCE"].includes(role),
+        canViewAccounting: ["FINANCE", "ANALYST"].includes(role),
+        canAssignRiders: ["DISPATCHER", "OPERATIONS"].includes(role),
+        canManageUsers: ["SUPPORT"].includes(role),
+      },
+      isActive: true,
+    });
+  }
 
   console.log("✅ Seed complete");
-  console.log("\n📱 КЛИЕНТСКИЕ МОБИЛЬНЫЕ ДАННЫЕ (5 Пользователей):");
-  usersData.forEach((u) => {
-    console.log(
-      `   Имя: ${u.name.padEnd(8)} | Тел: ${u.phone} | Email: ${u.email} | Pass: user123`,
-    );
-  });
+  console.log(
+    `\n📱 КЛИЕНТСКИЕ МОБИЛЬНЫЕ ДАННЫЕ (${createdUsers.length} Пользователей):`,
+  );
+  console.log(
+    `   Создано 15 пользователей от alisher@dastbadast.tj до laylo@dastbadast.tj`,
+  );
+  console.log(`   Пароль для всех клиентов: user123`);
 
-  console.log("\n🛵 КУРЬЕРСКИЕ МОБИЛЬНЫЕ ДАННЫЕ (3 Курьера):");
-  console.log(`   Username: courier1 / courier2 / courier3`);
-  console.log(`   Phones:   +992900111222 / +992900222333 / +992900333444`);
-  console.log(`   Password: rider123`);
+  console.log("\n🛵 КУРЬЕРСКИЕ МОБИЛЬНЫЕ ДАННЫЕ (10 Курьеров):");
+  console.log(`   Логины: courier1 ... courier10`);
+  console.log(`   Пароль для всех курьеров: rider123`);
 
-  console.log("\n🖥 ПАНЕЛЬ РЕСТОРАНОВ (5 Ресторанов):");
+  console.log("\n🖥 ПАНЕЛЬ РЕСТОРАНОВ (10 Ресторанов):");
   console.log("   Пароль для всех ресторанов: store123");
-  console.log("   1. Чайхана №1     -> Логин: chayhana1");
-  console.log("   2. Bella Italia   -> Логин: bellaitalia");
-  console.log("   3. Burger House   -> Логин: burgerhouse");
-  console.log("   4. Сакура Суши    -> Логин: sakurasushi");
-  console.log("   5. Coffee & Bakery-> Логин: coffeebakery");
+  console.log("   1. Chayhana1      6. Shashlykray");
+  console.log("   2. Bellaitalia    7. Plovcenter");
+  console.log("   3. Burgerhouse    8. Wokroll");
+  console.log("   4. Sakurasushi    9. Sweetlife");
+  console.log("   5. Coffeebakery   10. Shawarmacity");
 
   process.exit(0);
 }

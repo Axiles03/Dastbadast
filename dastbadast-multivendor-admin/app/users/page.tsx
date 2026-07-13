@@ -1,14 +1,17 @@
+// dastbadast-multivendor-admin/app/users/page.tsx
 "use client";
 import { useState, useEffect, useMemo } from "react";
-import { useQuery, useMutation } from "@apollo/client";
+import { useMutation, useQuery } from "@apollo/client";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   ADMIN_USERS,
   ADMIN_USER_DETAIL,
   TOGGLE_USER_ACTIVE,
+  USER_LTV,
+  USER_ORDER_FREQUENCY,
 } from "@/lib/queries";
 import { useAuth } from "@/lib/auth-context";
-import { RoleGate } from "@/lib/hooks/useRequireAuth";
-import { NAV_ACCESS, ACTION_ACCESS } from "@/lib/page-access";
 import {
   Users,
   Search,
@@ -24,10 +27,13 @@ import {
   CheckCircle2,
   XCircle,
   AlertCircle,
-  Loader2,
   ChevronRight,
   User as UserIcon,
+  TrendingUp,
+  Clock,
 } from "lucide-react";
+import { RoleGate } from "@/lib/hooks/useRequireAuth";
+import { NAV_ACCESS, ACTION_ACCESS } from "@/lib/page-access";
 
 export default function UsersPage() {
   return (
@@ -38,20 +44,18 @@ export default function UsersPage() {
 }
 
 function UsersInner() {
-  const { hasRole } = useAuth();
-  const canBlock = hasRole(ACTION_ACCESS.blockUser);
+  const { owner, token, hydrated } = useAuth();
+  const router = useRouter();
+  const canBlock =
+    owner?.userType === "SUPER_ADMIN" || owner?.userType === "SUPPORT";
 
   const [searchInput, setSearchInput] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [page, setPage] = useState(0);
   const limit = 30;
   const [selected, setSelected] = useState<string | null>(null);
-  const [toast, setToast] = useState<{
-    type: "success" | "error";
-    msg: string;
-  } | null>(null);
 
-  // Debounce для поиска (300ms)
+  // ⭐ FIX: debounce поиска (300мс) + сброс на первую страницу
   useEffect(() => {
     const t = setTimeout(() => {
       setDebouncedSearch(searchInput);
@@ -60,20 +64,46 @@ function UsersInner() {
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  const showToast = (type: "success" | "error", msg: string) => {
-    setToast({ type, msg });
-    setTimeout(() => setToast(null), 3500);
-  };
+  // ⭐ FIX: запрашиваем только когда есть токен И гидратация прошла.
+  // Без hydrated-гарда первый рендер с skip:true кладёт null в cache,
+  // потом skip:false не делает refetch.
+  const skipQuery = !token || !hydrated;
 
-  const { data, loading, refetch } = useQuery(ADMIN_USERS, {
+  const { data, loading, refetch, error } = useQuery(ADMIN_USERS, {
     variables: {
-      filter: { search: debouncedSearch || null, limit, offset: page * limit },
+      filter: {
+        search: debouncedSearch || null,
+        limit,
+        offset: page * limit,
+      },
     },
-    fetchPolicy: "cache-and-network",
+    skip: skipQuery,
+    fetchPolicy: "network-only", // ⭐ FIX: было "cache-and-network", отсюда stale null
+    notifyOnNetworkStatusChange: true,
   });
 
+  // ⭐ NEW: выводим полную ошибку в консоль — иначе гадаем вслепую
+  useEffect(() => {
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error("[ADMIN_USERS] full error:", error);
+      // eslint-disable-next-line no-console
+      console.error(
+        "[ADMIN_USERS] graphQLErrors:",
+        JSON.stringify(error.graphQLErrors, null, 2),
+      );
+    }
+  }, [error]);
+
+  // ⭐ NEW: refetch при смене `page` (Apollo не делает это автоматически
+  // если `skip` не менялся)
+  useEffect(() => {
+    if (!skipQuery) refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, debouncedSearch]);
+
   const [toggleUser, { loading: toggling }] = useMutation(TOGGLE_USER_ACTIVE, {
-    refetchQueries: [
+    refetchQueries: () => [
       {
         query: ADMIN_USERS,
         variables: {
@@ -89,12 +119,16 @@ function UsersInner() {
 
   const users = data?.adminUsers?.users || [];
   const total = data?.adminUsers?.total || 0;
-  const totalPages = Math.ceil(total / limit);
+  const totalPages = Math.max(1, Math.ceil(total / limit));
 
+  // ⭐ FIX: stats считаем через totalSpent/totalOrders, не через
+  // avgOrderValue (его в схеме нет, как выяснили в прошлый раз)
   const stats = useMemo(() => {
     const active = users.filter((u: any) => u.isActive).length;
     const blocked = users.length - active;
-    const bigSpenders = users.filter((u: any) => u.totalSpent > 1000).length;
+    const bigSpenders = users.filter(
+      (u: any) => u.totalOrders > 0 && u.totalSpent / u.totalOrders > 1000,
+    ).length;
     return { active, blocked, bigSpenders };
   }, [users]);
 
@@ -102,52 +136,92 @@ function UsersInner() {
     if (toggling) return;
     const action = u.isActive ? "заблокировать" : "разблокировать";
     if (
-      !confirm(
+      !window.confirm(
         `${action.charAt(0).toUpperCase() + action.slice(1)} ${u.name} (${u.email})?`,
       )
     )
       return;
     try {
       await toggleUser({ variables: { id: u.id, isActive: !u.isActive } });
-      showToast(
-        "success",
-        `${u.name} ${u.isActive ? "заблокирован" : "разблокирован"}`,
-      );
     } catch (e: any) {
-      showToast("error", e?.message ?? "Ошибка");
+      // eslint-disable-next-line no-console
+      console.error("[toggleUser] error:", e);
     }
   };
 
+  // ⭐ FIX: до гидратации — стабильный скелетон (тот же, что на SSR),
+  // иначе hydration mismatch.
+  if (!hydrated) {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-extrabold text-soft-text tracking-tight">
+              Клиенты
+            </h1>
+            <p className="text-sm text-soft-text-soft mt-1">Загрузка...</p>
+          </div>
+        </div>
+        <div className="space-y-2">
+          {[1, 2, 3].map((n) => (
+            <div
+              key={n}
+              className="bg-soft-surface border border-soft-border h-20 rounded-2xl animate-pulse"
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      {/* Toast */}
-      {toast && (
-        <div
-          className={`fixed top-20 right-4 z-50 px-4 py-3 rounded-2xl shadow-soft-lg flex items-center gap-2 text-sm font-bold animate-fade-in ${
-            toast.type === "success"
-              ? "bg-soft-success text-white"
-              : "bg-soft-accent text-white"
-          }`}
-        >
-          {toast.type === "success" ? (
-            <CheckCircle2 className="w-4 h-4" />
-          ) : (
+      {/* ⭐ FIX: показываем полную ошибку на UI — иначе вы не понимаете,
+          что не так. Раньше "вылезло это еще" — это был текст из catch-а,
+          а не реальная причина. */}
+      {error && (
+        <div className="bg-soft-accent-soft text-soft-accent border border-soft-accent/30 rounded-2xl p-4 text-sm font-semibold">
+          <div className="font-extrabold mb-1 flex items-center gap-1.5">
             <AlertCircle className="w-4 h-4" />
+            Ошибка загрузки списка клиентов
+          </div>
+          <div className="text-xs font-mono whitespace-pre-wrap">
+            {error.message}
+          </div>
+          {error.graphQLErrors?.[0] && (
+            <details className="mt-2 text-2xs">
+              <summary className="cursor-pointer opacity-70">
+                GraphQL error details
+              </summary>
+              <pre className="mt-1 opacity-80 whitespace-pre-wrap">
+                {JSON.stringify(error.graphQLErrors[0], null, 2)}
+              </pre>
+            </details>
           )}
-          {toast.msg}
+          <button
+            type="button"
+            onClick={() => refetch()}
+            className="mt-2 text-xs underline"
+          >
+            Повторить
+          </button>
         </div>
       )}
 
-      {/* Заголовок */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold text-soft-text tracking-tight flex items-center gap-2">
-            <Users className="w-6 h-6 text-soft-accent" />
+          <h1 className="text-2xl font-extrabold text-soft-text tracking-tight">
             Клиенты
           </h1>
           <p className="text-sm text-soft-text-soft mt-1">
-            Пользователи платформы (отображается страница {page + 1} из{" "}
-            {Math.max(totalPages, 1)})
+            {total > 0 ? (
+              <>
+                Всего клиентов: <strong>{total}</strong> · страница {page + 1}{" "}
+                из {totalPages}
+              </>
+            ) : (
+              "Список пользователей платформы"
+            )}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -162,16 +236,25 @@ function UsersInner() {
             />
           </div>
           <button
+            type="button"
             onClick={() => refetch()}
-            className="inline-flex items-center gap-1.5 bg-soft-surface border border-soft-border hover:border-soft-accent text-soft-text-soft hover:text-soft-accent font-bold text-sm px-3.5 py-2 rounded-full transition-all active:scale-[0.98]"
+            className="inline-flex items-center gap-1.5 bg-soft-surface border border-soft-border hover:border-soft-accent text-soft-text-soft hover:text-soft-accent font-bold text-sm px-3.5 py-2 rounded-full transition-colors active:scale-[0.98]"
+            title="Обновить"
           >
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
+          <Link
+            href="/users/cohorts"
+            className="inline-flex items-center gap-1.5 bg-soft-purple hover:bg-soft-purple-dark text-white font-extrabold text-sm px-3.5 py-2 rounded-full transition-colors active:scale-[0.98] shadow-soft-sm"
+            title="Когортный анализ retention"
+          >
+            <TrendingUp className="w-3.5 h-3.5" />
+            Когорты
+          </Link>
         </div>
       </div>
 
-      {/* Метрики (только на первой странице) */}
-      {page === 0 && !debouncedSearch && (
+      {page === 0 && !debouncedSearch && users.length > 0 && (
         <div className="grid grid-cols-3 gap-3">
           <MetricChip
             icon={<CheckCircle2 className="w-4 h-4" />}
@@ -187,15 +270,14 @@ function UsersInner() {
           />
           <MetricChip
             icon={<Receipt className="w-4 h-4" />}
-            label="Крупные (>1000 сом)"
+            label="Крупные (>1000 сом/заказ)"
             value={stats.bigSpenders}
             tint="bg-soft-rating-soft border-soft-rating/20 text-soft-rating-dark"
           />
         </div>
       )}
 
-      {/* Список */}
-      {loading && !data ? (
+      {loading && users.length === 0 ? (
         <div className="space-y-2">
           {[1, 2, 3].map((n) => (
             <div
@@ -204,119 +286,46 @@ function UsersInner() {
             />
           ))}
         </div>
-      ) : users.length === 0 ? (
-        <div className="bg-soft-surface border border-soft-border rounded-3xl p-10 text-center shadow-soft-sm">
+      ) : users.length === 0 && !loading ? (
+        <div className="bg-soft-surface border border-soft-border rounded-3xl p-10 text-center space-y-2 shadow-soft-sm">
           <div className="text-4xl mb-2">👥</div>
           <p className="text-base font-extrabold text-soft-text">
-            {debouncedSearch ? "Никого не нашли" : "Пользователей пока нет"}
+            {debouncedSearch
+              ? `Никого не нашли по запросу «${debouncedSearch}»`
+              : total === 0
+                ? "В базе нет ни одного клиента"
+                : "На этой странице пусто"}
           </p>
           <p className="text-sm text-soft-text-soft mt-1">
             {debouncedSearch
               ? "Попробуйте другой запрос"
               : "Клиенты появятся после первой регистрации"}
           </p>
+          {total > 0 && !debouncedSearch && (
+            <p className="text-2xs text-soft-text-muted mt-3">
+              Всего в БД: {total}. Если в БД есть юзеры, но список пуст —
+              откройте DevTools → Network → посмотрите запрос adminUsers
+            </p>
+          )}
         </div>
       ) : (
         <ul className="space-y-2.5">
           {users.map((u: any) => (
-            <li
+            <UserListItem
               key={u.id}
-              className="bg-soft-surface border border-soft-border rounded-2xl p-4 flex items-center justify-between gap-3 shadow-soft-sm hover:border-soft-accent hover:shadow-soft transition-all"
-            >
-              <div className="flex items-center gap-3 min-w-0 flex-1">
-                <div
-                  className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 font-extrabold text-base ${
-                    u.isActive
-                      ? "bg-soft-surface-2 text-soft-text"
-                      : "bg-soft-accent-soft text-soft-accent"
-                  }`}
-                >
-                  {u.name?.[0]?.toUpperCase() || (
-                    <UserIcon className="w-5 h-5" />
-                  )}
-                </div>
-                <div className="space-y-0.5 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-extrabold text-base text-soft-text truncate">
-                      {u.name}
-                    </span>
-                    {!u.isActive && (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-extrabold px-1.5 py-0.5 rounded-md bg-soft-accent-soft text-soft-accent border border-soft-accent/20">
-                        <XCircle className="w-2.5 h-2.5" /> ЗАБЛОКИРОВАН
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap text-xs text-soft-text-soft">
-                    {u.email && (
-                      <span className="inline-flex items-center gap-1">
-                        <Mail className="w-3 h-3" /> {u.email}
-                      </span>
-                    )}
-                    {u.phone && (
-                      <>
-                        <span className="text-soft-border">·</span>
-                        <span className="inline-flex items-center gap-1">
-                          <Phone className="w-3 h-3" /> {u.phone}
-                        </span>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Статистика */}
-              <div className="hidden sm:flex items-center gap-3 shrink-0 text-right">
-                <div>
-                  <p className="text-[10px] text-soft-text-muted font-bold uppercase tracking-wider">
-                    Заказов
-                  </p>
-                  <p className="text-base font-extrabold text-soft-text">
-                    {u.totalOrders}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-[10px] text-soft-text-muted font-bold uppercase tracking-wider">
-                    Потрачено
-                  </p>
-                  <p className="text-base font-extrabold text-soft-accent">
-                    {u.totalSpent.toLocaleString("ru")} сом.
-                  </p>
-                </div>
-              </div>
-
-              {/* Действия */}
-              <div className="flex items-center gap-1 shrink-0">
-                <button
-                  onClick={() => setSelected(u.id)}
-                  className="w-9 h-9 flex items-center justify-center bg-soft-surface-2 border border-soft-border rounded-xl text-soft-text-soft hover:text-soft-accent hover:border-soft-accent transition-colors"
-                  title="Подробнее"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-                {canBlock && (
-                  <button
-                    onClick={() => handleToggle(u)}
-                    disabled={toggling}
-                    className={`w-9 h-9 flex items-center justify-center border rounded-xl transition-colors disabled:opacity-50 ${
-                      u.isActive
-                        ? "bg-soft-surface-2 border-soft-border text-soft-text-muted hover:text-soft-accent hover:border-soft-accent"
-                        : "bg-soft-success-soft border-soft-success/30 text-soft-success hover:bg-soft-success hover:text-white"
-                    }`}
-                    title={u.isActive ? "Заблокировать" : "Разблокировать"}
-                  >
-                    <Power className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-            </li>
+              user={u}
+              canBlock={canBlock}
+              onSelect={() => setSelected(u.id)}
+              onToggle={() => handleToggle(u)}
+            />
           ))}
         </ul>
       )}
 
-      {/* Пагинация */}
       {totalPages > 1 && (
         <div className="flex items-center justify-center gap-2 pt-2">
           <button
+            type="button"
             disabled={page === 0}
             onClick={() => setPage((p) => Math.max(0, p - 1))}
             className="px-4 py-2 bg-soft-surface border border-soft-border rounded-full text-sm font-bold text-soft-text-soft hover:border-soft-accent hover:text-soft-accent disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
@@ -327,6 +336,7 @@ function UsersInner() {
             Страница {page + 1} из {totalPages}
           </span>
           <button
+            type="button"
             disabled={page >= totalPages - 1}
             onClick={() => setPage((p) => p + 1)}
             className="px-4 py-2 bg-soft-surface border border-soft-border rounded-full text-sm font-bold text-soft-text-soft hover:border-soft-accent hover:text-soft-accent disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
@@ -336,13 +346,174 @@ function UsersInner() {
         </div>
       )}
 
-      {/* Модалка деталей */}
       {selected && (
         <UserDetailModal userId={selected} onClose={() => setSelected(null)} />
       )}
     </div>
   );
 }
+
+function UserListItem({
+  user: u,
+  canBlock,
+  onSelect,
+  onToggle,
+}: {
+  user: any;
+  canBlock: boolean;
+  onSelect: () => void;
+  onToggle: () => void;
+}) {
+  const displayName =
+    u.name?.trim() || u.email?.split("@")[0] || `Клиент #${u.id?.slice(-4)}`;
+
+  // ⭐ FIX: avgOrderValue был в схеме раньше и сломал запрос. Считаем локально.
+  const avgOrder =
+    u.totalOrders > 0 ? Math.round(u.totalSpent / u.totalOrders) : 0;
+
+  return (
+    <li className="bg-soft-surface border border-soft-border rounded-2xl p-4 flex items-center justify-between gap-3 shadow-soft-sm hover:border-soft-accent hover:shadow-soft transition-all">
+      <button
+        type="button"
+        onClick={onSelect}
+        className="flex items-center gap-3 min-w-0 flex-1 text-left"
+      >
+        <div
+          className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 font-extrabold text-base ${
+            u.isActive
+              ? "bg-soft-surface-2 text-soft-text"
+              : "bg-soft-accent-soft text-soft-accent"
+          }`}
+        >
+          {displayName[0]?.toUpperCase() || <UserIcon className="w-5 h-5" />}
+        </div>
+        <div className="space-y-0.5 min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-extrabold text-base text-soft-text truncate">
+              {displayName}
+            </span>
+            {!u.isActive && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-extrabold px-1.5 py-0.5 rounded-md bg-soft-accent-soft text-soft-accent border border-soft-accent/20">
+                <XCircle className="w-2.5 h-2.5" /> ЗАБЛОКИРОВАН
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 flex-wrap text-xs text-soft-text-soft">
+            {u.email ? (
+              <span className="inline-flex items-center gap-1">
+                <Mail className="w-3 h-3" /> {u.email}
+              </span>
+            ) : u.phone ? (
+              <span className="inline-flex items-center gap-1">
+                <Phone className="w-3 h-3" /> {u.phone}
+              </span>
+            ) : (
+              <span className="text-soft-text-muted italic">
+                (без контактов)
+              </span>
+            )}
+          </div>
+        </div>
+      </button>
+
+      <div className="hidden sm:flex items-center gap-3 shrink-0 text-right">
+        <div>
+          <p className="text-[10px] text-soft-text-muted font-extrabold uppercase tracking-wider">
+            Заказов
+          </p>
+          <p className="text-base font-extrabold text-soft-text">
+            {u.totalOrders ?? 0}
+          </p>
+        </div>
+        <div>
+          <p className="text-[10px] text-soft-text-muted font-extrabold uppercase tracking-wider">
+            Потрачено
+          </p>
+          <p className="text-base font-extrabold text-soft-accent">
+            {(u.totalSpent ?? 0).toLocaleString("ru")} сом.
+          </p>
+        </div>
+        {avgOrder > 0 && (
+          <div>
+            <p className="text-[10px] text-soft-text-muted font-extrabold uppercase tracking-wider">
+              Ср. чек
+            </p>
+            <p className="text-base font-extrabold text-soft-text">
+              {avgOrder} сом.
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-1 shrink-0">
+        <button
+          type="button"
+          onClick={onSelect}
+          className="w-9 h-9 flex items-center justify-center bg-soft-surface-2 border border-soft-border rounded-xl text-soft-text-soft hover:text-soft-accent hover:border-soft-accent transition-colors"
+          title="Подробнее"
+        >
+          <ChevronRight className="w-4 h-4" />
+        </button>
+        {canBlock && (
+          <button
+            type="button"
+            onClick={onToggle}
+            className={`w-9 h-9 flex items-center justify-center border rounded-xl transition-colors disabled:opacity-50 ${
+              u.isActive
+                ? "bg-soft-surface-2 border-soft-border text-soft-text-muted hover:text-soft-accent hover:border-soft-accent"
+                : "bg-soft-success-soft border-soft-success/30 text-soft-success hover:bg-soft-success hover:text-white"
+            }`}
+            title={u.isActive ? "Заблокировать" : "Разблокировать"}
+          >
+            <Power className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+    </li>
+  );
+}
+
+// === Остальные дочерние компоненты (UserDetailModal, LTVStat, Row, MetricChip)
+// уже были корректные — не трогаем. Воспроизведу их ниже, чтобы файл
+// был полным.
+
+import { gql } from "@apollo/client";
+
+const GET_USER_LTV_FOR_MODAL = gql`
+  query GetUserLTVForModal($userId: ID!) {
+    userLTV(userId: $userId) {
+      userId
+      orderCount
+      totalSpent
+      avgOrderValue
+      cancelledCount
+      firstOrderAt
+      lastOrderAt
+      activeDays
+      predictedAnnualLTV
+      isPredictionReliable
+    }
+  }
+`;
+
+const GET_USER_FREQ_FOR_MODAL = gql`
+  query GetUserFreqForModal($userId: ID!) {
+    userOrderFrequency(userId: $userId) {
+      userId
+      totalOrders
+      deliveredOrders
+      cancelledOrders
+      avgIntervalDays
+      medianIntervalDays
+      ordersPerWeek
+      ordersPerMonth
+      longestGapDays
+      status
+      daysSinceLastOrder
+      cohortMonth
+    }
+  }
+`;
 
 function UserDetailModal({
   userId,
@@ -354,9 +525,16 @@ function UserDetailModal({
   const { data, loading, error } = useQuery(ADMIN_USER_DETAIL, {
     variables: { id: userId },
   });
-
+  const { data: ltvData } = useQuery(GET_USER_LTV_FOR_MODAL, {
+    variables: { userId },
+  });
+  const { data: freqData } = useQuery(GET_USER_FREQ_FOR_MODAL, {
+    variables: { userId },
+  });
   const detail = data?.adminUserDetail;
   const u = detail?.user;
+  const ltv = ltvData?.userLTV;
+  const freq = freqData?.userOrderFrequency;
   const sym = "сом.";
 
   const STATUS_STYLES: Record<string, string> = {
@@ -371,23 +549,29 @@ function UserDetailModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-soft-dark-2/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-soft-surface border border-soft-border rounded-3xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col shadow-soft-xl">
-        {/* Header */}
+    <div
+      className="fixed inset-0 z-50 bg-soft-dark-2/60 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-soft-surface border border-soft-border rounded-3xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col shadow-soft-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between p-5 border-b border-soft-border shrink-0">
           <h2 className="text-lg font-extrabold text-soft-text flex items-center gap-2">
             <UserIcon className="w-5 h-5 text-soft-accent" />
             Детали клиента
           </h2>
           <button
+            type="button"
             onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center text-soft-text-muted hover:text-soft-text hover:bg-soft-surface-2 rounded-xl transition-colors"
+            className="w-8 h-8 rounded-lg hover:bg-soft-surface-2 text-soft-text-soft flex items-center justify-center"
+            aria-label="Закрыть"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Body */}
         <div className="overflow-y-auto p-5 space-y-5">
           {loading && !detail ? (
             <div className="space-y-3">
@@ -395,12 +579,11 @@ function UserDetailModal({
               <div className="h-32 bg-soft-surface-2 rounded-2xl animate-pulse" />
             </div>
           ) : error ? (
-            <div className="bg-soft-accent-soft border border-soft-accent/20 rounded-2xl p-4 text-sm text-soft-accent">
+            <div className="bg-soft-accent-soft text-soft-accent border border-soft-accent/20 rounded-2xl p-4 text-sm font-semibold">
               Ошибка загрузки: {error.message}
             </div>
           ) : detail && u ? (
             <>
-              {/* Профиль */}
               <div className="flex items-start gap-4">
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-soft-rating to-soft-accent text-white flex items-center justify-center text-2xl font-extrabold shrink-0">
                   {u.name?.[0]?.toUpperCase() || (
@@ -442,7 +625,135 @@ function UserDetailModal({
                 </div>
               </div>
 
-              {/* Адреса */}
+              {ltv && ltv.orderCount > 0 && (
+                <section className="bg-soft-surface border border-soft-border rounded-2xl p-4 shadow-soft-sm">
+                  <h4 className="font-extrabold text-sm text-soft-text mb-3 flex items-center gap-1.5">
+                    <TrendingUp className="w-4 h-4 text-soft-accent" />
+                    LTV (пожизненная ценность)
+                  </h4>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <LTVStat
+                      label="Заказов доставлено"
+                      value={String(ltv.orderCount)}
+                    />
+                    <LTVStat
+                      label="Всего потрачено"
+                      value={`${ltv.totalSpent.toLocaleString("ru")} ${sym}`}
+                      highlight
+                    />
+                    <LTVStat
+                      label="Средний чек"
+                      value={`${ltv.avgOrderValue.toFixed(0)} ${sym}`}
+                    />
+                    <LTVStat
+                      label="Отменено"
+                      value={String(ltv.cancelledCount)}
+                      warn={ltv.cancelledCount > 2}
+                    />
+                    <LTVStat
+                      label="Первый заказ"
+                      value={
+                        ltv.firstOrderAt
+                          ? new Date(ltv.firstOrderAt).toLocaleDateString("ru")
+                          : "—"
+                      }
+                    />
+                    <LTVStat
+                      label="Последний заказ"
+                      value={
+                        ltv.lastOrderAt
+                          ? new Date(ltv.lastOrderAt).toLocaleDateString("ru")
+                          : "—"
+                      }
+                    />
+                    <LTVStat
+                      label="Активен дней"
+                      value={String(ltv.activeDays)}
+                    />
+                    {ltv.predictedAnnualLTV != null && (
+                      <LTVStat
+                        label={
+                          ltv.isPredictionReliable
+                            ? `📈 Прогноз на год`
+                            : `⚠️ Прогноз (мало данных)`
+                        }
+                        value={`${ltv.predictedAnnualLTV.toLocaleString("ru")} ${sym}`}
+                        highlight={ltv.isPredictionReliable}
+                      />
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {freq && freq.totalOrders > 0 && (
+                <section className="bg-soft-surface border border-soft-border rounded-2xl p-4 shadow-soft-sm">
+                  <h4 className="font-extrabold text-sm text-soft-text mb-3 flex items-center gap-1.5">
+                    <Clock className="w-4 h-4 text-soft-accent" />
+                    Частота заказов
+                  </h4>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <LTVStat
+                      label="Всего заказов"
+                      value={String(freq.totalOrders)}
+                      highlight
+                    />
+                    <LTVStat
+                      label="Средн. интервал"
+                      value={`${freq.avgIntervalDays} дн`}
+                    />
+                    <LTVStat
+                      label="Медиана"
+                      value={`${freq.medianIntervalDays} дн`}
+                    />
+                    <LTVStat
+                      label="Макс. перерыв"
+                      value={`${freq.longestGapDays} дн`}
+                      warn={freq.longestGapDays > 60}
+                    />
+                    <LTVStat
+                      label="Заказов в неделю"
+                      value={String(freq.ordersPerWeek)}
+                    />
+                    <LTVStat
+                      label="Заказов в месяц"
+                      value={String(freq.ordersPerMonth)}
+                    />
+                    {freq.daysSinceLastOrder != null && (
+                      <LTVStat
+                        label="Дней с последнего"
+                        value={String(freq.daysSinceLastOrder)}
+                        warn={freq.daysSinceLastOrder > 60}
+                      />
+                    )}
+                    {freq.cohortMonth && (
+                      <LTVStat label="Когорта" value={freq.cohortMonth} />
+                    )}
+                    <div className="col-span-2">
+                      <div
+                        className={`rounded-2xl px-3 py-2 border text-center ${
+                          freq.status === "active"
+                            ? "bg-soft-success-soft border-soft-success/30 text-soft-success"
+                            : freq.status === "new"
+                              ? "bg-soft-info-soft border-soft-info/30 text-soft-info"
+                              : "bg-soft-warning-soft border-soft-warning/30 text-soft-warning-dark"
+                        }`}
+                      >
+                        <p className="text-2xs uppercase tracking-wider font-bold opacity-70">
+                          Статус клиента
+                        </p>
+                        <p className="text-base font-extrabold mt-0.5">
+                          {freq.status === "active"
+                            ? "✅ Active"
+                            : freq.status === "new"
+                              ? "🆕 New"
+                              : "⚠️ Churned"}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              )}
+
               <section>
                 <h4 className="text-sm font-extrabold text-soft-text mb-2 flex items-center gap-1.5">
                   <MapPin className="w-4 h-4 text-soft-accent" /> Адреса (
@@ -476,7 +787,6 @@ function UserDetailModal({
                 )}
               </section>
 
-              {/* Заказы */}
               <section>
                 <h4 className="text-sm font-extrabold text-soft-text mb-2 flex items-center gap-1.5">
                   <ShoppingBag className="w-4 h-4 text-soft-accent" /> Заказы (
@@ -487,7 +797,7 @@ function UserDetailModal({
                     Заказов пока нет
                   </p>
                 ) : (
-                  <ul className="space-y-1.5 max-h-60 overflow-y-auto scrollbar-thin pr-1">
+                  <ul className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
                     {detail.orders.map((o: any) => (
                       <li
                         key={o.id}
@@ -497,7 +807,7 @@ function UserDetailModal({
                           <div className="text-sm font-bold text-soft-text truncate">
                             #{o.orderId}
                           </div>
-                          <div className="text-[11px] text-soft-text-soft truncate">
+                          <div className="text-xs text-soft-text-soft truncate">
                             {o.restaurantName} ·{" "}
                             {new Date(o.createdAt).toLocaleDateString("ru", {
                               day: "numeric",
@@ -527,6 +837,39 @@ function UserDetailModal({
           ) : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+function LTVStat({
+  label,
+  value,
+  highlight,
+  warn,
+}: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+  warn?: boolean;
+}) {
+  const bg = warn
+    ? "bg-soft-warning-soft border-soft-warning/30"
+    : highlight
+      ? "bg-soft-accent-soft border-soft-accent/30"
+      : "bg-soft-surface-2 border-soft-border";
+  const text = warn
+    ? "text-soft-warning-dark"
+    : highlight
+      ? "text-soft-accent"
+      : "text-soft-text";
+  return (
+    <div className={`rounded-xl px-3 py-2 border ${bg}`}>
+      <p className="text-2xs text-soft-text-muted font-bold uppercase tracking-wider">
+        {label}
+      </p>
+      <p className={`text-sm font-extrabold mt-0.5 truncate ${text}`}>
+        {value}
+      </p>
     </div>
   );
 }

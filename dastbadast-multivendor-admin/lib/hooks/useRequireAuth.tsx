@@ -12,13 +12,14 @@ import { useAuth, OwnerType } from "@/lib/auth-context";
  * что показывать при hasAccess === false.
  */
 export function useRequireAuth(allowedRoles?: OwnerType[]) {
-  const { owner, loading } = useAuth();
+  const { owner, token, hydrated, loading } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (!loading && !owner) router.push("/login");
-  }, [owner, loading, router]);
+    if (!hydrated) return;
+    if (loading) return;
+    if (!owner || !token) router.push("/login");
+  }, [hydrated, loading, owner, token, router]);
 
   const hasAccess =
     !!owner &&
@@ -26,7 +27,7 @@ export function useRequireAuth(allowedRoles?: OwnerType[]) {
       owner.userType === "SUPER_ADMIN" ||
       allowedRoles.includes(owner.userType));
 
-  return { owner, loading, hasAccess };
+  return { owner, token, loading, hydrated, hasAccess };
 }
 
 /**
@@ -45,9 +46,10 @@ export function RoleGate({
   allowedRoles?: OwnerType[];
   fallback?: React.ReactNode;
 }) {
-  const { owner, loading, hasAccess } = useRequireAuth(allowedRoles);
+  const { owner, token, loading, hydrated, hasAccess } =
+    useRequireAuth(allowedRoles);
 
-  if (loading) {
+  if (!hydrated || loading) {
     return (
       <div className="text-center py-20">
         <Loader2 className="w-8 h-8 text-soft-accent animate-spin mx-auto" />
@@ -56,7 +58,7 @@ export function RoleGate({
     );
   }
 
-  if (!owner) return null;
+  if (!owner || !token) return null;
 
   if (!hasAccess) {
     return (

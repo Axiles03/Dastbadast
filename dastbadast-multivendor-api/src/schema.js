@@ -106,6 +106,7 @@ export const typeDefs = /* GraphQL */ `
     addressesCount: Int!
     totalOrders: Int!
     totalSpent: Float!
+    avgOrderValue: Float
     lastOrderAt: String
   }
 
@@ -852,6 +853,81 @@ export const typeDefs = /* GraphQL */ `
     averageDeliveryFee: Float!
   }
 
+  type UserLTV {
+    userId: ID!
+    orderCount: Int!
+    totalSpent: Float!
+    avgOrderValue: Float!
+    cancelledCount: Int!
+    firstOrderAt: String
+    lastOrderAt: String
+    activeDays: Int!
+    predictedAnnualLTV: Float
+    isPredictionReliable: Boolean!
+  }
+
+  type UserOrderFrequency {
+    userId: ID!
+    totalOrders: Int!
+    deliveredOrders: Int!
+    cancelledOrders: Int!
+    avgIntervalDays: Float!
+    medianIntervalDays: Float!
+    ordersPerWeek: Float!
+    ordersPerMonth: Float!
+    longestGapDays: Float!
+    status: String! # "active" | "churned" | "new"
+    daysSinceLastOrder: Int
+    cohortMonth: String
+  }
+
+  type CohortRow {
+    month: String!
+    totalUsers: Int!
+    retentionByMonth: [Float!]!
+  }
+
+  type CohortResult {
+    cohorts: [CohortRow!]!
+    months: Int!
+  }
+
+  type ChurnRate {
+    period: Int!
+    activeAtStart: Int!
+    churned: Int!
+    retained: Int!
+    churnRatePct: Float!
+    retentionRatePct: Float!
+    avgOrdersPerRetained: Float!
+  }
+
+  type DailyRevenuePoint {
+    date: String!
+    revenue: Float!
+    orders: Int!
+  }
+
+  type ForecastPoint {
+    date: String!
+    predictedRevenue: Float!
+    predictedOrders: Int!
+    isForecast: Boolean!
+  }
+
+  type DemandForecast {
+    history: [DailyRevenuePoint!]!
+    forecast: [ForecastPoint!]!
+    totals: DemandForecastTotals!
+  }
+
+  type DemandForecastTotals {
+    avgDailyRevenue: Float!
+    avgDailyOrders: Float!
+    totalForecastRevenue: Float!
+    trendPct: Float!
+  }
+
   type Query {
     configuration: Configuration
     deliveryZone: DeliveryZone
@@ -878,7 +954,7 @@ export const typeDefs = /* GraphQL */ `
     availableOrdersForRiders: [Order!]!
     rider(id: ID!): Rider
     chatMessages(orderId: ID!): [ChatMessage!]!
-    adminAccounting: AdminAccounting
+    adminAccounting(from: String, to: String): AdminAccounting!
     zones: [Zone!]!
     zone(id: ID!): Zone
     adminDashboardMetrics: AdminDashboard!
@@ -893,12 +969,16 @@ export const typeDefs = /* GraphQL */ `
       perKmPrice: Float
     ): DeliveryPriceBreakdown
     getCart: Cart
-    # ⭐ ФИКС: поле объявлено в схеме (резолвер уже был подключён)
     estimateDelivery(restaurantId: ID!, addressId: ID!): EstimateDeliveryResult!
     riderFinancials(riderId: ID!): RiderFinancials!
     allRidersWithLocation: [Rider!]!
     ordersForMap(status: OrderStatus): [Order!]!
     riderLocationOnMap(riderId: ID!): RiderLocation
+    userLTV(userId: ID!): UserLTV
+    userOrderFrequency(userId: ID!): UserOrderFrequency
+    userCohorts(months: Int): CohortResult!
+    churnRate(period: Int): ChurnRate!
+    demandForecast(days: Int): DemandForecast!
   }
 
   type Mutation {

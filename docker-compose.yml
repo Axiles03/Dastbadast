@@ -1,3 +1,4 @@
+# docker-compose.yml
 services:
   mongo:
     image: mongo:7
@@ -7,6 +8,37 @@ services:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
+    healthcheck:
+      # ⭐ проверяем, что Mongo реально принимает запросы
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ⭐ NEW: Redis для in-memory pubsub, GPS-кеша и rate-limit.
+  # Используем официальный образ redis:7-alpine — маленький (~13MB).
+  # Конфиг минимальный: AOF disabled (нам не нужна персистентность —
+  # если контейнер упадёт, при следующем старте GPS-кеш будет
+  # пересобран из Mongo за 5 минут, заказы не теряются).
+  redis:
+    image: redis:7-alpine
+    container_name: dastbadast-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      # ⭐ проверяем, что Redis отвечает на PING
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
 volumes:
   mongo_data:
+  # ⭐ NEW: volume для Redis
+  redis_data:

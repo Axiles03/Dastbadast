@@ -58,6 +58,11 @@ import {
   adminUserDetail,
   toggleUserActive,
   updateUser,
+  userLTV,
+  userOrderFrequency,
+  userCohorts,
+  churnRate,
+  demandForecast,
 } from "./user.js";
 import {
   orders,
@@ -211,6 +216,11 @@ export const resolvers = {
     allRidersWithLocation,
     ordersForMap,
     riderLocationOnMap,
+    userLTV,
+    userOrderFrequency,
+    userCohorts,
+    churnRate,
+    demandForecast,
   },
   Mutation: {
     createUser,
