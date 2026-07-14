@@ -301,17 +301,8 @@ export default function ProfileScreen() {
             icon="💬"
             iconBg="bg-purple-soft"
             title="Поддержка"
-            subtitle="Если что-то не работает"
-            onPress={() =>
-              Alert.alert("Поддержка", "Напишите нам: support@dastbadast.tj", [
-                { text: "Отмена", style: "cancel" },
-                {
-                  text: "Открыть почту",
-                  onPress: () =>
-                    Linking.openURL("mailto:support@dastbadast.tj"),
-                },
-              ])
-            }
+            subtitle="Написать в чат поддержки"
+            onPress={() => router.push("/(app)/support" as any)}
           />
         </View>
 

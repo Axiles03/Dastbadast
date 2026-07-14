@@ -81,7 +81,7 @@ export default function HelpPage() {
       </div>
 
       {/* Контакты поддержки */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <a
           href="tel:+992446000000"
           className="bg-soft-surface border border-soft-border rounded-2xl p-4 shadow-soft-sm flex items-center gap-3 hover:border-soft-success transition-colors"
@@ -121,11 +121,26 @@ export default function HelpPage() {
           </div>
           <div className="min-w-0">
             <div className="text-xs text-soft-text-muted">Telegram</div>
+
             <div className="text-sm font-bold text-soft-text truncate">
               @dastbadast_support
             </div>
           </div>
         </a>
+        <Link
+          href="/support"
+          className="bg-soft-surface border border-soft-border rounded-2xl p-4 shadow-soft-sm flex items-center gap-3 hover:border-soft-accent transition-colors sm:col-span-2 lg:col-span-1"
+        >
+          <div className="w-10 h-10 rounded-xl bg-soft-accent-soft text-soft-accent flex items-center justify-center shrink-0">
+            <MessageCircle className="w-5 h-5" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-xs text-soft-text-muted">Онлайн-чат</div>
+            <div className="text-sm font-bold text-soft-text truncate">
+              Написать в поддержку
+            </div>
+          </div>
+        </Link>
       </div>
 
       {/* FAQ */}

@@ -1,4 +1,4 @@
-import { OwnerType, Permissions } from "@/lib/auth-context";
+import { OwnerType } from "@/lib/auth-context";
 
 /**
  * Карта доступа: какие роли могут видеть какие пункты меню.
@@ -22,6 +22,9 @@ export const NAV_ACCESS = {
     "SUPPORT",
     "ANALYST",
   ],
+  // ⭐ NEW: чат поддержки — доступен роли SUPPORT (и SUPER_ADMIN — у него
+  // доступ есть всегда, см. hasRole() в auth-context.tsx)
+  support: ["SUPER_ADMIN", "SUPPORT"],
   restaurants: ["SUPER_ADMIN", "OPERATIONS"],
   riders: ["SUPER_ADMIN", "DISPATCHER", "OPERATIONS"],
   zones: ["SUPER_ADMIN", "OPERATIONS"],
@@ -53,6 +56,10 @@ export const ACTION_ACCESS = {
   // Users
   viewUserDetails: ["SUPER_ADMIN", "SUPPORT"],
   blockUser: ["SUPER_ADMIN", "SUPPORT"],
+
+  // Support chat
+  claimSupportThread: ["SUPER_ADMIN", "SUPPORT"],
+  closeSupportThread: ["SUPER_ADMIN", "SUPPORT"],
 
   // Admin management
   createAdmin: ["SUPER_ADMIN"],

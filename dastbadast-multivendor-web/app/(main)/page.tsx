@@ -1,3 +1,4 @@
+// dastbadast-multivendor-web/app/(main)/page.tsx
 import { getClient } from "@/lib/apollo-server";
 import { GET_RESTAURANTS, GET_CONFIGURATION } from "@/lib/queries";
 import { HomeClient } from "@/components/HomeClient";
@@ -7,10 +8,28 @@ export const dynamic = "force-dynamic";
 export default async function Home() {
   const client = getClient();
 
-  const [{ data: cfgData }, { data }] = await Promise.all([
-    client.query({ query: GET_CONFIGURATION }),
-    client.query({ query: GET_RESTAURANTS }),
-  ]);
+  // ⭐ FIX: Configuration is not defined (ReferenceError) на сервере
+  // раньше пробрасывалось клиенту как "errors[].extensions.code=INTERNAL_SERVER_ERROR"
+  // с сообщением без контекста, и любые useQuery(GET_CONFIGURATION) падали.
+  // Теперь оборачиваем в try/catch — если один из запросов падает (например,
+  // сервер ещё не перезапущен после правок), главная страница всё равно
+  // отрисуется с дефолтами, а ошибка уйдёт в server-логи для дебага.
+  let cfgData: any = null;
+  let data: any = null;
+  try {
+    const [cfgRes, restRes] = await Promise.all([
+      client.query({ query: GET_CONFIGURATION }),
+      client.query({ query: GET_RESTAURANTS }),
+    ]);
+    cfgData = cfgRes.data;
+    data = restRes.data;
+  } catch (e) {
+    // ⭐ FIX: НЕ проглатываем молча — логируем в stderr, чтобы диагностика
+    // оставалась доступной через `pm2 logs` / Vercel logs.
+    console.error("[home] GraphQL bootstrap failed:", e);
+    // data останется null — useQuery на клиенте сможет догрузить,
+    // либо покажется пустое состояние с CTA.
+  }
 
   const restaurants = (data?.restaurants ?? []).map((r: any) => ({
     id: String(r.id),
@@ -22,6 +41,21 @@ export default async function Home() {
   }));
 
   const sym = cfgData?.configuration?.currencySymbol ?? "сом.";
+
+  // ⭐ FIX: если оба запроса упали — рендерим минимальный fallback,
+  // чтобы Next.js не падал целиком из-за 500 на root странице.
+  if (!data) {
+    return (
+      <HomeClient
+        restaurants={[]}
+        currencySymbol="сом."
+        popularFoods={[]}
+        saladFoods={[]}
+        pizzaFoods={[]}
+        pastaFoods={[]}
+      />
+    );
+  }
 
   // Подтягиваем блюда первого ресторана (MVP-решение)
   let popularFoods: any[] = [];

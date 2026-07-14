@@ -31,6 +31,25 @@ export function RestaurantCard({
   const cover = COVERS[hash(restaurant.id) % COVERS.length];
   const isPeek = variant === "peek";
 
+  // но забыли добавить извлечение. Сейчас добавляем.
+  const rating =
+    typeof restaurant.averageRating === "number" && restaurant.averageRating > 0
+      ? restaurant.averageRating
+      : null;
+  const reviews =
+    typeof restaurant.totalRatings === "number" ? restaurant.totalRatings : 0;
+
+  // ⭐ Distance и ETA — пока NULL. Они зависят от выбранного адреса
+  // пользователя, и считаются через отдельные queries. Здесь
+  // оставляем "—", чтобы UI знал, что данные ещё не подгружены.
+  const distance: number | null =
+    typeof restaurant.distance === "number" ? restaurant.distance : null;
+  const deliveryTime: number | null =
+    typeof restaurant.deliveryTime === "number"
+      ? restaurant.deliveryTime
+      : null;
+  const minimumOrder = restaurant.minimumOrder ?? 0;
+
   return (
     <Link
       href={`/restaurant/${restaurant.slug || restaurant.id}`}
@@ -51,22 +70,44 @@ export function RestaurantCard({
           }}
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
         />
-        <div className="absolute top-2.5 left-2.5 inline-flex items-center gap-1 bg-white/95 backdrop-blur-sm px-2 py-0.5 rounded-full text-xs font-extrabold text-soft-text shadow-soft-sm">
-          <Star className="w-3 h-3 text-soft-rating fill-current" />{" "}
-          {restaurant.rating}
-        </div>
+
+        {rating != null ? (
+          <div className="absolute top-2.5 left-2.5 inline-flex items-center gap-1 bg-white/95 backdrop-blur-sm px-2 py-0.5 rounded-full text-xs font-extrabold text-soft-text shadow-soft-sm">
+            <Star className="w-3 h-3 text-soft-rating fill-current" />
+            {rating.toFixed(1)}
+            {reviews > 0 && (
+              <span className="text-soft-text-muted text-[10px] ml-0.5">
+                ·{reviews}
+              </span>
+            )}
+          </div>
+        ) : (
+          <div className="absolute top-2.5 left-2.5">
+            <span className="bg-soft-info-soft text-soft-info border border-soft-info/30 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
+              Новый
+            </span>
+          </div>
+        )}
       </div>
       <div className="p-3">
         <h3 className="font-bold text-sm text-soft-text group-hover:text-soft-accent transition-colors truncate">
           {restaurant.name}
         </h3>
+        {/* ⭐ ШАГ 1: показываем РЕАЛЬНЫЕ distance/deliveryTime от бэкенда,
+    с graceful fallback "—" когда данных нет (адрес не выбран). */}
         <div className="mt-2 flex items-center justify-between text-xs text-soft-text-soft">
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-0.5">
-              <Clock className="w-3.5 h-3.5" /> {restaurant.deliveryTime} мин
+              <Clock className="w-3.5 h-3.5" />
+              {typeof restaurant.deliveryTime === "number"
+                ? `${restaurant.deliveryTime} мин`
+                : "—"}
             </span>
             <span className="inline-flex items-center gap-0.5">
-              <MapPin className="w-3.5 h-3.5" /> {restaurant.distance} км
+              <MapPin className="w-3.5 h-3.5" />
+              {typeof restaurant.distanceKm === "number"
+                ? `${restaurant.distanceKm} км`
+                : "—"}
             </span>
           </div>
           <span className="font-bold text-soft-accent">

@@ -1,12 +1,12 @@
 // dastbadast-multivendor-web/components/FoodDetailModal.tsx
 "use client";
-
+import { useAuth } from "@/lib/auth-context";
 import { useState } from "react";
 import { useMutation, useQuery } from "@apollo/client";
 import { ADD_FOOD_REVIEW, GET_FOOD_REVIEWS } from "@/lib/queries";
 import { foodImageUrl } from "@/lib/category-icons";
 import { AddToCartButton } from "./AddToCartButton";
-import { Star, X } from "lucide-react";
+import { Link, Star, X } from "lucide-react";
 import { ModifierGroup } from "./modifiers/ModifierGroup";
 import { useFoodModifiers } from "@/hooks/useFoodModifiers";
 
@@ -169,7 +169,6 @@ export function FoodDetailModal({
               </p>
             )}
           </div>
-
           {/* ⭐⭐⭐ ШАГ 5: блок модификаторов */}
           {groups.length > 0 && (
             <div className="space-y-3">
@@ -218,7 +217,6 @@ export function FoodDetailModal({
               </div>
             </div>
           )}
-
           {/* Цена + рейтинг + кнопка добавления (с учётом модификаторов) */}
           <div className="flex items-center justify-between gap-3 p-3.5 bg-soft-surface-2 border border-soft-border rounded-2xl">
             <div className="min-w-0">
@@ -263,7 +261,6 @@ export function FoodDetailModal({
               />
             </div>
           </div>
-
           {/* ⭐ Если есть модификаторы — добавляем глобальный footer CTA с проверкой валидации */}
           {groups.length > 0 && (
             <button
@@ -286,7 +283,6 @@ export function FoodDetailModal({
                 : "Заполните обязательные опции"}
             </button>
           )}
-
           {/* Отзывы */}
           {reviews.length > 0 && (
             <div>
@@ -319,16 +315,113 @@ export function FoodDetailModal({
               </ul>
             </div>
           )}
-
-          {/* Форма отзыва (без изменений) */}
-          {/* ... оставлено как было ... */}
+          <FoodReviewForm foodId={food.id} onSuccess={refetch} />
         </div>
       </div>
     </div>
   );
 }
 
-function useAuth() {
-  // ⭐ Заглушка — в реальном проекте импорт из "@/lib/auth-context"
-  return { user: null };
+function FoodReviewForm({
+  foodId,
+  onSuccess,
+}: {
+  foodId: string;
+  onSuccess?: () => void;
+}) {
+  const { user } = useAuth();
+  const [rating, setRating] = useState(5);
+  const [comment, setComment] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [addReview] = useMutation(ADD_FOOD_REVIEW);
+
+  if (!user) {
+    return (
+      <div className="bg-soft-surface-2 border border-soft-border rounded-2xl px-4 py-3 text-sm text-soft-text-soft text-center">
+        🔐{" "}
+        <Link
+          href="/address"
+          className="text-soft-accent font-bold hover:underline"
+        >
+          Войдите
+        </Link>
+        , чтобы оставить отзыв
+      </div>
+    );
+  }
+
+  const submit = async () => {
+    setError(null);
+    if (rating < 1 || rating > 5) {
+      setError("Поставьте оценку от 1 до 5");
+      return;
+    }
+    const trimmed = comment.trim();
+    if (!trimmed) {
+      setError("Напишите комментарий");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await addReview({
+        variables: { input: { foodId, rating, comment: trimmed } },
+        refetchQueries: [{ query: GET_FOOD_REVIEWS, variables: { foodId } }],
+        awaitRefetchQueries: true,
+      });
+      setComment("");
+      setRating(5);
+      onSuccess?.();
+    } catch (e: any) {
+      setError(e?.message ?? "Не удалось отправить");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="bg-soft-surface border border-soft-border rounded-2xl p-4 shadow-soft-sm">
+      <h3 className="font-extrabold text-soft-text mb-3 text-base">
+        ✍️ Оставить отзыв
+      </h3>
+      <div className="flex items-center gap-1 mb-3">
+        {[1, 2, 3, 4, 5].map((n) => (
+          <button
+            key={n}
+            type="button"
+            onClick={() => setRating(n)}
+            className="p-0.5 active:scale-90 transition-transform"
+            aria-label={`Поставить ${n}`}
+          >
+            <Star
+              className={`w-7 h-7 ${
+                n <= rating
+                  ? "text-soft-rating fill-current"
+                  : "text-soft-border"
+              }`}
+            />
+          </button>
+        ))}
+        <span className="text-sm text-soft-text-soft ml-1.5 font-bold">
+          {rating} / 5
+        </span>
+      </div>
+      <textarea
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+        placeholder="Расскажите о ваших впечатлениях..."
+        className="w-full bg-soft-surface-2 border border-soft-border text-soft-text placeholder-soft-text-muted rounded-xl px-3.5 py-2.5 text-sm min-h-[80px] focus:outline-none focus:border-soft-accent resize-none mb-2"
+        maxLength={500}
+      />
+      {error && <p className="text-sm text-soft-accent mb-2">⚠ {error}</p>}
+      <button
+        type="button"
+        onClick={submit}
+        disabled={submitting}
+        className="w-full h-11 bg-soft-accent hover:bg-soft-accent-dark text-white font-extrabold rounded-2xl disabled:opacity-50 active:scale-[0.99] transition-all"
+      >
+        {submitting ? "Отправляем..." : "Опубликовать отзыв"}
+      </button>
+    </div>
+  );
 }

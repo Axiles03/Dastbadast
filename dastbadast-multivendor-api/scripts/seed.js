@@ -1,7 +1,7 @@
 import "dotenv/config";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
-
+import { RestaurantReview } from "../src/models/RestaurantReview.js";
 import { Configuration } from "../src/models/Configuration.js";
 import { Zone } from "../src/models/Zone.js";
 import { Restaurant } from "../src/models/Restaurant.js";
@@ -70,6 +70,135 @@ async function run() {
       ],
     },
   });
+
+  // ⭐ Реальные отзывы на рестораны — для проверки агрегатов в UI
+
+  await RestaurantReview.deleteMany({}); // чтобы seed был идемпотентным
+
+  const reviews = [
+    {
+      r: 0,
+      u: 0,
+      rating: 5,
+      comment: "Лучший плов в городе, рекомендую!",
+      orderId: null,
+    },
+    { r: 0, u: 1, rating: 4, comment: "Хорошо, но ждали доставку 50 мин." },
+    { r: 0, u: 2, rating: 5, comment: "Шашлык отменный, мясо сочное." },
+    { r: 1, u: 3, rating: 5, comment: "Пицца Маргарита — лучшая в Душанбе!" },
+    { r: 1, u: 4, rating: 4, comment: "Паста вкусная, но порция маленькая." },
+    {
+      r: 2,
+      u: 5,
+      rating: 3,
+      comment: "Чизбургер средний, картофель фри пересолен.",
+    },
+    {
+      r: 2,
+      u: 6,
+      rating: 5,
+      comment: "Обожаю этот бургер! Хрустящий, сочный.",
+    },
+    { r: 3, u: 7, rating: 4, comment: "Филадельфия свежая, доставили быстро." },
+    { r: 4, u: 8, rating: 5, comment: "Капучино как в Италии ☕" },
+    {
+      r: 6,
+      u: 9,
+      rating: 5,
+      comment: "Шашлык-рай — название говорит само за себя!",
+    },
+    { r: 7, u: 10, rating: 4, comment: "Плов хороший, но доставка долгая." },
+    { r: 8, u: 11, rating: 5, comment: "Wok с курицей — топ!" },
+    { r: 9, u: 12, rating: 4, comment: "Медовик свежий и вкусный." },
+  ];
+
+  for (const r of reviews) {
+    const restaurant = await Restaurant.findOne().skip(r.r); // 0..9 по порядку
+    const user = createdUsers[r.u];
+    if (!restaurant || !user) continue;
+    await RestaurantReview.create({
+      restaurantId: restaurant._id,
+      userId: user._id,
+      userName: user.name,
+      rating: r.rating,
+      comment: r.comment,
+      orderId: r.orderId || null,
+    });
+  }
+
+  // Обновляем агрегаты averageRating/totalRatings в Restaurant
+  for (let i = 0; i < 10; i++) {
+    const rest = (await Restaurant.find().lean())[i];
+    if (!rest) continue;
+    const stats = await RestaurantReview.aggregate([
+      { $match: { restaurantId: rest._id } },
+      { $group: { _id: null, avg: { $avg: "$rating" }, count: { $sum: 1 } } },
+    ]);
+    if (stats[0]) {
+      await Restaurant.findByIdAndUpdate(rest._id, {
+        averageRating: +stats[0].avg.toFixed(2),
+        totalRatings: stats[0].count,
+      });
+    }
+  }
+
+  // ⭐ Несколько доставленных заказов — для расчёта estimatedPrepMinutes
+  const deliveredOrders = [];
+  for (let i = 0; i < 30; i++) {
+    const r = await Restaurant.findOne().skip(i % 10);
+    const u = createdUsers[i % createdUsers.length];
+    const acceptedAt = new Date(Date.now() - (i + 1) * 2 * 60 * 60 * 1000); // 2ч назад
+    const readyAt = new Date(
+      acceptedAt.getTime() + (15 + (i % 25)) * 60 * 1000,
+    ); // 15..40 мин
+    const deliveredAt = new Date(readyAt.getTime() + 18 * 60 * 1000); // +18 мин езды
+    const amt = 80 + (i % 10) * 10;
+    const o = await Order.create({
+      orderId: `DBD-${acceptedAt.getTime().toString(36).slice(-6).toUpperCase()}`,
+      userId: u._id,
+      restaurantId: r._id,
+      items: [
+        {
+          foodId: r._id, // заглушка
+          title: "Случайное блюдо",
+          basePrice: amt,
+          optionsTotal: 0,
+          price: amt,
+          quantity: 1,
+          image: "",
+          description: "",
+          selectedOptions: [],
+        },
+      ],
+      orderStatus: "DELIVERED",
+      paymentMethod: "COD",
+      paid: true,
+      paidAt: deliveredAt,
+      deliveryAddress: {
+        address: "Test Address 1",
+        city: "Душанбе",
+        location: { type: "Point", coordinates: [68.78, 38.57] },
+      },
+      pickupAddress: {
+        name: r.name,
+        address: r.address || "",
+        location: r.location,
+      },
+      amounts: {
+        subtotal: amt,
+        tax: 0,
+        deliveryFee: 15,
+        total: amt + 15,
+      },
+      statusTimestamps: {
+        pendingAt: acceptedAt,
+        acceptedAt,
+        readyAt,
+        deliveredAt,
+      },
+    });
+    deliveredOrders.push(o);
+  }
 
   // ==========================================
   // 👥 15 ПОЛЬЗОВАТЕЛЕЙ (Users)

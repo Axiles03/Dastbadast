@@ -3,6 +3,7 @@ import { GraphQLError } from "graphql";
 import { pubsub, TOPICS } from "../pubsub.js";
 import { Order } from "../models/Order.js";
 import { trackSubscription } from "../middleware/health.js";
+import { SupportThread } from "../models/SupportThread.js";
 
 export const orderStatusChanged = {
   subscribe: (_p, { userId }) =>
@@ -161,4 +162,32 @@ export const courierSearchNotify = {
     return pubsub.asyncIterator(TOPICS.COURIER_SEARCH_NOTIFY);
   },
   resolve: (p) => p.courierSearchNotify,
+};
+
+export const newSupportMessage = {
+  subscribe: (_p, { threadId }) => {
+    if (!threadId) {
+      throw new GraphQLError("threadId обязателен", {
+        extensions: { code: "BAD_USER_INPUT" },
+      });
+    }
+    return pubsub.asyncIterator(TOPICS.SUPPORT_THREAD(threadId));
+  },
+  resolve: (p) => p.newSupportMessage,
+};
+
+// ⭐ NEW: живое обновление списка тредов в админке (новый тред / новое
+// сообщение / переназначение / закрытие — публикуется отовсюду из support.js)
+export const supportInboxUpdated = {
+  subscribe: (_p, _args, ctx) => {
+    // Доступ только сотрудникам поддержки — переиспользуем ту же проверку,
+    // что и в остальных резолверах support.js (роль SUPPORT / SUPER_ADMIN).
+    if (!ctx.owner) {
+      throw new GraphQLError("Not authenticated", {
+        extensions: { code: "UNAUTHENTICATED" },
+      });
+    }
+    return pubsub.asyncIterator(TOPICS.SUPPORT_INBOX);
+  },
+  resolve: (p) => p.supportInboxUpdated,
 };

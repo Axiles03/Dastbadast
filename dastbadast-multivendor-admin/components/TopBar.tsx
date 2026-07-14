@@ -14,6 +14,7 @@ export function TopBar() {
   const NAV_ITEMS: { key: NavKey; href: string; label: string }[] = [
     { key: "dashboard", href: "/dashboard", label: "Главная" },
     { key: "dispatch", href: "/dispatch", label: "Мониторинг" },
+    { key: "support", href: "/support", label: "Поддержка" },
     { key: "restaurants", href: "/restaurants", label: "Рестораны" },
     { key: "riders", href: "/riders", label: "Курьеры" },
     { key: "zones", href: "/zones", label: "Зоны" },

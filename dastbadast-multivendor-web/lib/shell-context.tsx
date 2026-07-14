@@ -43,12 +43,14 @@ export type RestaurantFilters = {
   sortBy: "rating" | "deliveryTime" | "minimumOrder";
   maxMinimumOrder: number | null; // null = любой
   maxDeliveryTime: number | null; // в минутах, null = не важно
+  nearest: boolean;
 };
 
 export const DEFAULT_RESTAURANT_FILTERS: RestaurantFilters = {
   sortBy: "rating",
   maxMinimumOrder: null,
   maxDeliveryTime: null,
+  nearest: false,
 };
 
 const ShellCtx = createContext<Ctx | null>(null);

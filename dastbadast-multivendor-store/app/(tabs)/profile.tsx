@@ -10,10 +10,13 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { useQuery, useMutation } from "@apollo/client/react";
+import { useRouter } from "expo-router";
+
 import { MY_MENU, UPDATE_MY_RESTAURANT } from "../../lib/api/graphql/queries";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function ProfileScreen() {
+  const router = useRouter();
   const { data, loading, refetch } = useQuery<any>(MY_MENU);
   const [updateMyRestaurant] = useMutation(UPDATE_MY_RESTAURANT);
   const [busy, setBusy] = useState(false);
@@ -155,6 +158,15 @@ export default function ProfileScreen() {
         >
           <Text className="text-text-inverse font-extrabold text-base">
             {busy ? "..." : "Сохранить"}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={() => router.push("/support" as any)}
+          className="h-12 rounded-2xl items-center justify-center bg-soft-surface-2 border border-border mt-3"
+        >
+          <Text className="text-text font-extrabold text-base">
+            💬 Написать в поддержку
           </Text>
         </TouchableOpacity>
       </ScrollView>

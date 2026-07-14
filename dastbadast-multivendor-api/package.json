@@ -16,7 +16,8 @@
     "migrate-geo-index": "node scripts/migrate-geo-index.js",
     "migrate-order-status": "node scripts/migrate-order-status.js",
     "migrate-indexes": "node scripts/recommend-indexes.js",
-    "cleanup-empty-users": "node scripts/cleanup-empty-users.js"
+    "cleanup-empty-users": "node scripts/cleanup-empty-users.js",
+    "migrate-restaurant-ratings": "node scripts/migrate-restaurant-ratings.js"
   },
   "dependencies": {
     "@apollo/server": "^5.5.1",

@@ -22,7 +22,18 @@ export function ProductOfTheDay({
   if (restaurants.length === 0) return null;
 
   // В центре — самый рейтинговый, по бокам — peek'и
-  const sorted = [...restaurants].sort((a, b) => b.rating - a.rating);
+  const sorted = [...restaurants].sort((a, b) => {
+    const av = a.averageRating ?? -1;
+    const bv = b.averageRating ?? -1;
+    if (av === bv) return (b.totalRatings ?? 0) - (a.totalRatings ?? 0);
+    return bv - av;
+  });
+  // ⭐ Если у ВСЕХ ресторанов averageRating=null (нет ни одного отзыва),
+  // sorted[0] будет равен первому ресторану в списке — не показываем
+  // "Заведение дня" в этом случае, лучше пусто, чем выдумка.
+  if (!sorted[0] || sorted[0].averageRating == null) {
+    return null;
+  }
   const center = sorted[0];
   const sides = sorted.slice(1, 3);
 
@@ -103,10 +114,16 @@ export function ProductOfTheDay({
                     {center.rating}
                   </span>
                   <span className="inline-flex items-center gap-1">
-                    <Clock className="w-4 h-4" /> {center.deliveryTime} мин
+                    <Clock className="w-4 h-4 text-soft-rating fill-current" />{" "}
+                    {typeof center.deliveryTime === "number"
+                      ? `${center.deliveryTime} мин`
+                      : "—"}
                   </span>
                   <span className="inline-flex items-center gap-1">
-                    <MapPin className="w-4 h-4" /> {center.distance} км
+                    <MapPin className="w-4 h-4" />{" "}
+                    {typeof center.distanceKm === "number"
+                      ? `${center.distanceKm} км`
+                      : "—"}
                   </span>
                 </div>
                 <div className="mt-4 text-soft-rating font-extrabold text-lg">

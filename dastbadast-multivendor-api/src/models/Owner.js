@@ -4,6 +4,8 @@ const OwnerSchema = new mongoose.Schema(
   {
     email: { type: String, required: true, unique: true },
     passwordHash: { type: String, required: true },
+    name: { type: String, default: "" },
+    avatarUrl: { type: String, default: null },
     userType: {
       type: String,
       enum: [

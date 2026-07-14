@@ -33,3 +33,4 @@ export const RestaurantReview = mongoose.model(
   "RestaurantReview",
   RestaurantReviewSchema,
 );
+

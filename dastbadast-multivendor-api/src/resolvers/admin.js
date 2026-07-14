@@ -399,7 +399,8 @@ export const createOwner = async (_p, { input }, ctx) => {
   }
 
   const passwordHash = await bcrypt.hash(input.password, 10);
-
+  const name = (input.name || "").trim();
+  const avatarUrl = input.avatarUrl || null;
   const permissions = buildPermissionsForRole(
     input.userType,
     input.permissions,
@@ -408,6 +409,8 @@ export const createOwner = async (_p, { input }, ctx) => {
   const o = await Owner.create({
     email: input.email.toLowerCase(),
     passwordHash,
+    name,
+    avatarUrl,
     userType: input.userType,
     permissions,
     isActive: true,
@@ -442,6 +445,10 @@ export const updateOwner = async (_p, { id, input }, ctx) => {
     }
     owner.email = input.email.toLowerCase();
   }
+
+  if (typeof input.name === "string") owner.name = input.name.trim();
+  if (typeof input.avatarUrl === "string")
+    owner.avatarUrl = input.avatarUrl || null;
 
   if (input.userType) {
     if (!VALID_OWNER_ROLES.includes(input.userType)) {

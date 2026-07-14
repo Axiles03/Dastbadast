@@ -679,6 +679,17 @@ export default function TrackingPage() {
               >
                 <Ionicons name="close" size={24} color="#6B6358" />
               </Pressable>
+              <Pressable
+                onPress={() =>
+                  router.push(`/(app)/support?orderId=${id}` as any)
+                }
+                className="flex-row items-center px-4 py-3 bg-soft-surface-2 rounded-2xl mb-2"
+              >
+                <Ionicons name="help-buoy-outline" size={18} color="#1F1B16" />
+                <Text className="text-sm font-bold text-text ml-2">
+                  Проблема с заказом? Написать в поддержку
+                </Text>
+              </Pressable>
             </View>
             <ScrollView
               className="flex-1 p-3"

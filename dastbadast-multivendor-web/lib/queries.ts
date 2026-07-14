@@ -114,14 +114,33 @@ export const DELETE_ADDRESS = gql`
 `;
 
 export const GET_RESTAURANTS = gql`
-  query GetRestaurants {
-    restaurants {
+  query GetRestaurants($latitude: Float, $longitude: Float) {
+    restaurants(latitude: $latitude, longitude: $longitude) {
       id
       name
       slug
       image
       address
       minimumOrder
+      averageRating
+      totalRatings
+      estimatedPrepMinutes
+      # ⭐ НОВОЕ: distance/deliveryTime/price — резолвятся через $geoNear,
+      # если latitude/longitude переданы. Без них возвращают null/prep-фолбэк.
+      distanceKm
+      deliveryTime
+      deliveryPriceEstimate
+    }
+  }
+`;
+
+export const ADD_RESTAURANT_REVIEW = gql`
+  mutation AddRestaurantReview($input: AddRestaurantReviewInput!) {
+    addRestaurantReview(input: $input) {
+      id
+      rating
+      comment
+      userName
     }
   }
 `;
@@ -155,6 +174,9 @@ export const GET_RESTAURANT = gql`
         close
         isAlwaysOpen
       }
+      averageRating
+      totalRatings
+      estimatedPrepMinutes
       categories {
         id
         title
@@ -179,6 +201,25 @@ export const GET_RESTAURANT = gql`
           }
         }
       }
+    }
+    restaurantReviews(restaurantId: $id) {
+      id
+      userName
+      rating
+      comment
+      createdAt
+    }
+  }
+`;
+
+export const RESTAURANT_REVIEWS = gql`
+  query RestaurantReviews($restaurantId: ID!) {
+    restaurantReviews(restaurantId: $restaurantId) {
+      id
+      userName
+      rating
+      comment
+      createdAt
     }
   }
 `;
@@ -617,5 +658,75 @@ export const ORDER_LIST_ITEM = gql`
       city
     }
     createdAt
+  }
+`;
+
+export const START_SUPPORT_THREAD = gql`
+  mutation StartSupportThread($orderId: ID, $subject: String) {
+    startSupportThread(orderId: $orderId, subject: $subject) {
+      id
+      orderId
+      subject
+      status
+      assignedOwnerName
+      assignedOwnerAvatar
+      createdAt
+    }
+  }
+`;
+
+export const GET_SUPPORT_MESSAGES = gql`
+  query GetSupportMessages($threadId: ID!) {
+    supportMessages(threadId: $threadId) {
+      id
+      threadId
+      senderType
+      senderName
+      text
+      imageUrl
+      senderAvatar
+      readByStaff
+      createdAt
+    }
+  }
+`;
+
+export const SEND_SUPPORT_MESSAGE = gql`
+  mutation SendSupportMessage(
+    $threadId: ID!
+    $text: String
+    $imageUrl: String
+  ) {
+    sendSupportMessage(threadId: $threadId, text: $text, imageUrl: $imageUrl) {
+      id
+      threadId
+      senderType
+      senderName
+      text
+      imageUrl
+      senderAvatar
+      createdAt
+    }
+  }
+`;
+
+export const SUB_SUPPORT_MESSAGE = gql`
+  subscription SubSupportMessage($threadId: ID!) {
+    newSupportMessage(threadId: $threadId) {
+      id
+      threadId
+      senderType
+      senderName
+      text
+      imageUrl
+      readByStaff
+      createdAt
+    }
+  }
+`;
+
+export const MARK_SUPPORT_READ = gql`
+  mutation MarkSupportRead($threadId: ID!) {
+    markSupportRead(threadId: $threadId)
   }
 `;

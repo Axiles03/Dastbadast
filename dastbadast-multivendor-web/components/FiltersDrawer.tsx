@@ -57,25 +57,33 @@ export function FiltersDrawer({
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-6">
+          <Group title="Местоположение">
+            <Option
+              label="📍 Ближайшие ко мне"
+              active={restaurantFilters.nearest}
+              onClick={() =>
+                setRestaurantFilters({
+                  ...restaurantFilters,
+                  nearest: !restaurantFilters.nearest,
+                })
+              }
+            />
+          </Group>
           <Group title="Сортировка">
             <Option
               label="По рейтингу"
               active={draft.sortBy === "rating"}
-              onClick={() => setDraft((d) => ({ ...d, sortBy: "rating" }))}
+              onClick={() => setDraft({ ...draft, sortBy: "rating" })}
             />
             <Option
               label="По времени доставки"
               active={draft.sortBy === "deliveryTime"}
-              onClick={() =>
-                setDraft((d) => ({ ...d, sortBy: "deliveryTime" }))
-              }
+              onClick={() => setDraft({ ...draft, sortBy: "deliveryTime" })}
             />
             <Option
               label="По минимальному заказу"
               active={draft.sortBy === "minimumOrder"}
-              onClick={() =>
-                setDraft((d) => ({ ...d, sortBy: "minimumOrder" }))
-              }
+              onClick={() => setDraft({ ...draft, sortBy: "minimumOrder" })}
             />
           </Group>
 
@@ -83,17 +91,17 @@ export function FiltersDrawer({
             <Option
               label="до 50 сом."
               active={draft.maxMinimumOrder === 50}
-              onClick={() => setDraft((d) => ({ ...d, maxMinimumOrder: 50 }))}
+              onClick={() => setDraft({ ...draft, maxMinimumOrder: 50 })}
             />
             <Option
               label="до 100 сом."
               active={draft.maxMinimumOrder === 100}
-              onClick={() => setDraft((d) => ({ ...d, maxMinimumOrder: 100 }))}
+              onClick={() => setDraft({ ...draft, maxMinimumOrder: 100 })}
             />
             <Option
               label="Любой"
               active={draft.maxMinimumOrder === null}
-              onClick={() => setDraft((d) => ({ ...d, maxMinimumOrder: null }))}
+              onClick={() => setDraft({ ...draft, maxMinimumOrder: null })}
             />
           </Group>
 
@@ -101,17 +109,17 @@ export function FiltersDrawer({
             <Option
               label="до 30 мин"
               active={draft.maxDeliveryTime === 30}
-              onClick={() => setDraft((d) => ({ ...d, maxDeliveryTime: 30 }))}
+              onClick={() => setDraft({ ...draft, maxDeliveryTime: 30 })}
             />
             <Option
               label="до 60 мин"
               active={draft.maxDeliveryTime === 60}
-              onClick={() => setDraft((d) => ({ ...d, maxDeliveryTime: 60 }))}
+              onClick={() => setDraft({ ...draft, maxDeliveryTime: 60 })}
             />
             <Option
               label="Не важно"
               active={draft.maxDeliveryTime === null}
-              onClick={() => setDraft((d) => ({ ...d, maxDeliveryTime: null }))}
+              onClick={() => setDraft({ ...draft, maxDeliveryTime: null })}
             />
           </Group>
         </div>

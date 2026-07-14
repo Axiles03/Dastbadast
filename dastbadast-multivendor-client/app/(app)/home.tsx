@@ -399,6 +399,10 @@ export default function Home() {
           setShowProfile(false);
           router.push("/(app)/address" as any);
         }}
+        onSupport={() => {
+          setShowProfile(false);
+          router.push("/(app)/support" as any);
+        }}
       />
     </SafeAreaView>
   );
@@ -576,12 +580,14 @@ function ProfileSheet({
   onLogout,
   onOrders,
   onAddress,
+  onSupport,
 }: {
   visible: boolean;
   onClose: () => void;
   onLogout: () => void;
   onOrders: () => void;
   onAddress: () => void;
+  onSupport: () => void;
 }) {
   const { user } = useAuth();
   if (!visible) return null;
@@ -633,6 +639,20 @@ function ProfileSheet({
             <Ionicons name="location-outline" size={20} color="#1F1B16" />
             <Text className="text-sm font-bold text-text ml-3 flex-1">
               Мои адреса
+            </Text>
+            <Ionicons name="chevron-forward" size={18} color="#9A9388" />
+          </Pressable>
+          <Pressable
+            onPress={onSupport}
+            className="flex-row items-center px-4 py-3.5 bg-soft-surface-2 rounded-2xl mb-2"
+          >
+            <Ionicons
+              name="chatbubble-ellipses-outline"
+              size={20}
+              color="#1F1B16"
+            />
+            <Text className="text-sm font-bold text-text ml-3 flex-1">
+              Поддержка
             </Text>
             <Ionicons name="chevron-forward" size={18} color="#9A9388" />
           </Pressable>

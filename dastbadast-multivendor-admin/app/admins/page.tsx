@@ -21,6 +21,8 @@ import {
   ShieldCheck,
   CheckCircle2,
   XCircle,
+  User,
+  Camera,
 } from "lucide-react";
 
 const OWNERS_QUERY = gql`
@@ -41,6 +43,8 @@ const CREATE_OWNER = gql`
     createOwner(input: $input) {
       id
       email
+      name
+      avatarUrl
       userType
       isActive
     }
@@ -52,6 +56,8 @@ const UPDATE_OWNER = gql`
     updateOwner(id: $id, input: $input) {
       id
       email
+      name
+      avatarUrl
       userType
       isActive
     }
@@ -145,8 +151,9 @@ function AdminsInner() {
     email: "",
     password: "",
     userType: "DISPATCHER",
+    name: "",
+    avatarUrl: "",
   });
-
   const [toast, setToast] = useState<{
     type: "success" | "error";
     msg: string;
@@ -176,7 +183,13 @@ function AdminsInner() {
   };
 
   const resetForm = () => {
-    setForm({ email: "", password: "", userType: "DISPATCHER" });
+    setForm({
+      email: "",
+      password: "",
+      userType: "DISPATCHER",
+      name: "",
+      avatarUrl: "",
+    });
     setEditing(null);
   };
 
@@ -184,10 +197,11 @@ function AdminsInner() {
     e.preventDefault();
     try {
       if (editing) {
-        // При редактировании пароль не обновляется
         const input: any = {
           email: form.email,
           userType: form.userType,
+          name: form.name,
+          avatarUrl: form.avatarUrl || null,
         };
         await updateOwner({ variables: { id: editing.id, input } });
         showToast("success", "Админ обновлён");
@@ -211,7 +225,13 @@ function AdminsInner() {
 
   const startEdit = (o: any) => {
     setEditing(o);
-    setForm({ email: o.email, password: "", userType: o.userType });
+    setForm({
+      email: o.email,
+      password: "",
+      userType: o.userType,
+      name: o.name || "",
+      avatarUrl: o.avatarUrl || "",
+    });
     setShowForm(true);
     setMenuFor(null);
   };
@@ -374,6 +394,24 @@ function AdminsInner() {
               placeholder="dispatcher@dastbadast.tj"
               required
             />
+            <Field
+              icon={<User className="w-4 h-4" />}
+              label="Имя"
+              type="text"
+              value={form.name}
+              onChange={(v) => setForm({ ...form, name: v })}
+              placeholder="Алишер"
+              required
+            />
+            <Field
+              icon={<Camera className="w-4 h-4" />}
+              label="Фото"
+              type="text"
+              value={form.avatarUrl}
+              onChange={(v) => setForm({ ...form, avatarUrl: v })}
+              placeholder="https://example.com/avatar.jpg"
+              required
+            />
             {!editing && (
               <Field
                 icon={<KeyRound className="w-4 h-4" />}
@@ -385,6 +423,7 @@ function AdminsInner() {
                 required
               />
             )}
+
             {editing && (
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-soft-text-soft px-1">
@@ -517,12 +556,29 @@ function AdminsInner() {
                           : "bg-soft-surface-2 text-soft-text-muted"
                       }`}
                     >
-                      <Users className="w-5 h-5" />
+                      <div
+                        className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 overflow-hidden`}
+                      >
+                        {o.avatarUrl ? (
+                          <img
+                            src={o.avatarUrl}
+                            className="w-full h-full object-cover"
+                            alt=""
+                          />
+                        ) : (
+                          <Users className="w-5 h-5" />
+                        )}
+                      </div>
                     </div>
                     <div className="space-y-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-extrabold text-base text-soft-text truncate">
                           {o.email}
+                          {o.name && (
+                            <div className="text-xs text-soft-text-muted">
+                              {o.name}
+                            </div>
+                          )}
                         </span>
                         {isMe && (
                           <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded-md bg-soft-accent text-white">

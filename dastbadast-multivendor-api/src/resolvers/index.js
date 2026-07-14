@@ -7,6 +7,20 @@ import {
   markChatRead,
   sendTypingStatus,
 } from "./chat.js";
+import {
+  mySupportThreads,
+  supportThread,
+  supportMessages,
+  supportThreads,
+  startSupportThread,
+  sendSupportMessage,
+  assignSupportThread,
+  closeSupportThread,
+  reopenSupportThread,
+  markSupportRead,
+  supportThreadUnreadForStaff,
+  supportThreadUnreadForParticipant,
+} from "./support.js";
 import { getCart, saveCart, estimateDelivery } from "./cart.js";
 // ⭐ ФИКС: этот импорт отсутствовал вовсе — весь модуль delivery.js
 // (флоу ресторан готовит -> курьер принял/забрал/приехал/доставил)
@@ -38,16 +52,22 @@ const calculateDeliveryPriceBreakdownQuery = (_p, { fromCoords, toCoords }) => {
   return calculateDeliveryPriceBreakdown(fromCoords, toCoords);
 };
 import { restaurants, restaurant, isRestaurantOpenNow } from "./restaurant.js";
+import { restaurantReviews as restaurantReviewsQuery } from "./restaurant-reviews.js";
+
 import {
   calculateDeliveryPrice,
   calculateDeliveryPriceBreakdown,
   routeDistanceKm as calculateRouteDistanceKm,
-  routeDistanceKmAsync as calculateRouteDistanceKmAsync, // ⭐ НОВОЕ
+  routeDistanceKmAsync as calculateRouteDistanceKmAsync,
 } from "../utils/delivery-price.js";
 import { Order } from "../models/Order.js";
 import { etaForRiderToAddress } from "../utils/eta.js";
-import { fetchRouteGeometry } from "../utils/geoapify.js"; // ⭐ ШАГ 5
-// ⭐ ШАГ 3 NEW: Rider model для резолвера etaToCustomer
+import { fetchRouteGeometry } from "../utils/geoapify.js";
+import { Configuration } from "../models/Configuration.js";
+import { Food } from "../models/Food.js";
+import { Category } from "../models/Category.js";
+import { FoodReview } from "../models/FoodReview.js";
+import { GraphQLError } from "graphql";
 import { Rider } from "../models/Rider.js";
 import {
   profile,
@@ -131,7 +151,7 @@ import {
   toggleRider,
   updateRiderProfile,
   changeRiderPassword,
-  stopRiderLocationStream, // ⭐ ФИКС: было в rider.js, но не импортировано
+  stopRiderLocationStream,
   rider as riderOne,
   riderLocationStream,
   allOrdersChanged,
@@ -147,6 +167,8 @@ import {
   subscriptionRiderOrderCompleted,
   newChatMessage,
   courierSearchNotify,
+  newSupportMessage,
+  supportInboxUpdated,
 } from "./subscriptions.js";
 import { JSONScalar, DateTimeScalar } from "../utils/scalars.js";
 
@@ -172,15 +194,13 @@ export const resolvers = {
         .lean();
       if (!order) return null;
       const t = order.statusTimestamps;
-      // ⭐ Используем существующую формулу: оставшееся = prepTime - elapsed
-      // prepTime и acceptedAt уже есть в statusTimestamps (см. models/Order.js)
       if (!t?.acceptedAt || !t?.prepTime || t.prepTime <= 0) return null;
       if (
         order.orderStatus !== "ACCEPTED" &&
         order.orderStatus !== "PREPARING" &&
         order.orderStatus !== "READY_FOR_PICKUP"
       ) {
-        return 0; // заказ прошёл этап готовки
+        return 0;
       }
       const elapsedMin =
         (Date.now() - new Date(t.acceptedAt).getTime()) / 60_000;
@@ -207,6 +227,10 @@ export const resolvers = {
     riderOrders,
     availableOrdersForRiders,
     chatMessages,
+    mySupportThreads,
+    supportThread,
+    supportMessages,
+    supportThreads,
     adminAccounting,
     rider: riderOne,
     owners,
@@ -223,11 +247,120 @@ export const resolvers = {
     allRidersWithLocation,
     ordersForMap,
     riderLocationOnMap,
+    currentRiderLocation: async (_p, { riderId }, ctx) => {
+      if (!riderId) return null;
+      if (!ctx.user && !ctx.rider && !ctx.owner) {
+        throw new GraphQLError("Not authenticated", {
+          extensions: { code: "UNAUTHENTICATED" },
+        });
+      }
+      const r = await Rider.findById(riderId)
+        .select("location lastLocationAt")
+        .lean();
+      if (!r?.location?.coordinates) return null;
+      const [lng, lat] = r.location.coordinates;
+      if (lat === 0 && lng === 0) return null;
+      return {
+        riderId: String(riderId),
+        lat,
+        lng,
+        updatedAt:
+          r.lastLocationAt?.toISOString?.() ?? new Date().toISOString(),
+      };
+    },
     userLTV,
     userOrderFrequency,
     userCohorts,
     churnRate,
     demandForecast,
+    restaurantReviews: restaurantReviewsQuery,
+
+    restaurantDistance: async (_p, { id, addressId }, ctx) => {
+      if (!ctx.user) {
+        throw new GraphQLError("Not authenticated", {
+          extensions: { code: "UNAUTHENTICATED" },
+        });
+      }
+      const { Restaurant } = await import("../models/Restaurant.js");
+      const { User } = await import("../models/User.js");
+      const { haversineKm } = await import("../utils/geo.js");
+
+      const rest = await Restaurant.findById(id).select("location").lean();
+      const user = await User.findById(ctx.user._id);
+      const addr = user?.addresses?.id(addressId);
+      if (!rest?.location?.coordinates || !addr?.location?.coordinates)
+        return null;
+      return +haversineKm(
+        rest.location.coordinates[1],
+        rest.location.coordinates[0],
+        addr.location.coordinates[1],
+        addr.location.coordinates[0],
+      ).toFixed(2);
+    },
+
+    restaurantDeliveryEta: async (_p, { id, addressId }, ctx) => {
+      if (!ctx.user) {
+        throw new GraphQLError("Not authenticated", {
+          extensions: { code: "UNAUTHENTICATED" },
+        });
+      }
+      const { Order } = await import("../models/Order.js");
+      const recent = await Order.find({
+        restaurantId: id,
+        orderStatus: "DELIVERED",
+        "statusTimestamps.acceptedAt": { $ne: null },
+        "statusTimestamps.readyAt": { $ne: null },
+      })
+        .sort({ "statusTimestamps.readyAt": -1 })
+        .limit(30)
+        .select("statusTimestamps")
+        .lean();
+
+      let estimatedPrepMinutes = 25;
+      if (recent.length > 0) {
+        const durations = recent
+          .map((o) => {
+            const a = o.statusTimestamps?.acceptedAt;
+            const r = o.statusTimestamps?.readyAt;
+            if (!a || !r) return null;
+            return (new Date(r).getTime() - new Date(a).getTime()) / 60_000;
+          })
+          .filter((v) => typeof v === "number" && v > 0 && v < 240);
+        if (durations.length > 0) {
+          estimatedPrepMinutes = Math.round(
+            durations.reduce((s, v) => s + v, 0) / durations.length,
+          );
+        }
+      }
+
+      const { Restaurant } = await import("../models/Restaurant.js");
+      const { User } = await import("../models/User.js");
+      const { haversineKm } = await import("../utils/geo.js");
+      const rest = await Restaurant.findById(id).select("location").lean();
+      const user = await User.findById(ctx.user._id);
+      const addr = user?.addresses?.id(addressId);
+      let distanceKm = null;
+      if (rest?.location?.coordinates && addr?.location?.coordinates) {
+        distanceKm = +haversineKm(
+          rest.location.coordinates[1],
+          rest.location.coordinates[0],
+          addr.location.coordinates[1],
+          addr.location.coordinates[0],
+        ).toFixed(2);
+      }
+
+      const travel = distanceKm != null ? (distanceKm / 25) * 60 : 0;
+      const handover = 5;
+      const estimatedDeliveryMinutes = Math.round(
+        estimatedPrepMinutes + travel + handover,
+      );
+
+      return {
+        distanceKm,
+        estimatedPrepMinutes,
+        estimatedDeliveryMinutes,
+      };
+    },
   },
   Mutation: {
     createUser,
@@ -261,6 +394,15 @@ export const resolvers = {
     updateRiderProfile,
     changeRiderPassword,
     sendChatMessage,
+    markChatRead,
+    sendTypingStatus,
+    // ⭐ NEW: чат поддержки
+    startSupportThread,
+    sendSupportMessage,
+    assignSupportThread,
+    closeSupportThread,
+    reopenSupportThread,
+    markSupportRead,
     createOwner,
     updateOwner,
     deactivateOwner,
@@ -273,15 +415,13 @@ export const resolvers = {
     updateUser,
     registerPushToken,
     unregisterPushToken,
-    // ⭐ ФИКС: объявлены в schema.js, но отсутствовали здесь — вызовы падали
-    // с "Cannot return null for non-nullable field".
     markOrderPreparing,
     markOrderReady,
     acceptDelivery,
     pickupDelivery,
     arriveAtDropOff,
     markDelivered,
-    refreshOrderStatus, // ⭐ был импортирован из order.js, но не подключён
+    refreshOrderStatus,
     stopRiderLocationStream,
     updateMyRestaurant,
     updateRestaurant,
@@ -303,14 +443,126 @@ export const resolvers = {
     courierSearchNotify,
     riderLocationStream,
     allOrdersChanged,
+    newSupportMessage,
+    supportInboxUpdated,
+  },
+
+  SupportThread: {
+    id: mongoId,
+    createdAt: (p) => new Date(p.createdAt).toISOString(),
+    lastMessageAt: (p) =>
+      p.lastMessageAt ? new Date(p.lastMessageAt).toISOString() : null,
+    assignedOwnerEmail: async (p) => {},
+    unreadForStaff: supportThreadUnreadForStaff,
+    unreadForParticipant: supportThreadUnreadForParticipant,
+    staffReadAt: (p) =>
+      p.staffReadAt ? new Date(p.staffReadAt).toISOString() : null,
+    participantReadAt: (p) =>
+      p.participantReadAt ? new Date(p.participantReadAt).toISOString() : null,
+    participantAvatar: async (p) => {
+      if (p.participantType === "RIDER") {
+        const { Rider } = await import("../models/Rider.js");
+        const r = await Rider.findById(p.participantId).select("photo").lean();
+        return r?.photo || null;
+      }
+      if (p.participantType === "RESTAURANT") {
+        const { Restaurant } = await import("../models/Restaurant.js");
+        const r = await Restaurant.findById(p.participantId)
+          .select("image")
+          .lean();
+        return r?.image || null;
+      }
+      return null; // у User нет поля с фото
+    },
+  },
+  SupportMessage: {
+    id: mongoId,
+    createdAt: (p) =>
+      p.createdAt ? new Date(p.createdAt).toISOString() : null,
+    readByStaff: async (p) => {
+      const { SupportThread } = await import("../models/SupportThread.js");
+      const t = await SupportThread.findById(p.threadId)
+        .select("staffReadAt")
+        .lean();
+      return !!(
+        t?.staffReadAt && new Date(t.staffReadAt) >= new Date(p.createdAt)
+      );
+    },
+    readByParticipant: async (p) => {
+      const { SupportThread } = await import("../models/SupportThread.js");
+      const t = await SupportThread.findById(p.threadId)
+        .select("participantReadAt")
+        .lean();
+      return !!(
+        t?.participantReadAt &&
+        new Date(t.participantReadAt) >= new Date(p.createdAt)
+      );
+    },
   },
   Restaurant: {
     id: mongoId,
     isOpenNow: isRestaurantOpenNow,
+    distanceKm: async (parent, args, ctx) => {
+      if (parent.distanceM != null) {
+        return +(parent.distanceM / 1000).toFixed(2);
+      }
+      if (!args?.addressId) return null;
+      const addr = await ctx.loaders?.addresses?.load?.(
+        `${ctx.user?._id}:${args.addressId}`,
+      );
+      const address =
+        addr ??
+        (await (async () => {
+          const { User } = await import("../models/User.js");
+          const u = await User.findById(ctx.user._id);
+          return u?.addresses?.id(args.addressId) ?? null;
+        })());
+      if (!address?.location?.coordinates) return null;
+      const rest = await (parent._id
+        ? Promise.resolve(parent)
+        : import("../models/Restaurant.js").then((m) =>
+            m.Restaurant.findById(parent.id),
+          ));
+      if (!rest?.location?.coordinates) return null;
+      const { haversineKm } = await import("../utils/geo.js");
+      return +haversineKm(
+        rest.location.coordinates[1],
+        rest.location.coordinates[0],
+        address.location.coordinates[1],
+        address.location.coordinates[0],
+      ).toFixed(2);
+    },
+    estimatedPrepMinutes: async (parent) => {
+      /* без изменений */
+    },
+    // ⭐ НОВОЕ: время доставки = среднее время готовки + дорога + 5 мин на
+    // передачу. Использует существующий etaForRiderToAddress из utils/eta.js
+    // (вместо простого 25 км/ч) — за счёт этого точность лучше.
+    deliveryTime: async (parent) => {
+      const prepMin = parent.estimatedPrepMinutes || 25;
+      const distKm = parent.distanceKm;
+      if (distKm == null || distKm === undefined) return prepMin;
+      // та же формула, что и в delivery-price.service.js: 25 км/ч + handover
+      return Math.round(prepMin + (distKm / 25) * 60 + 5);
+    },
+    // ⭐ НОВОЕ: оценка цены доставки — возвращаем базовую ставку.
+    // Точная цена пересчитывается в cart-page через calculateDeliveryPrice,
+    // когда у пользователя выбран адрес.
+    deliveryPriceEstimate: async () => {
+      const cfg = await Configuration.findById("singleton")
+        .select("deliveryBasePrice")
+        .lean();
+      return cfg?.deliveryBasePrice ?? null;
+    },
     categories: async (parent) => {
       const { Category } = await import("../models/Category.js");
       return Category.find({ restaurantId: parent._id });
     },
+  },
+
+  RestaurantReview: {
+    id: mongoId,
+    createdAt: (p) => p.createdAt?.toISOString?.() ?? String(p.createdAt ?? ""),
   },
   Category: {
     id: mongoId,

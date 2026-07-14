@@ -9,6 +9,12 @@ import { HorizontalCarousel } from "./HorizontalCarousel";
 import { ProductOfTheDay } from "./ProductOfTheDay";
 import { FoodCard } from "./FoodCard";
 import { RestaurantCard } from "./RestaurantCard";
+import {
+  GET_RESTAURANTS,
+  GET_ADDRESSES,
+  GET_CONFIGURATION,
+} from "@/lib/queries";
+import { useQuery } from "@apollo/client";
 
 type Restaurant = {
   id: string;
@@ -50,21 +56,39 @@ export function HomeClient({
   const [search, setSearch] = useState("");
   const [chip, setChip] = useState<ChipId>("all");
 
+  const { data: addrData } = useQuery(GET_ADDRESSES);
+  const userCoords = (addrData?.selectedAddress?.location?.coordinates ??
+    null) as number[] | null;
+
+  const { data: cfg } = useQuery(GET_CONFIGURATION);
+  const { data, loading } = useQuery(GET_RESTAURANTS, {
+    variables:
+      restaurantFilters.nearest && userCoords
+        ? { latitude: userCoords[1], longitude: userCoords[0] }
+        : { latitude: null, longitude: null },
+    fetchPolicy: "cache-and-network",
+    skip: restaurantFilters.nearest && (!userCoords || userCoords.length < 2),
+  });
+
   // Декорируем рестораны детерминированной мета-информацией
   const decorated = useMemo(
     () =>
-      restaurants.map((r, idx) => {
-        const h = hash(r.id + r.name);
-        return {
-          ...r,
-          rating: parseFloat((4.3 + ((h + idx) % 8) * 0.1).toFixed(1)),
-          reviews: 40 + (h % 320),
-          deliveryTime: 18 + (h % 22),
-          distance: parseFloat((0.5 + ((h + idx) % 50) / 10).toFixed(1)),
-          isNew: (h + idx) % 6 === 0,
-          isPopular: (h + idx) % 4 === 0,
-        };
-      }),
+      restaurants.map((r: any) => ({
+        ...r,
+        // ⭐ Реальные данные из БД (aggregate в модели Restaurant).
+        // Если 0 отзывов — averageRating=null, totalRatings=0.
+        // UI должен это учитывать (см. RestaurantCard.tsx — fallback "Новый").
+        rating: typeof r.averageRating === "number" ? r.averageRating : null,
+        reviews: typeof r.totalRatings === "number" ? r.totalRatings : 0,
+        // ⭐ distance / deliveryTime здесь не выставляем: они зависят от
+        // выбранного адреса пользователя и запрашиваются через отдельные
+        // queries restaurantDistance / restaurantDeliveryEta, когда адрес есть.
+        // До выбора адреса — показываем placeholder в UI.
+        distance: null as number | null,
+        deliveryTime: null as number | null,
+        isNew: (r.totalRatings ?? 0) === 0, // реальное определение "нового"
+        isPopular: (r.totalRatings ?? 0) >= 3, // и "популярного"
+      })),
     [restaurants],
   );
 
@@ -102,12 +126,20 @@ export function HomeClient({
       );
     }
     list.sort((a, b) => {
-      if (restaurantFilters.sortBy === "rating") return b.rating - a.rating;
-      if (restaurantFilters.sortBy === "deliveryTime")
-        return a.deliveryTime - b.deliveryTime;
+      if (restaurantFilters.sortBy === "rating") {
+        // null внизу
+        const av = a.rating ?? 0;
+        const bv = b.rating ?? 0;
+        if (av === bv) return (b.reviews ?? 0) - (a.reviews ?? 0);
+        return bv - av;
+      }
+      if (restaurantFilters.sortBy === "deliveryTime") {
+        const at = a.estimatedPrepMinutes ?? 999;
+        const bt = b.estimatedPrepMinutes ?? 999;
+        return at - bt;
+      }
       return a.minimumOrder - b.minimumOrder;
     });
-
     return list;
   }, [decorated, search, chip, restaurantFilters]);
 

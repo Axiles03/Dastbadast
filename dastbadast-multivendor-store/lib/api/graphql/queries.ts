@@ -260,3 +260,71 @@ export const DELETE_FOOD = gql`
     deleteFood(id: $id)
   }
 `;
+
+export const START_SUPPORT_THREAD = gql`
+  mutation StartSupportThread($orderId: ID, $subject: String) {
+    startSupportThread(orderId: $orderId, subject: $subject) {
+      id
+      orderId
+      subject
+      status
+      assignedOwnerName
+      assignedOwnerAvatar
+      createdAt
+    }
+  }
+`;
+
+export const GET_SUPPORT_MESSAGES = gql`
+  query GetSupportMessages($threadId: ID!) {
+    supportMessages(threadId: $threadId) {
+      id
+      threadId
+      senderType
+      senderName
+      text
+      imageUrl
+      readByStaff
+      createdAt
+    }
+  }
+`;
+
+export const SEND_SUPPORT_MESSAGE = gql`
+  mutation SendSupportMessage(
+    $threadId: ID!
+    $text: String
+    $imageUrl: String
+  ) {
+    sendSupportMessage(threadId: $threadId, text: $text, imageUrl: $imageUrl) {
+      id
+      threadId
+      senderType
+      senderName
+      text
+      imageUrl
+      createdAt
+    }
+  }
+`;
+
+export const SUB_SUPPORT_MESSAGE = gql`
+  subscription SubSupportMessage($threadId: ID!) {
+    newSupportMessage(threadId: $threadId) {
+      id
+      threadId
+      senderType
+      senderName
+      text
+      imageUrl
+      readByStaff
+      createdAt
+    }
+  }
+`;
+
+export const MARK_SUPPORT_READ = gql`
+  mutation MarkSupportRead($threadId: ID!) {
+    markSupportRead(threadId: $threadId)
+  }
+`;

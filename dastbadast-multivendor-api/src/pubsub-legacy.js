@@ -20,6 +20,13 @@ export const TOPICS = {
   CHAT_TYPING: (orderId) => `CHAT_TYPING_${orderId}`,
   CHAT_READ: (orderId) => `CHAT_READ_${orderId}`,
 
+  // ⭐ NEW: чат поддержки (клиент/курьер/ресторан ↔ Owner с ролью SUPPORT)
+  SUPPORT_THREAD: (threadId) => `SUPPORT_THREAD_${threadId}`,
+  // Один общий канал: список тредов в админке живёт от любого события
+  // (новый тред, новое сообщение, assign, close) — фильтрация по
+  // ролям/статусу происходит на клиенте через рефетч.
+  SUPPORT_INBOX: "SUPPORT_INBOX",
+
   COURIER_SEARCH_NOTIFY: "COURIER_SEARCH_NOTIFY",
   ALL_DELIVERIES: "ALL_DELIVERIES",
 

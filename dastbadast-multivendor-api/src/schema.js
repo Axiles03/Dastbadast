@@ -175,6 +175,8 @@ export const typeDefs = /* GraphQL */ `
   type Owner {
     id: ID!
     email: String!
+    name: String
+    avatarUrl: String
     userType: String
     permissions: OwnerPermissions
     isActive: Boolean!
@@ -206,12 +208,16 @@ export const typeDefs = /* GraphQL */ `
     email: String!
     password: String!
     userType: String!
+    name: String
+    avatarUrl: String
     permissions: OwnerPermissionsInput
   }
 
   input UpdateOwnerInput {
     email: String
     userType: String
+    name: String
+    avatarUrl: String
     permissions: OwnerPermissionsInput
     isActive: Boolean
   }
@@ -324,6 +330,18 @@ export const typeDefs = /* GraphQL */ `
     workingHours: WorkingHours
     isOpenNow: Boolean # computed-поле
     categories: [Category!]
+    averageRating: Float
+    totalRatings: Int
+    estimatedPrepMinutes: Int
+    distanceKm: Float
+    deliveryPriceEstimate: Float
+    deliveryTime: Int
+  }
+
+  type DeliveryEtaInfo {
+    distanceKm: Float!
+    estimatedPrepMinutes: Int!
+    estimatedDeliveryMinutes: Int! # = prep + (km / 25 km/h * 60) + 5 (handover)
   }
 
   type WorkingHours {
@@ -342,6 +360,23 @@ export const typeDefs = /* GraphQL */ `
     minimumOrder: Float
     isAvailable: Boolean
     workingHours: WorkingHoursInput
+  }
+
+  type RestaurantReview {
+    id: ID!
+    restaurantId: ID!
+    userId: ID!
+    userName: String
+    rating: Int!
+    comment: String!
+    createdAt: String!
+  }
+
+  input AddRestaurantReviewInput {
+    restaurantId: ID!
+    rating: Int!
+    comment: String!
+    orderId: ID
   }
 
   type Category {
@@ -702,6 +737,46 @@ export const typeDefs = /* GraphQL */ `
     orderId: ID!
     senderType: String!
     text: String!
+    imageUrl: String
+    readAt: String
+    createdAt: String!
+  }
+
+  type SupportThread {
+    id: ID!
+    participantType: String!
+    participantId: ID!
+    participantName: String
+    orderId: ID
+    subject: String
+    status: String!
+    assignedOwnerId: ID
+    assignedOwnerEmail: String
+    assignedOwnerName: String
+    assignedOwnerAvatar: String
+    participantAvatar: String
+    lastMessageAt: String
+    lastMessagePreview: String
+    lastSenderType: String
+    unreadForStaff: Boolean!
+    unreadForParticipant: Boolean!
+    staffReadAt: String
+    participantReadAt: String
+    closedByOwnerId: ID
+    closedByName: String
+    createdAt: String!
+  }
+
+  type SupportMessage {
+    id: ID!
+    threadId: ID!
+    senderType: String!
+    senderName: String
+    senderAvatar: String
+    text: String!
+    imageUrl: String
+    readByStaff: Boolean!
+    readByParticipant: Boolean!
     createdAt: String!
   }
 
@@ -971,7 +1046,7 @@ export const typeDefs = /* GraphQL */ `
     deliveryZone: DeliveryZone
     restaurantPrepEta(orderId: ID!): Int
     kitchenLoad: KitchenLoadInfo!
-    restaurants(zoneId: ID): [Restaurant!]!
+    restaurants(zoneId: ID, latitude: Float, longitude: Float): [Restaurant!]!
     restaurant(id: ID!): Restaurant
     foodReviews(foodId: ID!): [FoodReview!]!
     profile: User
@@ -993,6 +1068,15 @@ export const typeDefs = /* GraphQL */ `
     availableOrdersForRiders: [Order!]!
     rider(id: ID!): Rider
     chatMessages(orderId: ID!): [ChatMessage!]!
+    mySupportThreads: [SupportThread!]!
+    supportThread(id: ID!): SupportThread
+    supportMessages(threadId: ID!): [SupportMessage!]!
+    supportThreads(
+      status: String
+      assignedToMe: Boolean
+      showAll: Boolean
+      search: String
+    ): [SupportThread!]!
     adminAccounting(from: String, to: String): AdminAccounting!
     zones: [Zone!]!
     zone(id: ID!): Zone
@@ -1019,6 +1103,9 @@ export const typeDefs = /* GraphQL */ `
     userCohorts(months: Int): CohortResult!
     churnRate(period: Int): ChurnRate!
     demandForecast(days: Int): DemandForecast!
+    restaurantReviews(restaurantId: ID!): [RestaurantReview!]!
+    restaurantDistance(id: ID!, addressId: ID!): Float
+    restaurantDeliveryEta(id: ID!, addressId: ID!): DeliveryEtaInfo
   }
 
   type Mutation {
@@ -1056,7 +1143,16 @@ export const typeDefs = /* GraphQL */ `
     sendChatMessage(orderId: ID!, text: String!): ChatMessage!
     markChatRead(orderId: ID!): Boolean!
     sendTypingStatus(orderId: ID!, isTyping: Boolean!): Boolean!
-
+    startSupportThread(orderId: ID, subject: String): SupportThread!
+    sendSupportMessage(
+      threadId: ID!
+      text: String
+      imageUrl: String
+    ): SupportMessage!
+    assignSupportThread(threadId: ID!): SupportThread!
+    closeSupportThread(threadId: ID!): SupportThread!
+    reopenSupportThread(threadId: ID!): SupportThread!
+    markSupportRead(threadId: ID!): Boolean!
     createOwner(input: CreateOwnerInput!): Owner!
     updateOwner(id: ID!, input: UpdateOwnerInput!): Owner!
     deactivateOwner(id: ID!): Boolean!
@@ -1065,12 +1161,9 @@ export const typeDefs = /* GraphQL */ `
     createZone(input: CreateZoneInput!): Zone!
     updateZone(id: ID!, input: UpdateZoneInput!): Zone!
     deleteZone(id: ID!): Boolean!
-    # ⭐ НОВОЕ: обновление профиля клиента (имя / email / телефон)
     updateUser(input: UpdateUserInput!): User!
-    # Ресторан: переходы по кухн и прочее
     markOrderPreparing(orderId: ID!): Order!
     markOrderReady(orderId: ID!): Order!
-    # Курьер: приеять и доставлять заказ
     acceptDelivery(orderId: ID!): Order!
     pickupDelivery(orderId: ID!): Order!
     arriveAtDropOff(orderId: ID!): Order!
@@ -1083,14 +1176,12 @@ export const typeDefs = /* GraphQL */ `
     unregisterPushToken(token: String!): Boolean!
     saveCart(input: SaveCartInput!): Cart!
     updateMyRestaurant(input: UpdateMyRestaurantInput!): Restaurant!
+    addRestaurantReview(input: AddRestaurantReviewInput!): RestaurantReview!
   }
 
   type Subscription {
     orderStatusChanged(userId: ID!): Order!
     subscriptionOrder(orderId: ID!): Order!
-    # ⭐ ШАГ 4: расширенная подписка — возвращает ПОЛНЫЙ Order (а не обрезок).
-    # Это нужно, чтобы UI обновлял ETA, расстояние, чекаут одним событием.
-    # По сути, дублирует тип Order — оставляем тот же Order для GraphQL-совместимости.
     subscribePlaceOrder(restaurantId: ID!): Order!
     subscriptionAssignedRider(riderId: ID!): Order!
     subscriptionZoneOrders(zoneId: ID): Order!
@@ -1098,6 +1189,8 @@ export const typeDefs = /* GraphQL */ `
     subscriptionRiderLocation(riderId: ID!): RiderLocationUpdate!
     subscriptionRiderOrderCompleted(riderId: ID!): Order!
     newChatMessage(orderId: ID!): ChatMessage!
+    newSupportMessage(threadId: ID!): SupportMessage!
+    supportInboxUpdated: SupportThread!
     chatTypingStatus(orderId: ID!): TypingStatusEvent!
     chatReadStatusChanged(orderId: ID!): ChatReadStatusEvent!
     courierSearchNotify: CourierSearchEvent!

@@ -1,12 +1,14 @@
+// dastbadast-multivendor-web/app/(main)/restaurant/[id]/page.tsx
 import { getClient } from "@/lib/apollo-server";
 import {
   GET_RESTAURANT,
   GET_CONFIGURATION,
   GET_RESTAURANTS,
+  RESTAURANT_REVIEWS,
 } from "@/lib/queries";
 import Link from "next/link";
 import { RestaurantMenu } from "@/components/RestaurantMenu";
-import { ChevronLeft, MapPin } from "lucide-react";
+import { ChevronLeft, MapPin, Star } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -18,11 +20,20 @@ export default async function RestaurantPage({
   const client = getClient();
   const slugOrId = decodeURIComponent(params.id);
 
-  const [{ data: cfg }, { data }, { data: listData }] = await Promise.all([
-    client.query({ query: GET_CONFIGURATION }),
-    client.query({ query: GET_RESTAURANT, variables: { id: slugOrId } }),
-    client.query({ query: GET_RESTAURANTS }),
-  ]);
+  // ⭐ ШАГ 1: подтягиваем restaurantReviews отдельным запросом,
+  // чтобы не возвращать их через Restaurant (это упростит кеш GraphQL).
+  const [{ data: cfg }, { data }, { data: listData }, { data: reviewsData }] =
+    await Promise.all([
+      client.query({ query: GET_CONFIGURATION }),
+      client.query({ query: GET_RESTAURANT, variables: { id: slugOrId } }),
+      client.query({ query: GET_RESTAURANTS }),
+      client
+        .query({
+          query: RESTAURANT_REVIEWS,
+          variables: { restaurantId: slugOrId },
+        })
+        .catch(() => ({ data: null })), // ⭐ на случай, если резолвера ещё нет в API
+    ]);
 
   if (!data?.restaurant) {
     return (
@@ -61,6 +72,10 @@ export default async function RestaurantPage({
     month: "long",
   });
   const closed = r.isOpenNow === false || r.isAvailable === false;
+
+  // ⭐ ШАГ 1: отзывы ресторана из отдельного query (с защитой от undefined,
+  // если query ещё не подключён на бэке).
+  const reviews: any[] = reviewsData?.restaurantReviews ?? [];
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -104,7 +119,58 @@ export default async function RestaurantPage({
             </span>
           )}
         </div>
+
+        {/* ⭐ ШАГ 1: реальный рейтинг ресторана (aggregate из RestaurantReview) */}
+        {r.averageRating != null && r.totalRatings > 0 && (
+          <div className="flex items-center gap-2 mt-3">
+            <div className="flex items-center gap-1 bg-soft-rating-soft border border-soft-rating/30 px-2.5 py-1 rounded-full">
+              <Star className="w-3.5 h-3.5 text-soft-rating fill-current" />
+              <span className="font-extrabold text-soft-rating-dark">
+                {r.averageRating.toFixed(1)}
+              </span>
+              <span className="text-soft-rating-dark/70 text-xs">
+                · {r.totalRatings} отзывов
+              </span>
+            </div>
+          </div>
+        )}
       </header>
+
+      {/* ⭐ ШАГ 1: блок отзывов (вынесен из header — иначе ломается структура,
+          и блок с workingHours/workingHours.open даёт потенциальный null-доступ
+          при рендере вне header'а). Теперь отдельной секцией — и логичнее
+          семантически, и не зависит от null safety в header'е. */}
+      {reviews.length > 0 && (
+        <section className="bg-soft-surface border border-soft-border rounded-2xl p-5 shadow-soft-sm">
+          <h3 className="font-extrabold text-base text-soft-text mb-3 flex items-center gap-2">
+            <Star className="w-4 h-4 text-soft-rating fill-current" />
+            Отзывы о ресторане ({reviews.length})
+          </h3>
+          <ul className="space-y-2.5">
+            {reviews.map((rv: any) => (
+              <li
+                key={rv.id}
+                className="bg-soft-surface-2 border border-soft-border rounded-xl p-3.5"
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-sm font-bold text-soft-text">
+                    {rv.userName || "Гость"}
+                  </span>
+                  <span className="text-soft-rating text-sm">
+                    {"★".repeat(rv.rating)}
+                    <span className="text-soft-border">
+                      {"☆".repeat(5 - rv.rating)}
+                    </span>
+                  </span>
+                </div>
+                <p className="text-sm text-soft-text-soft leading-relaxed">
+                  {rv.comment}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <RestaurantMenu
         restaurantId={r.id}

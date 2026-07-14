@@ -299,6 +299,8 @@ export const OWNERS = gql`
     owners {
       id
       email
+      name
+      avatarUrl
       userType
       isActive
       lastLoginAt
@@ -321,6 +323,8 @@ export const CREATE_OWNER = gql`
     createOwner(input: $input) {
       id
       email
+      name
+      avatarUrl
       userType
       isActive
     }
@@ -332,6 +336,8 @@ export const UPDATE_OWNER = gql`
     updateOwner(id: $id, input: $input) {
       id
       email
+      name
+      avatarUrl
       userType
       isActive
     }
@@ -660,6 +666,143 @@ export const RIDER_LOCATION_STREAM = gql`
       speedKmh
       updatedAt
       stopped
+    }
+  }
+`;
+
+// ⭐ NEW: чат поддержки
+
+export const GET_SUPPORT_THREADS = gql`
+  query GetSupportThreads(
+    $status: String
+    $assignedToMe: Boolean
+    $showAll: Boolean
+    $search: String
+  ) {
+    supportThreads(
+      status: $status
+      assignedToMe: $assignedToMe
+      showAll: $showAll
+      search: $search
+    ) {
+      id
+      participantType
+      participantId
+      participantName
+      participantAvatar
+      orderId
+      subject
+      status
+      assignedOwnerId
+      assignedOwnerEmail
+      assignedOwnerEmail
+      assignedOwnerName
+      assignedOwnerAvatar
+      closedByName
+      lastMessageAt
+      lastMessagePreview
+      lastSenderType
+      participantReadAt
+      unreadForStaff
+      createdAt
+    }
+  }
+`;
+
+export const GET_SUPPORT_MESSAGES = gql`
+  query GetSupportMessages($threadId: ID!) {
+    supportMessages(threadId: $threadId) {
+      id
+      threadId
+      senderType
+      senderName
+      text
+      imageUrl
+      senderAvatar
+      readByParticipant
+      createdAt
+    }
+  }
+`;
+
+export const SEND_SUPPORT_MESSAGE = gql`
+  mutation SendSupportMessage(
+    $threadId: ID!
+    $text: String
+    $imageUrl: String
+  ) {
+    sendSupportMessage(threadId: $threadId, text: $text, imageUrl: $imageUrl) {
+      id
+      threadId
+      senderType
+      senderName
+      text
+      imageUrl
+      senderAvatar
+      createdAt
+    }
+  }
+`;
+
+export const ASSIGN_SUPPORT_THREAD = gql`
+  mutation AssignSupportThread($threadId: ID!) {
+    assignSupportThread(threadId: $threadId) {
+      id
+      assignedOwnerId
+      assignedOwnerEmail
+    }
+  }
+`;
+
+export const CLOSE_SUPPORT_THREAD = gql`
+  mutation CloseSupportThread($threadId: ID!) {
+    closeSupportThread(threadId: $threadId) {
+      id
+      status
+    }
+  }
+`;
+
+export const REOPEN_SUPPORT_THREAD = gql`
+  mutation ReopenSupportThread($threadId: ID!) {
+    reopenSupportThread(threadId: $threadId) {
+      id
+      status
+    }
+  }
+`;
+
+export const MARK_SUPPORT_READ = gql`
+  mutation MarkSupportRead($threadId: ID!) {
+    markSupportRead(threadId: $threadId)
+  }
+`;
+
+export const SUB_NEW_SUPPORT_MESSAGE = gql`
+  subscription SubNewSupportMessage($threadId: ID!) {
+    newSupportMessage(threadId: $threadId) {
+      id
+      threadId
+      senderType
+      senderName
+      text
+      imageUrl
+      readByParticipant
+      createdAt
+    }
+  }
+`;
+
+export const SUB_SUPPORT_INBOX = gql`
+  subscription SubSupportInbox {
+    supportInboxUpdated {
+      id
+      status
+      lastMessageAt
+      lastMessagePreview
+      lastSenderType
+      assignedOwnerId
+      unreadForStaff
     }
   }
 `;
