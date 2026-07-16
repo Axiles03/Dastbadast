@@ -1,3 +1,4 @@
+// dastbadast-multivendor-web/lib/queries.ts
 import { gql } from "@apollo/client";
 
 import {
@@ -33,13 +34,162 @@ export const CREATE_USER = gql`
   }
 `;
 
+export const REQUEST_OTP = gql`
+  mutation RequestOtp($phone: String!, $purpose: OtpPurpose!) {
+    requestOtp(phone: $phone, purpose: $purpose) {
+      sent
+      ttlSeconds
+    }
+  }
+`;
+
+export const REGISTER_WITH_PHONE = gql`
+  mutation RegisterWithPhone($phone: String!, $code: String!) {
+    registerWithPhone(phone: $phone, code: $code) {
+      token
+      user {
+        id
+        name
+        email
+        phone
+      }
+    }
+  }
+`;
+
+export const LOGIN_WITH_OTP = gql`
+  mutation LoginWithOtp($phone: String!, $code: String!) {
+    loginWithOtp(phone: $phone, code: $code) {
+      token
+      user {
+        id
+        name
+        email
+        phone
+      }
+    }
+  }
+`;
+
+export const LOGIN_WITH_PASSWORD = gql`
+  mutation LoginWithPassword($phone: String!, $password: String!) {
+    loginWithPassword(phone: $phone, password: $password) {
+      token
+      user {
+        id
+        name
+        email
+        phone
+      }
+    }
+  }
+`;
+
+export const SET_PASSWORD = gql`
+  mutation SetPassword($input: SetPasswordInput!) {
+    setPassword(input: $input)
+  }
+`;
+
+export const RESET_PASSWORD_WITH_OTP = gql`
+  mutation ResetPasswordWithOtp($input: ResetPasswordInput!) {
+    resetPasswordWithOtp(input: $input) {
+      token
+      user {
+        id
+        name
+        email
+        phone
+      }
+    }
+  }
+`;
+
 export const UPDATE_USER = gql`
   mutation UpdateUser($input: UpdateUserInput!) {
     updateUser(input: $input) {
       id
       name
+      nameChangesLeft
+      nameChangeUnlocksAt
+    }
+  }
+`;
+
+export const REQUEST_EMAIL_CHANGE = gql`
+  mutation RequestEmailChange($newEmail: String!) {
+    requestEmailChange(newEmail: $newEmail) {
+      sent
+      ttlSeconds
+    }
+  }
+`;
+
+export const CONFIRM_EMAIL_CHANGE = gql`
+  mutation ConfirmEmailChange($code: String!) {
+    confirmEmailChange(code: $code) {
+      id
       email
+      emailVerifiedAt
+      pendingEmail
+    }
+  }
+`;
+
+export const CANCEL_EMAIL_CHANGE = gql`
+  mutation CancelEmailChange {
+    cancelEmailChange
+  }
+`;
+
+export const REQUEST_PHONE_CHANGE = gql`
+  mutation RequestPhoneChange($newPhone: String!) {
+    requestPhoneChange(newPhone: $newPhone) {
+      sent
+      ttlSeconds
+    }
+  }
+`;
+
+export const CONFIRM_PHONE_CHANGE = gql`
+  mutation ConfirmPhoneChange($code: String!) {
+    confirmPhoneChange(code: $code) {
+      id
       phone
+      pendingPhone
+    }
+  }
+`;
+
+export const CANCEL_PHONE_CHANGE = gql`
+  mutation CancelPhoneChange {
+    cancelPhoneChange
+  }
+`;
+export const UPDATE_AVATAR = gql`
+  mutation UpdateAvatar($avatar: String) {
+    updateAvatar(avatar: $avatar) {
+      id
+      avatar
+    }
+  }
+`;
+
+export const REQUEST_EMAIL_VERIFICATION = gql`
+  mutation RequestEmailVerification {
+    requestEmailVerification {
+      sent
+      ttlSeconds
+    }
+  }
+`;
+
+export const VERIFY_EMAIL = gql`
+  mutation VerifyEmail($code: String!) {
+    verifyEmail(code: $code) {
+      id
+      email
+      emailVerifiedAt
     }
   }
 `;
@@ -49,8 +199,16 @@ export const GET_PROFILE = gql`
     profile {
       id
       name
+      nameChangesLeft
+      nameChangeUnlocksAt
       email
+      emailVerifiedAt
+      pendingEmail
       phone
+      pendingPhone
+      hasPassword
+      avatar
+      avatarUnlocksAt
     }
   }
 `;
@@ -728,5 +886,29 @@ export const SUB_SUPPORT_MESSAGE = gql`
 export const MARK_SUPPORT_READ = gql`
   mutation MarkSupportRead($threadId: ID!) {
     markSupportRead(threadId: $threadId)
+  }
+`;
+
+export const VAPID_PUBLIC_KEY_QUERY = gql`
+  query VapidPublicKey {
+    vapidPublicKey
+  }
+`;
+
+export const SUBSCRIBE_WEB_PUSH = gql`
+  mutation SubscribeWebPush($input: WebPushSubscriptionInput!) {
+    subscribeWebPush(input: $input)
+  }
+`;
+
+export const UNSUBSCRIBE_WEB_PUSH = gql`
+  mutation UnsubscribeWebPush($endpoint: String!) {
+    unsubscribeWebPush(endpoint: $endpoint)
+  }
+`;
+
+export const SEND_TEST_WEB_PUSH = gql`
+  mutation SendTestWebPush {
+    sendTestWebPush
   }
 `;

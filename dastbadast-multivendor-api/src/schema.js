@@ -64,16 +64,21 @@ export const typeDefs = /* GraphQL */ `
   type User {
     id: ID!
     name: String!
+    nameChangesLeft: Int!
+    nameChangeUnlocksAt: DateTime
     email: String
+    emailVerifiedAt: DateTime
+    pendingEmail: String
     phone: String
+    pendingPhone: String
+    hasPassword: Boolean!
+    avatar: String
+    avatarUnlocksAt: DateTime
     addresses: [Address!]
   }
 
-  # ⭐ НОВОЕ: входные данные для обновления профиля клиента
   input UpdateUserInput {
     name: String
-    email: String
-    phone: String
   }
 
   input UpdateRestaurantInput {
@@ -153,6 +158,28 @@ export const typeDefs = /* GraphQL */ `
     description: String
     polygon: JSON
     isActive: Boolean
+  }
+
+  enum OtpPurpose {
+    REGISTER
+    LOGIN
+    RESET
+  }
+
+  type OtpResult {
+    sent: Boolean!
+    ttlSeconds: Int!
+  }
+
+  input SetPasswordInput {
+    oldPassword: String # обязателен, только если пароль уже задан
+    newPassword: String!
+  }
+
+  input ResetPasswordInput {
+    phone: String!
+    code: String!
+    newPassword: String!
   }
 
   type AuthPayload {
@@ -1041,6 +1068,17 @@ export const typeDefs = /* GraphQL */ `
     shift: RiderShiftEarnings!
   }
 
+  input WebPushKeysInput {
+    p256dh: String!
+    auth: String!
+  }
+
+  input WebPushSubscriptionInput {
+    endpoint: String!
+    keys: WebPushKeysInput!
+    userAgent: String
+  }
+
   type Query {
     configuration: Configuration
     deliveryZone: DeliveryZone
@@ -1106,11 +1144,22 @@ export const typeDefs = /* GraphQL */ `
     restaurantReviews(restaurantId: ID!): [RestaurantReview!]!
     restaurantDistance(id: ID!, addressId: ID!): Float
     restaurantDeliveryEta(id: ID!, addressId: ID!): DeliveryEtaInfo
+    vapidPublicKey: String
   }
 
   type Mutation {
     createUser(input: CreateUserInput!): AuthPayload!
     login(input: LoginInput!): AuthPayload!
+    # ⭐ Шаг 1: OTP-аутентификация по номеру телефона
+    requestOtp(phone: String!, purpose: OtpPurpose!): OtpResult!
+    registerWithPhone(phone: String!, code: String!): AuthPayload!
+    loginWithOtp(phone: String!, code: String!): AuthPayload!
+    loginWithPassword(phone: String!, password: String!): AuthPayload!
+    setPassword(input: SetPasswordInput!): Boolean!
+    resetPasswordWithOtp(input: ResetPasswordInput!): AuthPayload!
+    updateAvatar(avatar: String): User!
+    requestEmailVerification: OtpResult!
+    verifyEmail(code: String!): User!
     createAddress(input: AddressInput!): Address!
     editAddress(id: ID!, input: AddressInput!): Address!
     deleteAddress(id: ID!): Boolean!
@@ -1177,6 +1226,15 @@ export const typeDefs = /* GraphQL */ `
     saveCart(input: SaveCartInput!): Cart!
     updateMyRestaurant(input: UpdateMyRestaurantInput!): Restaurant!
     addRestaurantReview(input: AddRestaurantReviewInput!): RestaurantReview!
+    subscribeWebPush(input: WebPushSubscriptionInput!): Boolean!
+    unsubscribeWebPush(endpoint: String!): Boolean!
+    sendTestWebPush: Boolean!
+    requestEmailChange(newEmail: String!): OtpResult!
+    confirmEmailChange(code: String!): User!
+    cancelEmailChange: Boolean!
+    requestPhoneChange(newPhone: String!): OtpResult!
+    confirmPhoneChange(code: String!): User!
+    cancelPhoneChange: Boolean!
   }
 
   type Subscription {

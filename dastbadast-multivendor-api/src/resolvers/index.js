@@ -83,12 +83,33 @@ import {
   adminUserDetail,
   toggleUserActive,
   updateUser,
+  setPassword,
+  updateAvatar,
   userLTV,
   userOrderFrequency,
   userCohorts,
   churnRate,
   demandForecast,
+  NAME_CHANGE_LIMIT,
+  NAME_CHANGE_WINDOW_MS,
+  AVATAR_CHANGE_WINDOW_MS,
 } from "./user.js";
+import {
+  requestEmailChange,
+  confirmEmailChange,
+  cancelEmailChange,
+  requestPhoneChange,
+  confirmPhoneChange,
+  cancelPhoneChange,
+} from "./contact-change.js";
+import { requestEmailVerification, verifyEmail } from "./email-verification.js";
+import {
+  requestOtpMutation,
+  registerWithPhone,
+  loginWithOtp,
+  loginWithPassword,
+  resetPasswordWithOtp,
+} from "./auth-otp.js";
 import {
   orders,
   order,
@@ -173,6 +194,13 @@ import {
 import { JSONScalar, DateTimeScalar } from "../utils/scalars.js";
 
 import {
+  vapidPublicKey,
+  subscribeWebPush,
+  unsubscribeWebPush,
+  sendTestWebPush,
+} from "./web-push.js";
+
+import {
   registerPushToken,
   unregisterPushToken,
   myPushTokens,
@@ -180,9 +208,35 @@ import {
 
 const mongoId = (parent) => parent?.id ?? parent?._id?.toString();
 
+function pruneOld(dates, windowMs) {
+  const cutoff = Date.now() - windowMs;
+  return (dates || [])
+    .map((d) => new Date(d))
+    .filter((d) => d.getTime() > cutoff)
+    .sort((a, b) => a.getTime() - b.getTime());
+}
+
 export const resolvers = {
   JSON: JSONScalar,
   DateTime: DateTimeScalar,
+  User: {
+    hasPassword: (parent) => !!parent.passwordHash,
+    nameChangesLeft: (parent) => {
+      const recent = pruneOld(parent.nameChangeHistory, NAME_CHANGE_WINDOW_MS);
+      return Math.max(0, NAME_CHANGE_LIMIT - recent.length);
+    },
+    nameChangeUnlocksAt: (parent) => {
+      const recent = pruneOld(parent.nameChangeHistory, NAME_CHANGE_WINDOW_MS);
+      if (recent.length < NAME_CHANGE_LIMIT) return null;
+      return new Date(recent[0].getTime() + NAME_CHANGE_WINDOW_MS);
+    },
+    avatarUnlocksAt: (parent) => {
+      if (!parent.avatarChangedAt) return null;
+      const unlocks =
+        new Date(parent.avatarChangedAt).getTime() + AVATAR_CHANGE_WINDOW_MS;
+      return unlocks > Date.now() ? new Date(unlocks) : null;
+    },
+  },
   Query: {
     configuration,
     deliveryZone,
@@ -274,7 +328,7 @@ export const resolvers = {
     churnRate,
     demandForecast,
     restaurantReviews: restaurantReviewsQuery,
-
+    vapidPublicKey,
     restaurantDistance: async (_p, { id, addressId }, ctx) => {
       if (!ctx.user) {
         throw new GraphQLError("Not authenticated", {
@@ -365,6 +419,24 @@ export const resolvers = {
   Mutation: {
     createUser,
     login,
+    requestOtp: requestOtpMutation,
+    registerWithPhone,
+    loginWithOtp,
+    loginWithPassword,
+    setPassword,
+    updateAvatar,
+    requestEmailChange,
+    confirmEmailChange,
+    cancelEmailChange,
+    requestPhoneChange,
+    confirmPhoneChange,
+    cancelPhoneChange,
+    requestEmailVerification,
+    verifyEmail,
+    subscribeWebPush,
+    unsubscribeWebPush,
+    sendTestWebPush,
+    resetPasswordWithOtp,
     createAddress,
     editAddress,
     deleteAddress,
@@ -713,7 +785,6 @@ export const resolvers = {
     optionId: (parent) => String(parent.optionId),
   },
 
-  User: { id: mongoId },
   Configuration: {
     taxPercent: (parent) =>
       typeof parent.taxPercent === "number" ? parent.taxPercent : 10,

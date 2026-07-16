@@ -13,6 +13,15 @@ export function getPageMeta(pathname: string): PageMeta {
   if (pathname === "/profile") {
     return { title: "Профиль", subtitle: "Настройки аккаунта" };
   }
+  if (pathname === "/edit-profile") {
+    return {
+      title: "Редактировать профиль",
+      subtitle: "Имя, email, телефон, аватар",
+    };
+  }
+  if (pathname === "/security") {
+    return { title: "Безопасность", subtitle: "Пароль и вход" };
+  }
   if (pathname === "/cart") {
     return { title: "Корзина", subtitle: "Проверьте заказ" };
   }
@@ -21,6 +30,9 @@ export function getPageMeta(pathname: string): PageMeta {
   }
   if (pathname.startsWith("/restaurant/")) {
     return { title: "Меню ресторана", subtitle: "Выберите блюда" };
+  }
+  if (pathname === "/notifications") {
+    return { title: "Уведомления", subtitle: "Push в браузере" };
   }
   return { title: "Dastbadast", subtitle: "" };
 }

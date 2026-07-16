@@ -20,6 +20,7 @@ async function run() {
   await mongoose.connect(MONGO_URI);
   console.log("Connected. Seeding...");
 
+  // 1. CLEAR COLLECTIONS
   await Promise.all([
     Configuration.deleteMany({}),
     Zone.deleteMany({}),
@@ -27,12 +28,14 @@ async function run() {
     Category.deleteMany({}),
     Food.deleteMany({}),
     FoodReview.deleteMany({}),
+    RestaurantReview.deleteMany({}),
     Owner.deleteMany({}),
     Rider.deleteMany({}),
     User.deleteMany({}),
     Order.deleteMany({}),
   ]);
 
+  // 2. CREATE CONFIGURATION
   await Configuration.create({
     _id: "singleton",
     currency: "TJS",
@@ -47,6 +50,7 @@ async function run() {
     testOtp: "123456",
   });
 
+  // 3. CREATE SUPER ADMIN
   const passwordHash = await bcrypt.hash("admin123", 10);
   await Owner.create({
     email: "admin@dastbadast.tj",
@@ -54,6 +58,7 @@ async function run() {
     userType: "SUPER_ADMIN",
   });
 
+  // 4. CREATE ZONE
   const zone = await Zone.create({
     name: "Душанбе",
     description: "Центральная зона доставки",
@@ -71,140 +76,8 @@ async function run() {
     },
   });
 
-  // ⭐ Реальные отзывы на рестораны — для проверки агрегатов в UI
-
-  await RestaurantReview.deleteMany({}); // чтобы seed был идемпотентным
-
-  const reviews = [
-    {
-      r: 0,
-      u: 0,
-      rating: 5,
-      comment: "Лучший плов в городе, рекомендую!",
-      orderId: null,
-    },
-    { r: 0, u: 1, rating: 4, comment: "Хорошо, но ждали доставку 50 мин." },
-    { r: 0, u: 2, rating: 5, comment: "Шашлык отменный, мясо сочное." },
-    { r: 1, u: 3, rating: 5, comment: "Пицца Маргарита — лучшая в Душанбе!" },
-    { r: 1, u: 4, rating: 4, comment: "Паста вкусная, но порция маленькая." },
-    {
-      r: 2,
-      u: 5,
-      rating: 3,
-      comment: "Чизбургер средний, картофель фри пересолен.",
-    },
-    {
-      r: 2,
-      u: 6,
-      rating: 5,
-      comment: "Обожаю этот бургер! Хрустящий, сочный.",
-    },
-    { r: 3, u: 7, rating: 4, comment: "Филадельфия свежая, доставили быстро." },
-    { r: 4, u: 8, rating: 5, comment: "Капучино как в Италии ☕" },
-    {
-      r: 6,
-      u: 9,
-      rating: 5,
-      comment: "Шашлык-рай — название говорит само за себя!",
-    },
-    { r: 7, u: 10, rating: 4, comment: "Плов хороший, но доставка долгая." },
-    { r: 8, u: 11, rating: 5, comment: "Wok с курицей — топ!" },
-    { r: 9, u: 12, rating: 4, comment: "Медовик свежий и вкусный." },
-  ];
-
-  for (const r of reviews) {
-    const restaurant = await Restaurant.findOne().skip(r.r); // 0..9 по порядку
-    const user = createdUsers[r.u];
-    if (!restaurant || !user) continue;
-    await RestaurantReview.create({
-      restaurantId: restaurant._id,
-      userId: user._id,
-      userName: user.name,
-      rating: r.rating,
-      comment: r.comment,
-      orderId: r.orderId || null,
-    });
-  }
-
-  // Обновляем агрегаты averageRating/totalRatings в Restaurant
-  for (let i = 0; i < 10; i++) {
-    const rest = (await Restaurant.find().lean())[i];
-    if (!rest) continue;
-    const stats = await RestaurantReview.aggregate([
-      { $match: { restaurantId: rest._id } },
-      { $group: { _id: null, avg: { $avg: "$rating" }, count: { $sum: 1 } } },
-    ]);
-    if (stats[0]) {
-      await Restaurant.findByIdAndUpdate(rest._id, {
-        averageRating: +stats[0].avg.toFixed(2),
-        totalRatings: stats[0].count,
-      });
-    }
-  }
-
-  // ⭐ Несколько доставленных заказов — для расчёта estimatedPrepMinutes
-  const deliveredOrders = [];
-  for (let i = 0; i < 30; i++) {
-    const r = await Restaurant.findOne().skip(i % 10);
-    const u = createdUsers[i % createdUsers.length];
-    const acceptedAt = new Date(Date.now() - (i + 1) * 2 * 60 * 60 * 1000); // 2ч назад
-    const readyAt = new Date(
-      acceptedAt.getTime() + (15 + (i % 25)) * 60 * 1000,
-    ); // 15..40 мин
-    const deliveredAt = new Date(readyAt.getTime() + 18 * 60 * 1000); // +18 мин езды
-    const amt = 80 + (i % 10) * 10;
-    const o = await Order.create({
-      orderId: `DBD-${acceptedAt.getTime().toString(36).slice(-6).toUpperCase()}`,
-      userId: u._id,
-      restaurantId: r._id,
-      items: [
-        {
-          foodId: r._id, // заглушка
-          title: "Случайное блюдо",
-          basePrice: amt,
-          optionsTotal: 0,
-          price: amt,
-          quantity: 1,
-          image: "",
-          description: "",
-          selectedOptions: [],
-        },
-      ],
-      orderStatus: "DELIVERED",
-      paymentMethod: "COD",
-      paid: true,
-      paidAt: deliveredAt,
-      deliveryAddress: {
-        address: "Test Address 1",
-        city: "Душанбе",
-        location: { type: "Point", coordinates: [68.78, 38.57] },
-      },
-      pickupAddress: {
-        name: r.name,
-        address: r.address || "",
-        location: r.location,
-      },
-      amounts: {
-        subtotal: amt,
-        tax: 0,
-        deliveryFee: 15,
-        total: amt + 15,
-      },
-      statusTimestamps: {
-        pendingAt: acceptedAt,
-        acceptedAt,
-        readyAt,
-        deliveredAt,
-      },
-    });
-    deliveredOrders.push(o);
-  }
-
-  // ==========================================
-  // 👥 15 ПОЛЬЗОВАТЕЛЕЙ (Users)
-  // ==========================================
+  // 5. CREATE 15 USERS
   const demoUserHash = await bcrypt.hash("user123", 10);
-
   const usersData = [
     {
       name: "Алишер",
@@ -312,14 +185,10 @@ async function run() {
       isActive: true,
     },
   ];
-
   const createdUsers = await User.insertMany(usersData);
 
-  // ==========================================
-  // 🛵 10 КУРЬЕРОВ (Riders)
-  // ==========================================
+  // 6. CREATE 10 RIDERS
   const riderHash = await bcrypt.hash("rider123", 10);
-
   const ridersData = Array.from({ length: 10 }, (_, i) => {
     const num = i + 1;
     return {
@@ -332,15 +201,12 @@ async function run() {
       isActive: true,
     };
   });
-
   await Rider.insertMany(ridersData);
 
-  // ==========================================
-  // 🏪 10 РЕСТОРАНОВ С КАТЕГОРИЯМИ И БЛЮДАМИ
-  // ==========================================
+  // 7. CREATE 10 RESTAURANTS, CATEGORIES, AND FOODS
   const restPasswordHash = await bcrypt.hash("store123", 10);
 
-  // --- РЕСТОРАН 1: Чайхана №1 ---
+  // --- RESTAURANT 1: Чайхана №1 ---
   const rest1 = await Restaurant.create({
     name: "Чайхана №1",
     slug: "chayhana-1",
@@ -354,7 +220,6 @@ async function run() {
     minimumOrder: 50,
     isAvailable: true,
   });
-
   const cat1Main = await Category.create({
     title: "Основные блюда",
     image: "https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?w=400",
@@ -365,7 +230,6 @@ async function run() {
     image: "https://images.unsplash.com/photo-1625937329935-287441889b6f?w=400",
     restaurantId: rest1._id,
   });
-
   const rest1Foods = await Food.insertMany([
     {
       title: "Плов",
@@ -403,7 +267,7 @@ async function run() {
     },
   ]);
 
-  // --- РЕСТОРАН 2: Bella Italia ---
+  // --- RESTAURANT 2: Bella Italia ---
   const rest2 = await Restaurant.create({
     name: "Bella Italia",
     slug: "bella-italia",
@@ -417,13 +281,11 @@ async function run() {
     minimumOrder: 70,
     isAvailable: true,
   });
-
   const cat2Pizza = await Category.create({
     title: "Пицца и Паста",
     image: "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=400",
     restaurantId: rest2._id,
   });
-
   await Food.insertMany([
     {
       title: "Пицца Маргарита",
@@ -445,7 +307,7 @@ async function run() {
     },
   ]);
 
-  // --- РЕСТОРАН 3: Burger House ---
+  // --- RESTAURANT 3: Burger House ---
   const rest3 = await Restaurant.create({
     name: "Burger House",
     slug: "burger-house",
@@ -459,13 +321,11 @@ async function run() {
     minimumOrder: 40,
     isAvailable: true,
   });
-
   const cat3Burgers = await Category.create({
     title: "Бургеры",
     image: "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400",
     restaurantId: rest3._id,
   });
-
   await Food.insertMany([
     {
       title: "Чизбургер",
@@ -487,7 +347,7 @@ async function run() {
     },
   ]);
 
-  // --- РЕСТОРАН 4: Сакура Суши ---
+  // --- RESTAURANT 4: Сакура Суши ---
   const rest4 = await Restaurant.create({
     name: "Сакура Суши",
     slug: "sakura-sushi",
@@ -501,13 +361,11 @@ async function run() {
     minimumOrder: 60,
     isAvailable: true,
   });
-
   const cat4Rolls = await Category.create({
     title: "Роллы",
     image: "https://images.unsplash.com/photo-1579871494447-9811cf80d66c?w=400",
     restaurantId: rest4._id,
   });
-
   await Food.insertMany([
     {
       title: "Ролл Филадельфия",
@@ -528,7 +386,7 @@ async function run() {
     },
   ]);
 
-  // --- РЕСТОРАН 5: Coffee & Bakery ---
+  // --- RESTAURANT 5: Coffee & Bakery ---
   const rest5 = await Restaurant.create({
     name: "Coffee & Bakery",
     slug: "coffee-bakery",
@@ -542,13 +400,11 @@ async function run() {
     minimumOrder: 30,
     isAvailable: true,
   });
-
   const cat5Coffee = await Category.create({
     title: "Кофе и Выпечка",
     image: "https://images.unsplash.com/photo-1509042239860-f550ce710b93?w=400",
     restaurantId: rest5._id,
   });
-
   await Food.insertMany([
     {
       title: "Капучино",
@@ -569,7 +425,7 @@ async function run() {
     },
   ]);
 
-  // --- РЕСТОРАН 6: Шашлычный Рай ---
+  // --- RESTAURANT 6: Шашлычный Рай ---
   const rest6 = await Restaurant.create({
     name: "Шашлычный Рай",
     slug: "shashlyk-ray",
@@ -583,13 +439,11 @@ async function run() {
     minimumOrder: 55,
     isAvailable: true,
   });
-
   const cat6Grill = await Category.create({
     title: "Мясо на углях",
     image: "https://images.unsplash.com/photo-1544025162-d76694265947?w=400",
     restaurantId: rest6._id,
   });
-
   await Food.insertMany([
     {
       title: "Люля-Кебаб",
@@ -610,7 +464,7 @@ async function run() {
     },
   ]);
 
-  // --- РЕСТОРАН 7: Плов Центр ---
+  // --- RESTAURANT 7: Плов Центр ---
   const rest7 = await Restaurant.create({
     name: "Плов Центр",
     slug: "plov-center",
@@ -624,13 +478,11 @@ async function run() {
     minimumOrder: 45,
     isAvailable: true,
   });
-
   const cat7Plov = await Category.create({
     title: "Национальные блюда",
     image: "https://images.unsplash.com/photo-1603133872875-684f208fbfa9?w=400",
     restaurantId: rest7._id,
   });
-
   await Food.insertMany([
     {
       title: "Плов Ош-Палов",
@@ -651,7 +503,7 @@ async function run() {
     },
   ]);
 
-  // --- РЕСТОРАН 8: Wok & Roll ---
+  // --- RESTAURANT 8: Wok & Roll ---
   const rest8 = await Restaurant.create({
     name: "Wok & Roll",
     slug: "wok-roll",
@@ -665,13 +517,11 @@ async function run() {
     minimumOrder: 65,
     isAvailable: true,
   });
-
   const cat8Wok = await Category.create({
     title: "Азиатская лапша",
     image: "https://images.unsplash.com/photo-1585032226651-759b368d7246?w=400",
     restaurantId: rest8._id,
   });
-
   await Food.insertMany([
     {
       title: "Wok с Курицей",
@@ -692,7 +542,7 @@ async function run() {
     },
   ]);
 
-  // --- РЕСТОРАН 9: Кондитерская Sweet Life ---
+  // --- RESTAURANT 9: Кондитерская Sweet Life ---
   const rest9 = await Restaurant.create({
     name: "Sweet Life",
     slug: "sweet-life",
@@ -706,13 +556,11 @@ async function run() {
     minimumOrder: 40,
     isAvailable: true,
   });
-
   const cat9Desserts = await Category.create({
     title: "Десерты и Торты",
     image: "https://images.unsplash.com/photo-1551024601-bec78aea704b?w=400",
     restaurantId: rest9._id,
   });
-
   await Food.insertMany([
     {
       title: "Торт Медовик",
@@ -734,7 +582,7 @@ async function run() {
     },
   ]);
 
-  // --- РЕСТОРАН 10: Shawarma City ---
+  // --- RESTAURANT 10: Shawarma City ---
   const rest10 = await Restaurant.create({
     name: "Shawarma City",
     slug: "shawarma-city",
@@ -748,13 +596,11 @@ async function run() {
     minimumOrder: 35,
     isAvailable: true,
   });
-
   const cat10Fast = await Category.create({
     title: "Стрит-фуд",
     image: "https://images.unsplash.com/photo-1561651823-34fed022540d?w=400",
     restaurantId: rest10._id,
   });
-
   await Food.insertMany([
     {
       title: "Шаурма Классическая",
@@ -776,9 +622,133 @@ async function run() {
     },
   ]);
 
-  // ==========================================
-  // ⭐ ОТЗЫВЫ К БЛЮДАМ (Reviews)
-  // ==========================================
+  // 8. CREATE RESTAURANT REVIEWS
+  const reviews = [
+    {
+      r: 0,
+      u: 0,
+      rating: 5,
+      comment: "Лучший плов в городе, рекомендую!",
+      orderId: null,
+    },
+    { r: 0, u: 1, rating: 4, comment: "Хорошо, но ждали доставку 50 мин." },
+    { r: 0, u: 2, rating: 5, comment: "Шашлык отменный, мясо сочное." },
+    { r: 1, u: 3, rating: 5, comment: "Пицца Маргарита — лучшая в Душанбе!" },
+    { r: 1, u: 4, rating: 4, comment: "Паста вкусная, но порция маленькая." },
+    {
+      r: 2,
+      u: 5,
+      rating: 3,
+      comment: "Чизбургер средний, картофель фри пересолен.",
+    },
+    {
+      r: 2,
+      u: 6,
+      rating: 5,
+      comment: "Обожаю этот бургер! Хрустящий, сочный.",
+    },
+    { r: 3, u: 7, rating: 4, comment: "Филадельфия свежая, доставили быстро." },
+    { r: 4, u: 8, rating: 5, comment: "Капучино как в Италии ☕" },
+    {
+      r: 6,
+      u: 9,
+      rating: 5,
+      comment: "Шашлык-рай — название говорит само за себя!",
+    },
+    { r: 7, u: 10, rating: 4, comment: "Плов хороший, но доставка долгая." },
+    { r: 8, u: 11, rating: 5, comment: "Wok с курицей — топ!" },
+    { r: 9, u: 12, rating: 4, comment: "Медовик свежий и вкусный." },
+  ];
+
+  for (const r of reviews) {
+    const restaurant = await Restaurant.findOne().skip(r.r);
+    const user = createdUsers[r.u];
+    if (!restaurant || !user) continue;
+    await RestaurantReview.create({
+      restaurantId: restaurant._id,
+      userId: user._id,
+      userName: user.name,
+      rating: r.rating,
+      comment: r.comment,
+      orderId: r.orderId || null,
+    });
+  }
+
+  // 9. UPDATE RESTAURANT AGGREGATES
+  for (let i = 0; i < 10; i++) {
+    const rest = (await Restaurant.find().lean())[i];
+    if (!rest) continue;
+    const stats = await RestaurantReview.aggregate([
+      { $match: { restaurantId: rest._id } },
+      { $group: { _id: null, avg: { $avg: "$rating" }, count: { $sum: 1 } } },
+    ]);
+    if (stats[0]) {
+      await Restaurant.findByIdAndUpdate(rest._id, {
+        averageRating: +stats[0].avg.toFixed(2),
+        totalRatings: stats[0].count,
+      });
+    }
+  }
+
+  // 10. CREATE DELIVERED ORDERS
+  const deliveredOrders = [];
+  for (let i = 0; i < 30; i++) {
+    const r = await Restaurant.findOne().skip(i % 10);
+    const u = createdUsers[i % createdUsers.length];
+    const acceptedAt = new Date(Date.now() - (i + 1) * 2 * 60 * 60 * 1000);
+    const readyAt = new Date(
+      acceptedAt.getTime() + (15 + (i % 25)) * 60 * 1000,
+    );
+    const deliveredAt = new Date(readyAt.getTime() + 18 * 60 * 1000);
+    const amt = 80 + (i % 10) * 10;
+    const o = await Order.create({
+      orderId: `DBD-${acceptedAt.getTime().toString(36).slice(-6).toUpperCase()}`,
+      userId: u._id,
+      restaurantId: r._id,
+      items: [
+        {
+          foodId: r._id,
+          title: "Случайное блюдо",
+          basePrice: amt,
+          optionsTotal: 0,
+          price: amt,
+          quantity: 1,
+          image: "",
+          description: "",
+          selectedOptions: [],
+        },
+      ],
+      orderStatus: "DELIVERED",
+      paymentMethod: "COD",
+      paid: true,
+      paidAt: deliveredAt,
+      deliveryAddress: {
+        address: "Test Address 1",
+        city: "Душанбе",
+        location: { type: "Point", coordinates: [68.78, 38.57] },
+      },
+      pickupAddress: {
+        name: r.name,
+        address: r.address || "",
+        location: r.location,
+      },
+      amounts: {
+        subtotal: amt,
+        tax: 0,
+        deliveryFee: 15,
+        total: amt + 15,
+      },
+      statusTimestamps: {
+        pendingAt: acceptedAt,
+        acceptedAt,
+        readyAt,
+        deliveredAt,
+      },
+    });
+    deliveredOrders.push(o);
+  }
+
+  // 11. CREATE FOOD REVIEWS
   await FoodReview.insertMany([
     {
       foodId: rest1Foods[0]._id,
@@ -796,7 +766,7 @@ async function run() {
     },
   ]);
 
-  // === Тестовые админы для проверки ролей ===
+  // 12. CREATE ADMINISTRATIVE ROLES
   const roles = ["DISPATCHER", "FINANCE", "OPERATIONS", "SUPPORT", "ANALYST"];
   for (const role of roles) {
     const rHash = await bcrypt.hash(`${role.toLowerCase()}123`, 10);

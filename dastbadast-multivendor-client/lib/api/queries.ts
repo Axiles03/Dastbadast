@@ -30,13 +30,213 @@ export const CREATE_USER = gql`
   }
 `;
 
-export const GET_PROFILE = gql`
-  query Profile {
+export const GET_PROFILE_FULL = gql`
+  query ProfileFull {
     profile {
       id
       name
+      nameChangesLeft
+      nameChangeUnlocksAt
       email
+      emailVerifiedAt
+      pendingEmail
       phone
+      pendingPhone
+      hasPassword
+      avatar
+      avatarUnlocksAt
+    }
+  }
+`;
+
+export const UPDATE_NAME = gql`
+  mutation UpdateName($input: UpdateUserInput!) {
+    updateUser(input: $input) {
+      id
+      name
+      nameChangesLeft
+      nameChangeUnlocksAt
+    }
+  }
+`;
+
+export const UPDATE_AVATAR = gql`
+  mutation UpdateAvatar($avatar: String) {
+    updateAvatar(avatar: $avatar) {
+      id
+      avatar
+      avatarUnlocksAt
+    }
+  }
+`;
+
+export const SET_PASSWORD = gql`
+  mutation SetPassword($input: SetPasswordInput!) {
+    setPassword(input: $input)
+  }
+`;
+
+export const REQUEST_EMAIL_VERIFICATION = gql`
+  mutation RequestEmailVerification {
+    requestEmailVerification {
+      sent
+      ttlSeconds
+    }
+  }
+`;
+
+export const VERIFY_EMAIL = gql`
+  mutation VerifyEmail($code: String!) {
+    verifyEmail(code: $code) {
+      id
+      email
+      emailVerifiedAt
+    }
+  }
+`;
+
+export const REQUEST_EMAIL_CHANGE = gql`
+  mutation RequestEmailChange($newEmail: String!) {
+    requestEmailChange(newEmail: $newEmail) {
+      sent
+      ttlSeconds
+    }
+  }
+`;
+
+export const CONFIRM_EMAIL_CHANGE = gql`
+  mutation ConfirmEmailChange($code: String!) {
+    confirmEmailChange(code: $code) {
+      id
+      email
+      emailVerifiedAt
+      pendingEmail
+    }
+  }
+`;
+
+export const CANCEL_EMAIL_CHANGE = gql`
+  mutation CancelEmailChange {
+    cancelEmailChange
+  }
+`;
+
+export const REQUEST_PHONE_CHANGE = gql`
+  mutation RequestPhoneChange($newPhone: String!) {
+    requestPhoneChange(newPhone: $newPhone) {
+      sent
+      ttlSeconds
+    }
+  }
+`;
+
+export const CONFIRM_PHONE_CHANGE = gql`
+  mutation ConfirmPhoneChange($code: String!) {
+    confirmPhoneChange(code: $code) {
+      id
+      phone
+      pendingPhone
+    }
+  }
+`;
+
+export const CANCEL_PHONE_CHANGE = gql`
+  mutation CancelPhoneChange {
+    cancelPhoneChange
+  }
+`;
+
+export const REGISTER_PUSH_TOKEN = gql`
+  mutation RegisterPushToken($input: PushTokenInput!) {
+    registerPushToken(input: $input) {
+      id
+      token
+      platform
+    }
+  }
+`;
+
+export const UNREGISTER_PUSH_TOKEN = gql`
+  mutation UnregisterPushToken($token: String!) {
+    unregisterPushToken(token: $token)
+  }
+`;
+
+export const MY_PUSH_TOKENS = gql`
+  query MyPushTokens {
+    myPushTokens {
+      id
+      platform
+      lastUsedAt
+    }
+  }
+`;
+
+export const REQUEST_OTP = gql`
+  mutation RequestOtp($phone: String!, $purpose: OtpPurpose!) {
+    requestOtp(phone: $phone, purpose: $purpose) {
+      sent
+      ttlSeconds
+    }
+  }
+`;
+
+export const REGISTER_WITH_PHONE = gql`
+  mutation RegisterWithPhone($phone: String!, $code: String!) {
+    registerWithPhone(phone: $phone, code: $code) {
+      token
+      user {
+        id
+        name
+        email
+        phone
+        hasPassword
+      }
+    }
+  }
+`;
+
+export const LOGIN_WITH_OTP = gql`
+  mutation LoginWithOtp($phone: String!, $code: String!) {
+    loginWithOtp(phone: $phone, code: $code) {
+      token
+      user {
+        id
+        name
+        email
+        phone
+        hasPassword
+      }
+    }
+  }
+`;
+
+export const LOGIN_WITH_PASSWORD = gql`
+  mutation LoginWithPassword($phone: String!, $password: String!) {
+    loginWithPassword(phone: $phone, password: $password) {
+      token
+      user {
+        id
+        name
+        email
+        phone
+        hasPassword
+      }
+    }
+  }
+`;
+
+export const RESET_PASSWORD_WITH_OTP = gql`
+  mutation ResetPasswordWithOtp($input: ResetPasswordInput!) {
+    resetPasswordWithOtp(input: $input) {
+      token
+      user {
+        id
+        name
+        email
+        phone
+        hasPassword
+      }
     }
   }
 `;

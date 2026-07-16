@@ -142,8 +142,10 @@ export async function createServer() {
   app.use(
     "/graphql",
     expressMiddleware(apollo, {
+      // ⭐ Шаг 2: пробрасываем IP клиента в контекст — нужен для rate
+      // limiting запросов OTP/логина по IP (см. resolvers/auth-otp.js)
       context: async ({ req }) =>
-        resolveContextFromAuthHeader(req.headers.authorization || ""),
+        resolveContextFromAuthHeader(req.headers.authorization || "", req.ip),
     }),
   );
 

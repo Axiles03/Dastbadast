@@ -30,6 +30,22 @@ async function findZoneForPoint(lng, lat) {
 }
 
 /* ============================================================
+ * constants
+ *============================================================ */
+
+export const NAME_CHANGE_LIMIT = 2;
+export const NAME_CHANGE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // 14 дней
+export const AVATAR_CHANGE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // 14 дней
+
+function pruneOld(dates, windowMs) {
+  const cutoff = Date.now() - windowMs;
+  return (dates || [])
+    .map((d) => new Date(d))
+    .filter((d) => d.getTime() > cutoff)
+    .sort((a, b) => a.getTime() - b.getTime());
+}
+
+/* ============================================================
  *  profile / addresses / selectedAddress
  * ============================================================ */
 
@@ -367,18 +383,6 @@ export const toggleUserActive = async (_p, { id, isActive }, ctx) => {
 
 export const updateUser = async (_p, { input }, ctx) => {
   const current = requireUser(ctx);
-
-  if (input.phone !== undefined && input.phone !== null && input.phone !== "") {
-    const cleaned = String(input.phone).replace(/[\s\-()]/g, "");
-    if (!TJ_PHONE_REGEX.test(cleaned)) {
-      throw new GraphQLError(
-        "Телефон должен быть в формате +992 и ровно 9 цифр (например +992901234567)",
-        { extensions: { code: "BAD_USER_INPUT" } },
-      );
-    }
-    input.phone = cleaned;
-  }
-
   const user = await User.findById(current._id);
   if (!user) {
     throw new GraphQLError("Пользователь не найден", {
@@ -388,33 +392,29 @@ export const updateUser = async (_p, { input }, ctx) => {
 
   if (input.name !== undefined) {
     const name = String(input.name).trim();
-    if (name.length < 2) {
-      throw new GraphQLError("Имя должно содержать минимум 2 символа", {
+    if (!name) {
+      throw new GraphQLError("Имя не может быть пустым", {
         extensions: { code: "BAD_USER_INPUT" },
       });
     }
-    user.name = name;
-  }
-
-  if (input.email !== undefined) {
-    const email = String(input.email).trim().toLowerCase();
-    if (email) {
-      if (email !== (user.email || "").toLowerCase()) {
-        const exists = await User.findOne({ email });
-        if (exists && exists._id.toString() !== user._id.toString()) {
-          throw new GraphQLError("Этот email уже используется", {
-            extensions: { code: "CONFLICT" },
-          });
-        }
-        user.email = email;
+    if (name !== user.name) {
+      const recent = pruneOld(user.nameChangeHistory, NAME_CHANGE_WINDOW_MS);
+      if (recent.length >= NAME_CHANGE_LIMIT) {
+        const unlocksAt = new Date(recent[0].getTime() + NAME_CHANGE_WINDOW_MS);
+        throw new GraphQLError(
+          `Лимит смены имени исчерпан (2 раза / 14 дней). Доступно снова ${unlocksAt.toLocaleString("ru-RU")}.`,
+          {
+            extensions: {
+              code: "RATE_LIMITED",
+              unlocksAt: unlocksAt.toISOString(),
+            },
+          },
+        );
       }
-    } else {
-      user.email = undefined;
+      recent.push(new Date());
+      user.nameChangeHistory = recent;
+      user.name = name;
     }
-  }
-
-  if (input.phone !== undefined) {
-    user.phone = input.phone || undefined;
   }
 
   await user.save();
@@ -946,4 +946,121 @@ export const demandForecast = async (_p, { days: daysArg }, ctx) => {
       trendPct,
     },
   };
+};
+
+const MIN_PASSWORD_LENGTH = 6;
+
+// ⭐ Задать пароль (если ещё не задан) или сменить существующий.
+// Если пароль уже есть — обязателен oldPassword, иначе можно сразу задать новый.
+export const setPassword = async (_p, { input }, ctx) => {
+  const current = requireUser(ctx);
+  const { oldPassword, newPassword } = input;
+
+  if (
+    typeof newPassword !== "string" ||
+    newPassword.length < MIN_PASSWORD_LENGTH
+  ) {
+    throw new GraphQLError(
+      `Пароль должен содержать минимум ${MIN_PASSWORD_LENGTH} символов`,
+      { extensions: { code: "BAD_USER_INPUT" } },
+    );
+  }
+
+  const user = await User.findById(current._id);
+  if (!user) {
+    throw new GraphQLError("Пользователь не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
+  }
+
+  if (user.passwordHash) {
+    if (!oldPassword) {
+      throw new GraphQLError("Введите текущий пароль", {
+        extensions: { code: "BAD_USER_INPUT" },
+      });
+    }
+    const ok = await bcrypt.compare(oldPassword, user.passwordHash);
+    if (!ok) {
+      throw new GraphQLError("Текущий пароль указан неверно", {
+        extensions: { code: "UNAUTHENTICATED" },
+      });
+    }
+    const same = await bcrypt.compare(newPassword, user.passwordHash);
+    if (same) {
+      throw new GraphQLError("Новый пароль должен отличаться от текущего", {
+        extensions: { code: "BAD_USER_INPUT" },
+      });
+    }
+  }
+
+  user.passwordHash = await bcrypt.hash(newPassword, 10);
+  await user.save();
+  return true;
+};
+
+const MAX_AVATAR_BYTES = 3 * 1024 * 1024; // запас над клиентским лимитом 2 МБ (base64 добавляет ~33%)
+const ALLOWED_AVATAR_MIME = ["image/jpeg", "image/png", "image/webp"];
+
+// ⭐ Сохраняет аватар сразу в БД (вызывается сразу после выбора файла на фронте,
+export const updateAvatar = async (_p, { avatar }, ctx) => {
+  const current = requireUser(ctx);
+  const user = await User.findById(current._id);
+  if (!user) {
+    throw new GraphQLError("Пользователь не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
+  }
+
+  const isRemoving = avatar === null || avatar === undefined || avatar === "";
+
+  if (isRemoving) {
+    user.avatar = null;
+    await user.save();
+    return user; // удаление аватара лимитом не ограничиваем
+  }
+
+  if (user.avatarChangedAt) {
+    const elapsed = Date.now() - new Date(user.avatarChangedAt).getTime();
+    if (elapsed < AVATAR_CHANGE_WINDOW_MS) {
+      const unlocksAt = new Date(
+        new Date(user.avatarChangedAt).getTime() + AVATAR_CHANGE_WINDOW_MS,
+      );
+      throw new GraphQLError(
+        `Аватар можно менять раз в 14 дней. Доступно снова ${unlocksAt.toLocaleString("ru-RU")}.`,
+        {
+          extensions: {
+            code: "RATE_LIMITED",
+            unlocksAt: unlocksAt.toISOString(),
+          },
+        },
+      );
+    }
+  }
+
+  const MAX_AVATAR_BYTES = 3 * 1024 * 1024;
+  const ALLOWED_AVATAR_MIME = ["image/jpeg", "image/png", "image/webp"];
+
+  const match = /^data:(image\/(?:jpeg|png|webp));base64,(.+)$/.exec(avatar);
+  if (!match) {
+    throw new GraphQLError(
+      "Аватар должен быть изображением в формате JPG, PNG или WebP",
+      { extensions: { code: "BAD_USER_INPUT" } },
+    );
+  }
+  if (!ALLOWED_AVATAR_MIME.includes(match[1])) {
+    throw new GraphQLError("Недопустимый формат изображения", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+  const approxBytes = Math.ceil((match[2].length * 3) / 4);
+  if (approxBytes > MAX_AVATAR_BYTES) {
+    throw new GraphQLError("Файл слишком большой — максимум 2 МБ", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  user.avatar = avatar;
+  user.avatarChangedAt = new Date();
+  await user.save();
+  return user;
 };

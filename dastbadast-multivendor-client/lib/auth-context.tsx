@@ -7,7 +7,13 @@ import {
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-type User = { id: string; name: string; email?: string; phone?: string };
+type User = {
+  id: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  hasPassword: boolean;
+};
 
 type AuthState = {
   token: string | null;

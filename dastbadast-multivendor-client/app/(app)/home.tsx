@@ -10,7 +10,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { useQuery } from "@apollo/client/react";
-import { useRouter, useFocusEffect } from "expo-router";
+import { useRouter, useFocusEffect, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import {
   GET_RESTAURANTS,
@@ -653,6 +653,19 @@ function ProfileSheet({
             />
             <Text className="text-sm font-bold text-text ml-3 flex-1">
               Поддержка
+            </Text>
+            <Ionicons name="chevron-forward" size={18} color="#9A9388" />
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              onClose();
+              router.push("/(app)/email-settings" as any);
+            }}
+            className="flex-row items-center px-4 py-3.5 bg-soft-surface-2 rounded-2xl mb-2"
+          >
+            <Ionicons name="mail-outline" size={20} color="#1F1B16" />
+            <Text className="text-sm font-bold text-text ml-3 flex-1">
+              Добавить email
             </Text>
             <Ionicons name="chevron-forward" size={18} color="#9A9388" />
           </Pressable>
