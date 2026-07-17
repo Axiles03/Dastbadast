@@ -33,6 +33,47 @@ import {
   arriveAtDropOff,
   markDelivered,
 } from "./delivery.js";
+// ⭐ FIX: вынесенная логика среднего времени готовки ресторана.
+// Раньше она была продублирована только внутри Query.restaurantDeliveryEta
+// (см. ниже), а резолвер Restaurant.estimatedPrepMinutes был пустым
+// заглушкой ("/* без изменений */" — ничего не возвращал), поэтому
+// главная страница всегда получала дефолт/undefined вместо реального
+// среднего времени. Теперь оба места используют один и тот же расчёт:
+// среднее (readyAt - acceptedAt) по последним 30 доставленным заказам
+// этого ресторана, с дефолтом 25 мин, если истории ещё нет.
+async function computeAveragePrepMinutes(restaurantId) {
+  if (!restaurantId) return 25;
+  const { Order } = await import("../models/Order.js");
+  const recent = await Order.find({
+    restaurantId,
+    orderStatus: "DELIVERED",
+    "statusTimestamps.acceptedAt": { $ne: null },
+    "statusTimestamps.readyAt": { $ne: null },
+  })
+    .sort({ "statusTimestamps.readyAt": -1 })
+    .limit(30)
+    .select("statusTimestamps")
+    .lean();
+
+  let estimatedPrepMinutes = 25; // дефолт, пока нет истории заказов
+  if (recent.length > 0) {
+    const durations = recent
+      .map((o) => {
+        const a = o.statusTimestamps?.acceptedAt;
+        const r = o.statusTimestamps?.readyAt;
+        if (!a || !r) return null;
+        return (new Date(r).getTime() - new Date(a).getTime()) / 60_000;
+      })
+      .filter((v) => typeof v === "number" && v > 0 && v < 240);
+    if (durations.length > 0) {
+      estimatedPrepMinutes = Math.round(
+        durations.reduce((s, v) => s + v, 0) / durations.length,
+      );
+    }
+  }
+  return estimatedPrepMinutes;
+}
+
 const calculateDeliveryPriceQuery = (
   _p,
   { fromCoords, toCoords, basePrice, baseKm, perKmPrice },
@@ -93,6 +134,10 @@ import {
   NAME_CHANGE_LIMIT,
   NAME_CHANGE_WINDOW_MS,
   AVATAR_CHANGE_WINDOW_MS,
+  toggleFavoriteRestaurant,
+  toggleFavoriteFood,
+  myFavoriteRestaurants,
+  myFavoriteFoods,
 } from "./user.js";
 import {
   requestEmailChange,
@@ -329,6 +374,8 @@ export const resolvers = {
     demandForecast,
     restaurantReviews: restaurantReviewsQuery,
     vapidPublicKey,
+    myFavoriteRestaurants,
+    myFavoriteFoods,
     restaurantDistance: async (_p, { id, addressId }, ctx) => {
       if (!ctx.user) {
         throw new GraphQLError("Not authenticated", {
@@ -358,34 +405,11 @@ export const resolvers = {
           extensions: { code: "UNAUTHENTICATED" },
         });
       }
-      const { Order } = await import("../models/Order.js");
-      const recent = await Order.find({
-        restaurantId: id,
-        orderStatus: "DELIVERED",
-        "statusTimestamps.acceptedAt": { $ne: null },
-        "statusTimestamps.readyAt": { $ne: null },
-      })
-        .sort({ "statusTimestamps.readyAt": -1 })
-        .limit(30)
-        .select("statusTimestamps")
-        .lean();
-
-      let estimatedPrepMinutes = 25;
-      if (recent.length > 0) {
-        const durations = recent
-          .map((o) => {
-            const a = o.statusTimestamps?.acceptedAt;
-            const r = o.statusTimestamps?.readyAt;
-            if (!a || !r) return null;
-            return (new Date(r).getTime() - new Date(a).getTime()) / 60_000;
-          })
-          .filter((v) => typeof v === "number" && v > 0 && v < 240);
-        if (durations.length > 0) {
-          estimatedPrepMinutes = Math.round(
-            durations.reduce((s, v) => s + v, 0) / durations.length,
-          );
-        }
-      }
+      // ⭐ FIX: раньше расчёт был продублирован здесь и в
+      // Restaurant.estimatedPrepMinutes (который к тому же был пустой
+      // заглушкой). Теперь оба места используют один helper — значения
+      // на главной странице и в этом query больше не могут разойтись.
+      const estimatedPrepMinutes = await computeAveragePrepMinutes(id);
 
       const { Restaurant } = await import("../models/Restaurant.js");
       const { User } = await import("../models/User.js");
@@ -485,6 +509,8 @@ export const resolvers = {
     deleteZone,
     updateConfiguration,
     updateUser,
+    toggleFavoriteRestaurant,
+    toggleFavoriteFood,
     registerPushToken,
     unregisterPushToken,
     markOrderPreparing,
@@ -604,16 +630,25 @@ export const resolvers = {
         address.location.coordinates[0],
       ).toFixed(2);
     },
+    // ⭐ FIX: было пустой заглушкой ("/* без изменений */"), ничего не
+    // возвращало. Теперь считает реальное среднее время готовки ресторана
+    // по истории его заказов (см. computeAveragePrepMinutes выше).
     estimatedPrepMinutes: async (parent) => {
-      /* без изменений */
+      return computeAveragePrepMinutes(parent._id ?? parent.id);
     },
-    // ⭐ НОВОЕ: время доставки = среднее время готовки + дорога + 5 мин на
-    // передачу. Использует существующий etaForRiderToAddress из utils/eta.js
-    // (вместо простого 25 км/ч) — за счёт этого точность лучше.
+    // ⭐ FIX: раньше резолвер читал parent.estimatedPrepMinutes и
+    // parent.distanceKm — но в GraphQL резолверы соседних полей выполняются
+    // независимо друг от друга, и `parent` — это исходный документ
+    // (из $geoNear/find), а НЕ результат других резолверов. Оба поля были
+    // всегда undefined, поэтому deliveryTime всегда падал в дефолт 25 мин.
+    // Теперь считаем оба значения сами: prep — тем же helper'ом, что и
+    // estimatedPrepMinutes, distance — из parent.distanceM (заполняется
+    // $geoNear в restaurants(), см. resolvers/restaurant.js), как и в
+    // соседнем резолвере distanceKm выше.
     deliveryTime: async (parent) => {
-      const prepMin = parent.estimatedPrepMinutes || 25;
-      const distKm = parent.distanceKm;
-      if (distKm == null || distKm === undefined) return prepMin;
+      const prepMin = await computeAveragePrepMinutes(parent._id ?? parent.id);
+      const distKm = parent.distanceM != null ? parent.distanceM / 1000 : null;
+      if (distKm == null) return prepMin;
       // та же формула, что и в delivery-price.service.js: 25 км/ч + handover
       return Math.round(prepMin + (distKm / 25) * 60 + 5);
     },
@@ -629,6 +664,17 @@ export const resolvers = {
     categories: async (parent) => {
       const { Category } = await import("../models/Category.js");
       return Category.find({ restaurantId: parent._id });
+    },
+    // ⭐ NEW: избранное. ctx.user — полный документ User, загруженный в
+    // auth/context.js на старте запроса (или обновлённый вручную сразу
+    // после toggleFavoriteRestaurant — см. resolvers/user.js). Без
+    // авторизации всегда false, а не null/ошибка.
+    isFavorite: (parent, _a, ctx) => {
+      if (!ctx.user) return false;
+      const id = (parent._id ?? parent.id)?.toString();
+      return (ctx.user.favoriteRestaurantIds || []).some(
+        (favId) => favId.toString() === id,
+      );
     },
   },
 
@@ -804,6 +850,23 @@ export const resolvers = {
       return FoodReview.find({ foodId: parent._id })
         .sort({ createdAt: -1 })
         .limit(10);
+    },
+    // ⭐ NEW: избранное (аналогично Restaurant.isFavorite выше)
+    isFavorite: (parent, _a, ctx) => {
+      if (!ctx.user) return false;
+      const id = (parent._id ?? parent.id)?.toString();
+      return (ctx.user.favoriteFoodIds || []).some(
+        (favId) => favId.toString() === id,
+      );
+    },
+    restaurantId: (parent) => parent.restaurantId?.toString() ?? null,
+    restaurantName: async (parent) => {
+      if (!parent.restaurantId) return null;
+      const { Restaurant } = await import("../models/Restaurant.js");
+      const r = await Restaurant.findById(parent.restaurantId)
+        .select("name")
+        .lean();
+      return r?.name ?? null;
     },
   },
   FoodReview: {

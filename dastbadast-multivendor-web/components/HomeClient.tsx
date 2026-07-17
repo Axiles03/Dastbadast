@@ -1,3 +1,4 @@
+// dastbadast-multivendor-web/components/HomeClient.tsx
 "use client";
 
 import { useMemo, useState } from "react";
@@ -24,15 +25,6 @@ type Restaurant = {
   image?: string | null;
   minimumOrder: number;
 };
-
-function hash(s: string) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = (h << 5) - h + s.charCodeAt(i);
-    h |= 0;
-  }
-  return Math.abs(h);
-}
 
 export function HomeClient({
   restaurants,
@@ -61,35 +53,60 @@ export function HomeClient({
     null) as number[] | null;
 
   const { data: cfg } = useQuery(GET_CONFIGURATION);
-  const { data, loading } = useQuery(GET_RESTAURANTS, {
-    variables:
-      restaurantFilters.nearest && userCoords
-        ? { latitude: userCoords[1], longitude: userCoords[0] }
-        : { latitude: null, longitude: null },
+
+  // ⭐ FIX (км/время не показывались на карточках): раньше этот запрос
+  // выполнялся ТОЛЬКО когда включён фильтр "ближайшие ко мне" (skip
+  // зависел от restaurantFilters.nearest), а его результат `data` вообще
+  // не использовался ниже — decorated строился из пропса `restaurants`,
+  // в котором нет distanceKm/deliveryTime. Теперь запрос уходит, как
+  // только у пользователя есть выбранный адрес (координаты), а его
+  // результат мёржится в decorated по id — km/время появляются на всех
+  // карточках сразу, а не только после клика по "ближайшие".
+  const { data: geoData } = useQuery(GET_RESTAURANTS, {
+    variables: userCoords
+      ? { latitude: userCoords[1], longitude: userCoords[0] }
+      : { latitude: null, longitude: null },
     fetchPolicy: "cache-and-network",
-    skip: restaurantFilters.nearest && (!userCoords || userCoords.length < 2),
+    skip: !userCoords || userCoords.length < 2,
   });
 
-  // Декорируем рестораны детерминированной мета-информацией
+  const geoById = useMemo(() => {
+    const m = new Map<string, any>();
+    (geoData?.restaurants ?? []).forEach((r: any) => m.set(String(r.id), r));
+    return m;
+  }, [geoData]);
+
+  // Декорируем рестораны реальными данными (рейтинг из БД + geo-данные,
+  // когда у пользователя выбран адрес)
   const decorated = useMemo(
     () =>
-      restaurants.map((r: any) => ({
-        ...r,
-        // ⭐ Реальные данные из БД (aggregate в модели Restaurant).
-        // Если 0 отзывов — averageRating=null, totalRatings=0.
-        // UI должен это учитывать (см. RestaurantCard.tsx — fallback "Новый").
-        rating: typeof r.averageRating === "number" ? r.averageRating : null,
-        reviews: typeof r.totalRatings === "number" ? r.totalRatings : 0,
-        // ⭐ distance / deliveryTime здесь не выставляем: они зависят от
-        // выбранного адреса пользователя и запрашиваются через отдельные
-        // queries restaurantDistance / restaurantDeliveryEta, когда адрес есть.
-        // До выбора адреса — показываем placeholder в UI.
-        distance: null as number | null,
-        deliveryTime: null as number | null,
-        isNew: (r.totalRatings ?? 0) === 0, // реальное определение "нового"
-        isPopular: (r.totalRatings ?? 0) >= 3, // и "популярного"
-      })),
-    [restaurants],
+      restaurants.map((r: any) => {
+        const geo = geoById.get(String(r.id));
+        return {
+          ...r,
+          // ⭐ Реальные данные из БД (aggregate в модели Restaurant).
+          // Если 0 отзывов — averageRating=null, totalRatings=0.
+          // UI должен это учитывать (см. RestaurantCard.tsx — fallback "Новый").
+          averageRating:
+            typeof r.averageRating === "number" ? r.averageRating : null,
+          totalRatings: typeof r.totalRatings === "number" ? r.totalRatings : 0,
+          // ⭐ FIX: раньше здесь всегда были null (поле называлось `distance`,
+          // а карточка читает `distanceKm`/`deliveryTime` — плюс сами эти
+          // значения нигде не считались). Теперь берём их из geo-запроса,
+          // когда он доступен, иначе честно показываем "—" в карточке.
+          distanceKm:
+            typeof geo?.distanceKm === "number" ? geo.distanceKm : null,
+          deliveryTime:
+            typeof geo?.deliveryTime === "number"
+              ? geo.deliveryTime
+              : typeof r.estimatedPrepMinutes === "number"
+                ? r.estimatedPrepMinutes
+                : null,
+          isNew: (r.totalRatings ?? 0) === 0, // реальное определение "нового"
+          isPopular: (r.totalRatings ?? 0) >= 3, // и "популярного"
+        };
+      }),
+    [restaurants, geoById],
   );
 
   // Что показываем в «Заведении дня»
@@ -122,20 +139,30 @@ export function HomeClient({
     }
     if (restaurantFilters.maxDeliveryTime != null) {
       list = list.filter(
-        (r) => r.deliveryTime <= restaurantFilters.maxDeliveryTime!,
+        (r) =>
+          r.deliveryTime != null &&
+          r.deliveryTime <= restaurantFilters.maxDeliveryTime!,
       );
     }
+
     list.sort((a, b) => {
+      // ⭐ FIX: тумблер "ближайшие ко мне" теперь реально сортирует по
+      // расстоянию, а не просто дожидается клика, чтобы что-то показать.
+      // Рестораны без известного расстояния (адрес ещё грузится) уходят вниз.
+      if (restaurantFilters.nearest) {
+        return (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity);
+      }
       if (restaurantFilters.sortBy === "rating") {
         // null внизу
-        const av = a.rating ?? 0;
-        const bv = b.rating ?? 0;
-        if (av === bv) return (b.reviews ?? 0) - (a.reviews ?? 0);
+        const av = a.averageRating ?? 0;
+        const bv = b.averageRating ?? 0;
+        if (av === bv) return (b.totalRatings ?? 0) - (a.totalRatings ?? 0);
         return bv - av;
       }
       if (restaurantFilters.sortBy === "deliveryTime") {
-        const at = a.estimatedPrepMinutes ?? 999;
-        const bt = b.estimatedPrepMinutes ?? 999;
+        // ⭐ FIX: раньше сравнивалось несуществующее a.estimatedPrepMinutes
+        const at = a.deliveryTime ?? 999;
+        const bt = b.deliveryTime ?? 999;
         return at - bt;
       }
       return a.minimumOrder - b.minimumOrder;

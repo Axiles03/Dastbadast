@@ -18,8 +18,6 @@ const AddressSchema = new mongoose.Schema(
 
 const UserSchema = new mongoose.Schema(
   {
-    // ⭐ Шаг 1: телефон — основной идентификатор, подтверждается через OTP.
-    // Имя/email заполняются на странице профиля после регистрации.
     name: { type: String, default: "Клиент" },
     nameChangeHistory: { type: [Date], default: [] },
     email: {
@@ -32,10 +30,7 @@ const UserSchema = new mongoose.Schema(
     emailVerifiedAt: { type: Date, default: null },
     pendingEmail: { type: String, default: null },
     phone: { type: String, unique: true, required: true, trim: true },
-    // ⭐ Пароль теперь необязателен: пользователь может входить только по OTP,
-    // пока не задаст пароль сам (в профиле или через "Забыли пароль").
     passwordHash: { type: String, default: null },
-    // ⭐ Момент, когда телефон был подтверждён кодом (регистрация или вход по OTP)
     phoneVerifiedAt: { type: Date, default: null },
     pendingPhone: { type: String, default: null },
     avatar: { type: String, default: null },
@@ -43,6 +38,14 @@ const UserSchema = new mongoose.Schema(
     addresses: [AddressSchema],
     notificationToken: { type: String, default: "" },
     isActive: { type: Boolean, default: true },
+    favoriteRestaurantIds: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Restaurant" }],
+      default: [],
+    },
+    favoriteFoodIds: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Food" }],
+      default: [],
+    },
   },
   { timestamps: true },
 );

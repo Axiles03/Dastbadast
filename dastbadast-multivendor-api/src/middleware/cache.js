@@ -9,7 +9,7 @@
 //
 // Что кэшируем:
 //   - configuration: TTL 5 мин (редко меняется)
-//   - restaurants (список): TTL 1 мин (часто обновляется при создании)
+//   - restaurants (список): TTL 1 мин, ТОЛЬКО для анонимных запросов
 //   - meRestaurant (для store app): TTL 30 сек
 //   - user profile: TTL 1 мин
 //
@@ -17,6 +17,24 @@
 //   - orders, order (real-time data)
 //   - chatMessages
 //   - anything с auth-header, кроме public queries
+//
+// ⭐ FIX: GetRestaurants (opName "restaurants") с недавних пор возвращает
+// персонализированное поле isFavorite (см. resolvers/index.js, Restaurant.isFavorite
+// читает ctx.user.favoriteRestaurantIds). Раньше кэш различал пользователей по
+// заголовку x-user-id — но этот заголовок НИ ОДИН клиент (web/mobile) не
+// отправляет (клиенты шлют только Authorization + x-client-type), поэтому
+// userId всегда был null и ВСЕ запросы GetRestaurants — от анонимов и от
+// залогиненных пользователей — писались/читались из ОДНОГО ключа кэша
+// "gql:anon:...". Это приводило к тому, что после тапа на сердечко (избранное)
+// следующий рефетч списка ресторанов мог вернуть чужой/устаревший закэшированный
+// ответ с isFavorite: false, и сердечко визуально "откатывалось" — выглядело
+// так, будто клик не сработал. Плюс это утечка персонализированных данных
+// между пользователями через общий кэш.
+//
+// Исправление: любой запрос с заголовком Authorization полностью пропускает
+// HTTP-кэш и идёт напрямую в резолвер (там уже правильно читается ctx.user).
+// Кэш остаётся только для анонимного трафика, где isFavorite всегда false —
+// там персонализации нет и переиспользование ответа безопасно.
 
 import { LRUCache } from "lru-cache";
 import { debugLog } from "../debug-log.js";
@@ -88,13 +106,19 @@ function extractOperationName(query) {
 
 /**
  * ⭐ Express-middleware для кэширования GraphQL POST-запросов.
- * Применяется ТОЛЬКО для read-only queries с кэшируемыми именами.
+ * Применяется ТОЛЬКО для read-only queries с кэшируемыми именами,
+ * и ТОЛЬКО для анонимных запросов (см. FIX выше).
  * Cache-Control header добавляется в ответ через context-функцию apollo.
  */
 export function cacheMiddleware() {
   return (req, res, next) => {
     if (req.method !== "POST") return next();
     if (req.path !== "/graphql") return next();
+
+    // ⭐ FIX: авторизованные запросы никогда не кэшируем на HTTP-уровне —
+    // персонализированные поля (isFavorite и т.п.) не должны утекать между
+    // пользователями или показывать устаревшее состояние после мутаций.
+    if (req.headers.authorization) return next();
 
     const { query, variables, operationName } = req.body || {};
 
@@ -105,7 +129,10 @@ export function cacheMiddleware() {
     const opName = operationName || extractOperationName(query);
     if (!opName || !CACHEABLE_QUERIES[opName]) return next();
 
-    // ⭐ Проверка авторизации: для auth-required queries — учитываем userId
+    // ⭐ Проверка авторизации: для auth-required queries — учитываем userId.
+    // (Сюда мы уже попадаем только без Authorization-заголовка, так что
+    // requireAuth-запросы ниже всегда уйдут в next() — это ожидаемо: их
+    // не имеет смысла отдавать анонимам.)
     const config = CACHEABLE_QUERIES[opName];
     const userId = req.headers["x-user-id"] || null;
     if (config.requireAuth && !userId) return next();

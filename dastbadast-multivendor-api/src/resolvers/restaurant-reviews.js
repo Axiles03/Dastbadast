@@ -28,12 +28,17 @@ async function resolveRestaurantObjectId(idOrSlug) {
   return r?._id ?? null;
 }
 
-export const restaurantReviews = async (_p, { restaurantId }) => {
+export const restaurantReviews = async (_p, { restaurantId, limit }) => {
   const objectId = await resolveRestaurantObjectId(restaurantId);
   if (!objectId) return [];
+  // ⭐ FIX: раньше лимит был жёстко зашит в 20, из-за чего у ресторанов
+  // с большим числом отзывов страница "показать все" всё равно обрезалась.
+  // Теперь клиент может запросить больше (веб-превью — 3..10, страница
+  // "все отзывы" — до 200), с безопасным потолком в 200.
+  const capped = Math.min(Math.max(Number(limit) || 20, 1), 200);
   return RestaurantReview.find({ restaurantId: objectId })
     .sort({ createdAt: -1 })
-    .limit(20);
+    .limit(capped);
 };
 
 export const addRestaurantReview = async (_p, { input }, ctx) => {

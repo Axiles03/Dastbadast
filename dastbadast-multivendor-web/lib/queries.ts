@@ -288,6 +288,7 @@ export const GET_RESTAURANTS = gql`
       distanceKm
       deliveryTime
       deliveryPriceEstimate
+      isFavorite
     }
   }
 `;
@@ -312,6 +313,12 @@ export const GET_RESTAURANT_CHECK = gql`
       tax
       minimumOrder
       isAvailable
+      isOpenNow
+      workingHours {
+        open
+        close
+        isAlwaysOpen
+      }
       location
     }
   }
@@ -335,6 +342,7 @@ export const GET_RESTAURANT = gql`
       averageRating
       totalRatings
       estimatedPrepMinutes
+      isFavorite
       categories {
         id
         title
@@ -350,6 +358,7 @@ export const GET_RESTAURANT = gql`
           isVegan
           spiceLevel
           allergens
+          isFavorite
           reviews {
             id
             userName
@@ -371,13 +380,67 @@ export const GET_RESTAURANT = gql`
 `;
 
 export const RESTAURANT_REVIEWS = gql`
-  query RestaurantReviews($restaurantId: ID!) {
-    restaurantReviews(restaurantId: $restaurantId) {
+  query RestaurantReviews($restaurantId: ID!, $limit: Int) {
+    restaurantReviews(restaurantId: $restaurantId, limit: $limit) {
       id
       userName
       rating
       comment
       createdAt
+    }
+  }
+`;
+
+// ⭐ NEW: Избранное. Мутации возвращают { id, isFavorite } — этого достаточно,
+// чтобы Apollo InMemoryCache сам обновил ВСЕ карточки этого ресторана/блюда
+// на странице (в списке, на странице ресторана и т.д.) по нормализованному
+// ключу "Restaurant:<id>" / "Food:<id>", без ручного update() в каждом месте.
+export const TOGGLE_FAVORITE_RESTAURANT = gql`
+  mutation ToggleFavoriteRestaurant($restaurantId: ID!) {
+    toggleFavoriteRestaurant(restaurantId: $restaurantId) {
+      id
+      isFavorite
+    }
+  }
+`;
+
+export const TOGGLE_FAVORITE_FOOD = gql`
+  mutation ToggleFavoriteFood($foodId: ID!) {
+    toggleFavoriteFood(foodId: $foodId) {
+      id
+      isFavorite
+    }
+  }
+`;
+
+export const GET_MY_FAVORITES = gql`
+  query GetMyFavorites {
+    myFavoriteRestaurants {
+      id
+      name
+      slug
+      image
+      address
+      minimumOrder
+      averageRating
+      totalRatings
+      estimatedPrepMinutes
+      distanceKm
+      deliveryTime
+      deliveryPriceEstimate
+      isFavorite
+    }
+    myFavoriteFoods {
+      id
+      title
+      description
+      price
+      image
+      averageRating
+      reviewCount
+      isFavorite
+      restaurantId
+      restaurantName
     }
   }
 `;

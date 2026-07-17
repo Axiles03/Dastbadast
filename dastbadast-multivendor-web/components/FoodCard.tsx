@@ -1,8 +1,10 @@
 // dastbadast-multivendor-web/components/FoodCard.tsx
 "use client";
 
-import { Star, Plus } from "lucide-react";
+import { useState } from "react";
+import { Star, Plus, Check } from "lucide-react";
 import { useCart } from "@/lib/cart-context";
+import { FavoriteButton } from "./FavoriteButton";
 
 type Food = {
   id: string;
@@ -14,6 +16,7 @@ type Food = {
   reviewCount?: number;
   restaurantId: string;
   restaurantName: string;
+  isFavorite?: boolean;
 };
 
 const FOOD_IMAGES = [
@@ -51,9 +54,11 @@ export function FoodCard({
   const { add, items } = useCart();
   const inCart = items.find((i) => i.foodId === food.id);
 
-  function setFlash(arg0: boolean) {
-    throw new Error("Function not implemented.");
-  }
+  // ⭐ ФИКС: раньше здесь была заглушка `throw new Error("Function not
+  // implemented.")`, которая падала при КАЖДОМ клике на "добавить в
+  // корзину" (после успешного add() код тут же кидал ошибку). Теперь —
+  // настоящий стейт: кнопка на 1.2с показывает галочку вместо плюса.
+  const [flash, setFlash] = useState(false);
 
   return (
     <article className="snap-start shrink-0 w-[200px] sm:w-[220px] bg-soft-surface border border-soft-border rounded-2xl p-3 hover:border-soft-accent hover:shadow-soft transition-all group flex flex-col">
@@ -75,6 +80,13 @@ export function FoodCard({
             {inCart.quantity}
           </span>
         )}
+
+        <FavoriteButton
+          type="food"
+          id={food.id}
+          isFavorite={!!food.isFavorite}
+          className="absolute top-2 right-2 w-7 h-7"
+        />
       </div>
 
       {/* 2) НАЗВАНИЕ И ОТЗЫВЫ — НИЖЕ фото, ВНЕ аватара */}
@@ -124,9 +136,11 @@ export function FoodCard({
               setTimeout(() => setFlash(false), 1200);
             }
           }}
-          className="w-9 h-9 rounded-full bg-soft-accent hover:bg-soft-accent-dark text-white flex items-center justify-center shadow-soft-sm active:scale-95 transition-all shrink-0"
+          className={`w-9 h-9 rounded-full text-white flex items-center justify-center shadow-soft-sm active:scale-95 transition-all shrink-0 ${
+            flash ? "bg-green-600" : "bg-soft-accent hover:bg-soft-accent-dark"
+          }`}
         >
-          <Plus className="w-4 h-4" />
+          {flash ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
         </button>
       </div>
     </article>

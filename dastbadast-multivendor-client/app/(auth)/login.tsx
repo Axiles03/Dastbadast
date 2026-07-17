@@ -8,11 +8,11 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  StyleSheet,
 } from "react-native";
 import { useMutation } from "@apollo/client/react";
 import {
   REQUEST_OTP,
-  REGISTER_WITH_PHONE,
   LOGIN_WITH_OTP,
   LOGIN_WITH_PASSWORD,
   RESET_PASSWORD_WITH_OTP,
@@ -20,15 +20,17 @@ import {
 import { useAuth } from "../../lib/auth-context";
 import { useRouter } from "expo-router";
 import { GRAPHQL_HTTP } from "../../lib/config/api";
+import RegisterForm from "../../components/auth/RegisterForm";
 
 const PHONE_REGEX = /^\+992\d{9}$/;
-const RESEND_COOLDOWN = 60; // секунд
+const RESEND_COOLDOWN = 60;
 
 type Mode = "login" | "register" | "forgot";
 type LoginMethod = "password" | "otp";
 type Step = "phone" | "code";
 
 export default function Login() {
+  console.log("🔵 Login render, mode will be tracked below");
   const [mode, setMode] = useState<Mode>("login");
   const [loginMethod, setLoginMethod] = useState<LoginMethod>("password");
   const [step, setStep] = useState<Step>("phone");
@@ -44,7 +46,6 @@ export default function Login() {
   const router = useRouter();
 
   const [doRequestOtp, { loading: lOtp }] = useMutation<any>(REQUEST_OTP);
-  const [doRegister, { loading: lReg }] = useMutation<any>(REGISTER_WITH_PHONE);
   const [doLoginOtp, { loading: lLoginOtp }] = useMutation<any>(LOGIN_WITH_OTP);
   const [doLoginPass, { loading: lLoginPass }] =
     useMutation<any>(LOGIN_WITH_PASSWORD);
@@ -52,7 +53,7 @@ export default function Login() {
     RESET_PASSWORD_WITH_OTP,
   );
 
-  const loading = lOtp || lReg || lLoginOtp || lLoginPass || lReset;
+  const loading = lOtp || lLoginOtp || lLoginPass || lReset;
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -72,9 +73,11 @@ export default function Login() {
   }
 
   function switchMode(next: Mode) {
+    console.log("🟡 switchMode() called with:", next, "current mode:", mode);
     setMode(next);
     setLoginMethod("password");
     resetFlow();
+    console.log("🟡 switchMode() finished setting state");
   }
 
   function startCooldown() {
@@ -89,12 +92,6 @@ export default function Login() {
         return c - 1;
       });
     }, 1000);
-  }
-
-  function purposeForMode(m: Mode): "REGISTER" | "LOGIN" | "RESET" {
-    if (m === "register") return "REGISTER";
-    if (m === "forgot") return "RESET";
-    return "LOGIN";
   }
 
   function validatePhone(): boolean {
@@ -116,9 +113,7 @@ export default function Login() {
     setFormError(null);
     if (!validatePhone()) return;
     try {
-      await doRequestOtp({
-        variables: { phone, purpose: purposeForMode(mode) },
-      });
+      await doRequestOtp({ variables: { phone, purpose: "LOGIN" } });
       setStep("code");
       startCooldown();
     } catch (e: any) {
@@ -149,11 +144,7 @@ export default function Login() {
       return;
     }
     try {
-      if (mode === "register") {
-        const res = await doRegister({ variables: { phone, code } });
-        const payload = res.data?.registerWithPhone;
-        if (payload) await goHome(payload);
-      } else if (mode === "login") {
+      if (mode === "login") {
         const res = await doLoginOtp({ variables: { phone, code } });
         const payload = res.data?.loginWithOtp;
         if (payload) await goHome(payload);
@@ -169,7 +160,7 @@ export default function Login() {
         if (payload) await goHome(payload);
       }
     } catch (e: any) {
-      setFormError(friendlyError(e, "Неверный код"));
+      setFormError(friendlyError(e));
     }
   }
 
@@ -181,12 +172,7 @@ export default function Login() {
     return msg;
   }
 
-  const codeStepTitle =
-    mode === "register"
-      ? "Подтвердите номер"
-      : mode === "forgot"
-        ? "Новый пароль"
-        : "Код из SMS";
+  const codeStepTitle = mode === "forgot" ? "Новый пароль" : "Код из SMS";
 
   return (
     <KeyboardAvoidingView
@@ -213,31 +199,40 @@ export default function Login() {
           </View>
 
           {mode !== "forgot" && (
-            <View className="flex-row bg-soft-surface-2 border border-border rounded-2xl p-1.5 mb-5">
+            <View style={styles.tabContainer}>
               <Pressable
                 onPress={() => switchMode("login")}
-                className={`flex-1 py-3 rounded-xl items-center ${
-                  mode === "login" ? "bg-soft-surface shadow-soft-sm" : ""
-                }`}
+                style={[
+                  styles.tabButton,
+                  mode === "login" && styles.tabButtonActive,
+                ]}
               >
                 <Text
-                  className={`text-sm font-extrabold ${
-                    mode === "login" ? "text-accent" : "text-text-soft"
-                  }`}
+                  style={[
+                    styles.tabText,
+                    mode === "login"
+                      ? styles.tabTextActive
+                      : styles.tabTextInactive,
+                  ]}
                 >
                   Вход
                 </Text>
               </Pressable>
+
               <Pressable
                 onPress={() => switchMode("register")}
-                className={`flex-1 py-3 rounded-xl items-center ${
-                  mode === "register" ? "bg-soft-surface shadow-soft-sm" : ""
-                }`}
+                style={[
+                  styles.tabButton,
+                  mode === "register" && styles.tabButtonActive,
+                ]}
               >
                 <Text
-                  className={`text-sm font-extrabold ${
-                    mode === "register" ? "text-accent" : "text-text-soft"
-                  }`}
+                  style={[
+                    styles.tabText,
+                    mode === "register"
+                      ? styles.tabTextActive
+                      : styles.tabTextInactive,
+                  ]}
                 >
                   Регистрация
                 </Text>
@@ -257,9 +252,16 @@ export default function Login() {
           )}
 
           <View className="bg-soft-surface border border-border rounded-2xl p-5 shadow-soft-sm">
-            {/* ===== ШАГ: телефон ===== */}
-            {step === "phone" && (
-              <View className="space-y-3.5">
+            {/* ===== РЕГИСТРАЦИЯ — отдельный компонент ===== */}
+            {mode === "register" &&
+              (() => {
+                console.log("🟢 About to render <RegisterForm />");
+                return <RegisterForm onSuccess={goHome} />;
+              })()}
+
+            {/* ===== ВХОД / ЗАБЫЛИ ПАРОЛЬ ===== */}
+            {mode !== "register" && step === "phone" && (
+              <View className="gap-3.5">
                 <TextInput
                   className="bg-soft-surface-2 border border-border text-text rounded-xl px-3.5 py-3 text-base"
                   placeholder="+992901234567"
@@ -345,23 +347,11 @@ export default function Login() {
                     />
                   </>
                 )}
-
-                {mode === "register" && (
-                  <>
-                    {formError && <ErrorBox text={formError} />}
-                    <SubmitButton
-                      loading={loading}
-                      onPress={requestCode}
-                      label="Получить код"
-                    />
-                  </>
-                )}
               </View>
             )}
 
-            {/* ===== ШАГ: код ===== */}
-            {step === "code" && (
-              <View className="space-y-3.5">
+            {mode !== "register" && step === "code" && (
+              <View className="gap-3.5">
                 <Text className="text-text-soft text-sm">
                   {codeStepTitle} — код отправлен на {phone}
                 </Text>
@@ -388,13 +378,7 @@ export default function Login() {
                 <SubmitButton
                   loading={loading}
                   onPress={submitCode}
-                  label={
-                    mode === "register"
-                      ? "Создать аккаунт"
-                      : mode === "forgot"
-                        ? "Сохранить пароль"
-                        : "Войти"
-                  }
+                  label={mode === "forgot" ? "Сохранить пароль" : "Войти"}
                 />
                 <View className="flex-row justify-between items-center mt-1">
                   <Pressable onPress={() => setStep("phone")}>
@@ -467,3 +451,49 @@ function ErrorBox({ text }: { text: string }) {
     </View>
   );
 }
+
+const COLORS = {
+  bgSurface2: "#F2F1EC", // soft-surface-2
+  bgSurfaceActive: "#FFFFFF", // soft-surface (активная вкладка)
+  borderColor: "#E5E3DC", // border
+  textActive: "#D97706", // accent (цвет активного текста, например, янтарный)
+  textInactive: "#79746C", // text-soft (цвет неактивного текста)
+};
+
+const styles = StyleSheet.create({
+  tabContainer: {
+    flexDirection: "row",
+    backgroundColor: COLORS.bgSurface2,
+    borderWidth: 1,
+    borderColor: COLORS.borderColor,
+    borderRadius: 16, // rounded-2xl
+    padding: 6, // p-1.5
+    marginBottom: 20, // mb-5
+  },
+  tabButton: {
+    flex: 1,
+    paddingVertical: 12, // py-3
+    borderRadius: 12, // rounded-xl
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tabButtonActive: {
+    backgroundColor: COLORS.bgSurfaceActive,
+    // Эмуляция shadow-soft-sm
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  tabText: {
+    fontSize: 14, // text-sm
+    fontWeight: "800", // font-extrabold
+  },
+  tabTextActive: {
+    color: COLORS.textActive,
+  },
+  tabTextInactive: {
+    color: COLORS.textInactive,
+  },
+});

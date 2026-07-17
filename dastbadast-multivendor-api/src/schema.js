@@ -10,10 +10,6 @@ export const typeDefs = /* GraphQL */ `
     isOverBase: Boolean!
   }
 
-  # ⭐ ФИКС: тип возврата для estimateDelivery — резолвер (resolvers/cart.js)
-  # уже возвращал этот набор полей, но в схеме типа не было вовсе, из-за чего
-  # сервер падал при старте: "Query.estimateDelivery defined in resolvers,
-  # but not in schema".
   type EstimateDeliveryResult {
     available: Boolean!
     deliveryPrice: Float
@@ -363,6 +359,7 @@ export const typeDefs = /* GraphQL */ `
     distanceKm: Float
     deliveryPriceEstimate: Float
     deliveryTime: Int
+    isFavorite: Boolean
   }
 
   type DeliveryEtaInfo {
@@ -447,6 +444,9 @@ export const typeDefs = /* GraphQL */ `
     isVegan: Boolean
     spiceLevel: Int
     allergens: [String!]
+    isFavorite: Boolean
+    restaurantId: ID
+    restaurantName: String
   }
 
   input FoodOptionInput {
@@ -569,15 +569,14 @@ export const typeDefs = /* GraphQL */ `
   type OrderItem {
     foodId: ID
     title: String!
-    basePrice: Float! # ⭐ ШАГ 1: было просто price
-    optionsTotal: Float! # ⭐ ШАГ 1: Σ(надбавки) по выбранным опциям
-    price: Float! # ⭐ ШАГ 1: ИТОГО за единицу (basePrice + optionsTotal)
+    basePrice: Float!
+    optionsTotal: Float!
+    price: Float!
     quantity: Int!
     image: String
     description: String
-    # ⭐⭐⭐ ШАГ 1: заменили variation+addons на структурированный список
     selectedOptions: [OrderItemOption!]!
-    lineTotal: Float! # ⭐⭐⭐ ШАГ 1: price × quantity (виртуальное)
+    lineTotal: Float!
   }
 
   input OrderItemOptionInput {
@@ -657,7 +656,6 @@ export const typeDefs = /* GraphQL */ `
   input OrderItemInput {
     foodId: ID!
     quantity: Int!
-    # ⭐⭐⭐ ШАГ 1: выбранные опции (массив ссылок groupId+optionId)
     selectedOptions: [OrderItemOptionInput!]
   }
 
@@ -884,7 +882,6 @@ export const typeDefs = /* GraphQL */ `
     createdAt: String!
   }
 
-  # ⭐⭐⭐ NEW: событие входа курьера в geofence "рядом с клиентом"
   type RiderNearDropOffEvent {
     orderId: ID!
     riderId: ID!
@@ -1141,10 +1138,12 @@ export const typeDefs = /* GraphQL */ `
     userCohorts(months: Int): CohortResult!
     churnRate(period: Int): ChurnRate!
     demandForecast(days: Int): DemandForecast!
-    restaurantReviews(restaurantId: ID!): [RestaurantReview!]!
+    restaurantReviews(restaurantId: ID!, limit: Int): [RestaurantReview!]!
     restaurantDistance(id: ID!, addressId: ID!): Float
     restaurantDeliveryEta(id: ID!, addressId: ID!): DeliveryEtaInfo
     vapidPublicKey: String
+    myFavoriteRestaurants: [Restaurant!]!
+    myFavoriteFoods: [Food!]!
   }
 
   type Mutation {
@@ -1235,6 +1234,8 @@ export const typeDefs = /* GraphQL */ `
     requestPhoneChange(newPhone: String!): OtpResult!
     confirmPhoneChange(code: String!): User!
     cancelPhoneChange: Boolean!
+    toggleFavoriteRestaurant(restaurantId: ID!): Restaurant!
+    toggleFavoriteFood(foodId: ID!): Food!
   }
 
   type Subscription {

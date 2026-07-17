@@ -7,6 +7,12 @@ export function getPageMeta(pathname: string): PageMeta {
   if (pathname === "/orders") {
     return { title: "История заказов", subtitle: "Все ваши заказы" };
   }
+  if (pathname === "/favorites") {
+    return {
+      title: "Избранное",
+      subtitle: "Рестораны и блюда, которые вам понравились",
+    };
+  }
   if (pathname === "/address") {
     return { title: "Адреса доставки", subtitle: "Управление адресами" };
   }

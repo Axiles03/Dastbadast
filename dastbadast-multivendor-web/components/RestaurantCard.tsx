@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { FavoriteButton } from "./FavoriteButton";
 import { Star, Clock, MapPin } from "lucide-react";
 
 const COVERS = [
@@ -88,6 +89,13 @@ export function RestaurantCard({
             </span>
           </div>
         )}
+
+        <FavoriteButton
+          type="restaurant"
+          id={restaurant.id}
+          isFavorite={!!restaurant.isFavorite}
+          className="absolute top-2.5 right-2.5"
+        />
       </div>
       <div className="p-3">
         <h3 className="font-bold text-sm text-soft-text group-hover:text-soft-accent transition-colors truncate">

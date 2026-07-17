@@ -8,9 +8,12 @@ import {
 } from "@/lib/queries";
 import Link from "next/link";
 import { RestaurantMenu } from "@/components/RestaurantMenu";
+import { RestaurantReviewForm } from "@/components/RestaurantReviewForm";
 import { ChevronLeft, MapPin, Star } from "lucide-react";
 
 export const dynamic = "force-dynamic";
+
+const REVIEWS_PREVIEW_COUNT = 3;
 
 export default async function RestaurantPage({
   params,
@@ -30,7 +33,10 @@ export default async function RestaurantPage({
       client
         .query({
           query: RESTAURANT_REVIEWS,
-          variables: { restaurantId: slugOrId },
+          // ⭐ FIX: страница ресторана — это превью, поэтому запрашиваем
+          // с запасом (10), но реально показываем только 3 (см. ниже),
+          // остальное — на отдельной странице /reviews.
+          variables: { restaurantId: slugOrId, limit: 10 },
         })
         .catch(() => ({ data: null })), // ⭐ на случай, если резолвера ещё нет в API
     ]);
@@ -75,7 +81,14 @@ export default async function RestaurantPage({
 
   // ⭐ ШАГ 1: отзывы ресторана из отдельного query (с защитой от undefined,
   // если query ещё не подключён на бэке).
-  const reviews: any[] = reviewsData?.restaurantReviews ?? [];
+  const allReviews: any[] = reviewsData?.restaurantReviews ?? [];
+  // ⭐ FIX: на странице ресторана показываем только 3 последних отзыва,
+  // а не весь список — полный список теперь на /restaurant/[id]/reviews.
+  const previewReviews = allReviews.slice(0, REVIEWS_PREVIEW_COUNT);
+  // totalRatings из шапки ресторана — это точное общее число отзывов
+  // (r.totalRatings из aggregate в БД), используем его для счётчика
+  // и для решения, показывать ли кнопку "Показать все".
+  const totalReviewsCount = r.totalRatings ?? allReviews.length;
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -140,14 +153,14 @@ export default async function RestaurantPage({
           и блок с workingHours/workingHours.open даёт потенциальный null-доступ
           при рендере вне header'а). Теперь отдельной секцией — и логичнее
           семантически, и не зависит от null safety в header'е. */}
-      {reviews.length > 0 && (
+      {previewReviews.length > 0 && (
         <section className="bg-soft-surface border border-soft-border rounded-2xl p-5 shadow-soft-sm">
           <h3 className="font-extrabold text-base text-soft-text mb-3 flex items-center gap-2">
             <Star className="w-4 h-4 text-soft-rating fill-current" />
-            Отзывы о ресторане ({reviews.length})
+            Отзывы о ресторане ({totalReviewsCount})
           </h3>
           <ul className="space-y-2.5">
-            {reviews.map((rv: any) => (
+            {previewReviews.map((rv: any) => (
               <li
                 key={rv.id}
                 className="bg-soft-surface-2 border border-soft-border rounded-xl p-3.5"
@@ -169,15 +182,35 @@ export default async function RestaurantPage({
               </li>
             ))}
           </ul>
+
+          {/* ⭐ NEW: кнопка "Показать все отзывы" — только если отзывов
+              больше, чем показано в превью. Ведёт на отдельную страницу. */}
+          {totalReviewsCount > previewReviews.length && (
+            <Link
+              href={`/restaurant/${slugOrId}/reviews`}
+              className="mt-3 block text-center py-2.5 rounded-xl border border-soft-border font-bold text-sm text-soft-accent hover:bg-soft-surface-2 transition-colors"
+            >
+              Показать все отзывы ({totalReviewsCount})
+            </Link>
+          )}
         </section>
       )}
 
+      {/* ⭐ NEW: форма отправки отзыва — раньше нигде не была подключена */}
+      <RestaurantReviewForm restaurantId={r.id} />
+
+      {/* ⭐ FIX: раньше сюда передавался disabled={closed}, и вся кнопка
+          "В корзину" на меню блокировалась, как только ресторан закрывался
+          по расписанию. По требованию — добавлять в корзину можно всегда;
+          реальная блокировка происходит на чекауте (см. cart/page.tsx —
+          там уже есть предупреждение "Ресторан закрыт · откроется в …" и
+          кнопка оформления заказа недоступна), плюс это же дополнительно
+          проверяется на сервере в placeOrder. */}
       <RestaurantMenu
         restaurantId={r.id}
         restaurantName={r.name}
         categories={r.categories || []}
         currencySymbol={sym}
-        disabled={closed}
       />
     </div>
   );

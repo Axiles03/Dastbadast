@@ -13,6 +13,7 @@ type User = {
   email?: string;
   phone?: string;
   hasPassword: boolean;
+  avatar?: string | null;
 };
 
 type AuthState = {

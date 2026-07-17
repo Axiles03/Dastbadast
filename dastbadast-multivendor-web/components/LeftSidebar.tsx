@@ -15,6 +15,7 @@ import {
   Shield,
   LogOut,
   X,
+  Heart,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useShell } from "@/lib/shell-context";
@@ -23,6 +24,7 @@ import { useHasMounted } from "@/lib/hooks/useHasMounted"; // ⭐ NEW
 
 const MENU_ITEMS = [
   { id: "menu", label: "Меню", href: "/", icon: UtensilsCrossed },
+  { id: "favorites", label: "Избранное", href: "/favorites", icon: Heart },
   { id: "history", label: "История", href: "/orders", icon: History },
   { id: "address", label: "Адрес", href: "/address", icon: MapPin },
 ];
@@ -37,7 +39,18 @@ const GENERAL_ITEMS = [
   },
 ];
 
-function ProfileAvatar({ name }: { name: string }) {
+// ⭐ FIX: раньше компонент вообще не принимал avatar и всегда рисовал
+// только инициалы — даже если пользователь загрузил фото на странице
+// профиля (там оно корректно сохраняется в user.avatar). Теперь показываем
+// реальную фотографию, если она есть, и падаем в инициалы только когда
+// avatar отсутствует.
+function ProfileAvatar({
+  name,
+  avatar,
+}: {
+  name: string;
+  avatar?: string | null;
+}) {
   const initials = (name || "Г")
     .split(" ")
     .map((p) => p[0])
@@ -46,7 +59,12 @@ function ProfileAvatar({ name }: { name: string }) {
     .toUpperCase();
   return (
     <div className="relative w-14 h-14 rounded-full overflow-hidden bg-gradient-to-br from-soft-rating to-soft-accent flex items-center justify-center text-white font-extrabold text-lg shrink-0 ring-2 ring-white shadow-soft">
-      {initials}
+      {avatar ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={avatar} alt={name} className="w-full h-full object-cover" />
+      ) : (
+        initials
+      )}
     </div>
   );
 }
@@ -153,7 +171,7 @@ export function LeftSidebar() {
                   className="block"
                   onClick={() => setMobileMenuOpen(false)}
                 >
-                  <ProfileAvatar name={user!.name} />
+                  <ProfileAvatar name={user!.name} avatar={user!.avatar} />
                 </Link>
               ) : (
                 <Link
@@ -173,7 +191,7 @@ export function LeftSidebar() {
               onClick={() => setMobileMenuOpen(false)}
               className="flex items-center gap-3 p-2 rounded-2xl hover:bg-soft-surface-2 transition-colors"
             >
-              <ProfileAvatar name={user!.name} />
+              <ProfileAvatar name={user!.name} avatar={user!.avatar} />
               <div className="min-w-0 flex-1">
                 <div className="font-bold text-sm text-soft-text truncate">
                   {user!.name}
@@ -200,9 +218,7 @@ export function LeftSidebar() {
                       Вы не вошли
                     </div>
                   ) : (
-                    <div className="font-bold text-sm text-soft-text">
-                      &nbsp;
-                    </div>
+                    <div className="font-bold text-sm text-soft-text"> </div>
                   )}
                   <div className="text-xs text-soft-text-muted underline">
                     Войти / Регистрация

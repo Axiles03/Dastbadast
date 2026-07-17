@@ -1,3 +1,4 @@
+
 // dastbadast-multivendor-web/app/(main)/page.tsx
 import { getClient } from "@/lib/apollo-server";
 import { GET_RESTAURANTS, GET_CONFIGURATION } from "@/lib/queries";
@@ -31,6 +32,12 @@ export default async function Home() {
     // либо покажется пустое состояние с CTA.
   }
 
+  // ⭐ FIX (Заведение дня / рейтинг / "Новый" вместо рейтинга):
+  // раньше сюда прокидывались только id/name/slug/address/image/minimumOrder,
+  // хотя GET_RESTAURANTS уже запрашивал averageRating/totalRatings/
+  // estimatedPrepMinutes. Из-за этого на клиенте decorated[i].rating всегда
+  // был null → ProductOfTheDay всегда возвращал null, а RestaurantCard всегда
+  // показывал бейдж "Новый" вместо реального рейтинга. Пробрасываем все поля.
   const restaurants = (data?.restaurants ?? []).map((r: any) => ({
     id: String(r.id),
     name: r.name,
@@ -38,6 +45,10 @@ export default async function Home() {
     address: r.address ?? null,
     image: r.image ?? null,
     minimumOrder: Number(r.minimumOrder ?? 0),
+    averageRating: typeof r.averageRating === "number" ? r.averageRating : null,
+    totalRatings: Number(r.totalRatings ?? 0),
+    estimatedPrepMinutes:
+      typeof r.estimatedPrepMinutes === "number" ? r.estimatedPrepMinutes : null,
   }));
 
   const sym = cfgData?.configuration?.currencySymbol ?? "сом.";

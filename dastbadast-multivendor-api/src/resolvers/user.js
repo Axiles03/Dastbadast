@@ -421,6 +421,121 @@ export const updateUser = async (_p, { input }, ctx) => {
   return user;
 };
 
+/* ============================================================
+ *  favorites (избранное)
+ * ============================================================ */
+
+export const toggleFavoriteRestaurant = async (_p, { restaurantId }, ctx) => {
+  const current = requireUser(ctx);
+  if (!mongoose.isValidObjectId(restaurantId)) {
+    throw new GraphQLError("Некорректный id ресторана", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  const { Restaurant } = await import("../models/Restaurant.js");
+  const restaurant = await Restaurant.findById(restaurantId);
+  if (!restaurant) {
+    throw new GraphQLError("Ресторан не найден", {
+      extensions: { code: "NOT_FOUND" },
+    });
+  }
+
+  const alreadyFavorite = await User.exists({
+    _id: current._id,
+    favoriteRestaurantIds: restaurant._id,
+  });
+
+  // ⭐ Атомарно: $addToSet/$pull исключают дублирование при двойном клике
+  // (гонка двух почти одновременных запросов не создаст дубликат в массиве
+  // и не оставит его в противоречивом состоянии).
+  const update = alreadyFavorite
+    ? { $pull: { favoriteRestaurantIds: restaurant._id } }
+    : { $addToSet: { favoriteRestaurantIds: restaurant._id } };
+
+  const updatedUser = await User.findByIdAndUpdate(current._id, update, {
+    new: true,
+  }).select("favoriteRestaurantIds");
+
+  // ⭐ ВАЖНО: резолвер Restaurant.isFavorite (resolvers/index.js) читает
+  // ctx.user.favoriteRestaurantIds. ctx.user был загружен ДО этой мутации
+  // и без этой строки содержал бы устаревший список — ответ этой же
+  // мутации показал бы isFavorite от ДО переключения. Обновляем ctx.user
+  // в контексте текущего запроса, чтобы он был согласован с уже
+  // применённым изменением в БД.
+  ctx.user.favoriteRestaurantIds = updatedUser.favoriteRestaurantIds;
+
+  return restaurant;
+};
+
+export const toggleFavoriteFood = async (_p, { foodId }, ctx) => {
+  const current = requireUser(ctx);
+  if (!mongoose.isValidObjectId(foodId)) {
+    throw new GraphQLError("Некорректный id блюда", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  const { Food } = await import("../models/Food.js");
+  const food = await Food.findById(foodId);
+  if (!food) {
+    throw new GraphQLError("Блюдо не найдено", {
+      extensions: { code: "NOT_FOUND" },
+    });
+  }
+
+  const alreadyFavorite = await User.exists({
+    _id: current._id,
+    favoriteFoodIds: food._id,
+  });
+
+  const update = alreadyFavorite
+    ? { $pull: { favoriteFoodIds: food._id } }
+    : { $addToSet: { favoriteFoodIds: food._id } };
+
+  const updatedUser = await User.findByIdAndUpdate(current._id, update, {
+    new: true,
+  }).select("favoriteFoodIds");
+
+  ctx.user.favoriteFoodIds = updatedUser.favoriteFoodIds;
+
+  return food;
+};
+
+export const myFavoriteRestaurants = async (_p, _a, ctx) => {
+  const current = requireUser(ctx);
+  const { Restaurant } = await import("../models/Restaurant.js");
+  const user = await User.findById(current._id)
+    .select("favoriteRestaurantIds")
+    .lean();
+  const ids = user?.favoriteRestaurantIds || [];
+  if (!ids.length) return [];
+  // ⭐ Порядок не гарантирован $in — сортируем в порядке добавления
+  // (сохранённом в массиве у пользователя), а не как вернёт Mongo.
+  const restaurants = await Restaurant.find({ _id: { $in: ids } });
+  const order = new Map(ids.map((id, i) => [id.toString(), i]));
+  return restaurants.sort(
+    (a, b) =>
+      (order.get(a._id.toString()) ?? 0) - (order.get(b._id.toString()) ?? 0),
+  );
+};
+
+export const myFavoriteFoods = async (_p, _a, ctx) => {
+  const current = requireUser(ctx);
+  const { Food } = await import("../models/Food.js");
+  const user = await User.findById(current._id)
+    .select("favoriteFoodIds")
+    .lean();
+  const ids = user?.favoriteFoodIds || [];
+  if (!ids.length) return [];
+  const foods = await Food.find({ _id: { $in: ids } });
+  const order = new Map(ids.map((id, i) => [id.toString(), i]));
+  return foods.sort(
+    (a, b) =>
+      (order.get(a._id.toString()) ?? 0) - (order.get(b._id.toString()) ?? 0),
+  );
+};
+
 export const userLTV = async (_p, { userId }, ctx) => {
   requireRole(["SUPER_ADMIN", "FINANCE", "ANALYST", "SUPPORT"])(ctx);
 

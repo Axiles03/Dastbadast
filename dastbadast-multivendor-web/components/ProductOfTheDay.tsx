@@ -1,3 +1,4 @@
+// dastbadast-multivendor-web/components/ProductOfTheDay.tsx
 "use client";
 
 import { useRef } from "react";
@@ -111,7 +112,11 @@ export function ProductOfTheDay({
                 <div className="mt-3 flex items-center gap-4 text-sm text-white/80">
                   <span className="inline-flex items-center gap-1">
                     <Star className="w-4 h-4 text-soft-rating fill-current" />{" "}
-                    {center.rating}
+                    {/* ⭐ FIX: раньше здесь было {center.rating} — такого
+                        поля не существует, читаем averageRating и форматируем. */}
+                    {typeof center.averageRating === "number"
+                      ? center.averageRating.toFixed(1)
+                      : "—"}
                   </span>
                   <span className="inline-flex items-center gap-1">
                     <Clock className="w-4 h-4 text-soft-rating fill-current" />{" "}

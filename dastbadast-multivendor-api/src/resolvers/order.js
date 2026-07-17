@@ -1,6 +1,11 @@
 import bcrypt from "bcryptjs";
 import { GraphQLError } from "graphql";
 import { Restaurant } from "../models/Restaurant.js";
+// ⭐ FIX: placeOrder раньше проверял только restaurant.isAvailable (ручной
+// тумблер владельца), но не часы работы — заказ можно было оформить, даже
+// когда ресторан закрыт по расписанию. Переиспользуем ту же функцию, что
+// уже используется для Restaurant.isOpenNow на клиенте.
+import { isRestaurantOpenNow } from "./restaurant.js";
 import { shortOrderId } from "../utils/ids.js";
 import { pointInPolygon } from "../utils/zone.js";
 import { Zone } from "../models/Zone.js";
@@ -186,6 +191,15 @@ export const placeOrder = async (_p, { input }, ctx) => {
     throw new GraphQLError("Restaurant temporarily unavailable", {
       extensions: { code: "RESTAURANT_UNAVAILABLE" },
     });
+  }
+  // ⭐ FIX: раньше отсутствовало — ресторан, закрытый по часам работы
+  // (workingHours), всё равно принимал заказы через API, даже если UI
+  // корзины его блокировал (клиентскую проверку легко обойти).
+  if (!isRestaurantOpenNow(restaurant)) {
+    throw new GraphQLError(
+      "Restaurant is closed now. Please order during working hours.",
+      { extensions: { code: "RESTAURANT_CLOSED" } },
+    );
   }
 
   // ⭐⭐⭐ ШАГ 4: валидация и расчёт блюд (без изменений из Шага 1)

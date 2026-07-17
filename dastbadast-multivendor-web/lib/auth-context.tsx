@@ -8,7 +8,18 @@ import {
 } from "react";
 import { storage } from "./security";
 
-type User = { id: string; name: string; email?: string; phone?: string };
+type User = {
+  id: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  // ⭐ FIX: раньше avatar не был объявлен в типе User, хотя бэкенд его
+  // отдаёт (User.avatar в schema.js) и Profile-страница уже писала его в
+  // этот же объект через `{ ...user, avatar } as any`. Из-за отсутствия
+  // в типе остальной код (например, LeftSidebar) не мог типобезопасно
+  // прочитать user.avatar — теперь объявлено явно.
+  avatar?: string | null;
+};
 
 type AuthState = {
   token: string | null;
