@@ -1,3 +1,4 @@
+// dastbadast-multivendor-store/app/(tabs)/profile.tsx
 import { useState, useEffect } from "react";
 import {
   View,
@@ -12,14 +13,20 @@ import {
 import { useQuery, useMutation } from "@apollo/client/react";
 import { useRouter } from "expo-router";
 
-import { MY_MENU, UPDATE_MY_RESTAURANT } from "../../lib/api/graphql/queries";
+import {
+  MY_MENU,
+  UPDATE_MY_RESTAURANT,
+  SET_RESTAURANT_BUSY_MODE,
+} from "../../lib/api/graphql/queries"; // ⭐ ШАГ 5
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function ProfileScreen() {
   const router = useRouter();
   const { data, loading, refetch } = useQuery<any>(MY_MENU);
   const [updateMyRestaurant] = useMutation(UPDATE_MY_RESTAURANT);
+  const [setRestaurantBusyMode] = useMutation(SET_RESTAURANT_BUSY_MODE); // ⭐ ШАГ 5
   const [busy, setBusy] = useState(false);
+  const [busyModeSaving, setBusyModeSaving] = useState(false); // ⭐ ШАГ 5
 
   const r = data?.meRestaurant;
   const [form, setForm] = useState({
@@ -28,6 +35,18 @@ export default function ProfileScreen() {
     open: "09:00",
     close: "23:00",
     isAlwaysOpen: false,
+  });
+
+  // ⭐ ШАГ 5 (FIX): "Пятничный завал" — раньше единственным способом
+  // повлиять на нагрузку было вручную выставлять prepTime на КАЖДЫЙ заказ.
+  // Отдельная форма (не часть общего save()) — потому что это состояние,
+  // которое включают/выключают за секунды прямо в разгар смены, а не
+  // "настройка профиля", которую редактируют не спеша и сохраняют одной
+  // кнопкой со всем остальным.
+  const [busyForm, setBusyForm] = useState({
+    enabled: false,
+    extraPrepMinutes: 20,
+    preOrdersOnly: false,
   });
 
   useEffect(() => {
@@ -39,7 +58,38 @@ export default function ProfileScreen() {
       close: r.workingHours?.close ?? "23:00",
       isAlwaysOpen: r.workingHours?.isAlwaysOpen ?? false,
     });
+    if (r.busyMode) {
+      setBusyForm({
+        enabled: r.busyMode.enabled ?? false,
+        extraPrepMinutes: r.busyMode.extraPrepMinutes || 20,
+        preOrdersOnly: r.busyMode.preOrdersOnly ?? false,
+      });
+    }
   }, [r]);
+
+  // ⭐ ШАГ 5: применяется сразу по нажатию тумблера/кнопки — без отдельного
+  // "Сохранить", чтобы включить/выключить режим можно было одним касанием
+  // прямо во время запары на кухне.
+  const applyBusyMode = async (next: typeof busyForm) => {
+    setBusyForm(next);
+    setBusyModeSaving(true);
+    try {
+      await setRestaurantBusyMode({
+        variables: {
+          input: {
+            enabled: next.enabled,
+            extraPrepMinutes: next.extraPrepMinutes,
+            preOrdersOnly: next.preOrdersOnly,
+          },
+        },
+      });
+      await refetch();
+    } catch (e: any) {
+      Alert.alert("Ошибка", e?.message ?? "Не удалось изменить режим загрузки");
+    } finally {
+      setBusyModeSaving(false);
+    }
+  };
 
   const save = async () => {
     const minimumOrder = parseFloat(form.minimumOrder.replace(",", "."));
@@ -101,6 +151,94 @@ export default function ProfileScreen() {
           Выключите, если нужно срочно приостановить приём заказов (закончились
           продукты, аврал на кухне и т.п.) — независимо от часов работы.
         </Text>
+
+        {/* ⭐ ШАГ 5: "Пятничный завал" */}
+        <View className="mb-4 py-3 bg-soft-surface-2 rounded-xl px-3.5">
+          <View className="flex-row items-center justify-between">
+            <View className="flex-1 pr-2">
+              <Text className="text-sm font-bold text-text">
+                🔥 Пятничный завал
+              </Text>
+              <Text className="text-2xs text-text-muted mt-0.5">
+                Кухня перегружена — увеличить время готовки для всех новых
+                заказов
+              </Text>
+            </View>
+            <Switch
+              value={busyForm.enabled}
+              onValueChange={(v) => applyBusyMode({ ...busyForm, enabled: v })}
+              disabled={busyModeSaving}
+              trackColor={{ true: "#F26A4A", false: "#ECE6DA" }}
+              thumbColor="#FFFFFF"
+            />
+          </View>
+
+          {busyForm.enabled && (
+            <View className="mt-3 pt-3 border-t border-border">
+              <Text className="text-2xs text-text-muted font-bold mb-2 uppercase tracking-wider">
+                Добавить к времени готовки, мин
+              </Text>
+              <View className="flex-row items-center gap-3">
+                <TouchableOpacity
+                  onPress={() =>
+                    applyBusyMode({
+                      ...busyForm,
+                      extraPrepMinutes: Math.max(
+                        0,
+                        busyForm.extraPrepMinutes - 5,
+                      ),
+                    })
+                  }
+                  disabled={busyModeSaving}
+                  className="w-10 h-10 rounded-xl items-center justify-center bg-soft-surface border border-border"
+                >
+                  <Text className="text-lg font-extrabold text-text">−</Text>
+                </TouchableOpacity>
+                <Text className="text-xl font-black text-accent min-w-[48px] text-center">
+                  +{busyForm.extraPrepMinutes}
+                </Text>
+                <TouchableOpacity
+                  onPress={() =>
+                    applyBusyMode({
+                      ...busyForm,
+                      extraPrepMinutes: Math.min(
+                        60,
+                        busyForm.extraPrepMinutes + 5,
+                      ),
+                    })
+                  }
+                  disabled={busyModeSaving}
+                  className="w-10 h-10 rounded-xl items-center justify-center bg-soft-surface border border-border"
+                >
+                  <Text className="text-lg font-extrabold text-text">+</Text>
+                </TouchableOpacity>
+                {busyModeSaving && (
+                  <ActivityIndicator size="small" color="#F26A4A" />
+                )}
+              </View>
+
+              <View className="flex-row items-center justify-between mt-4">
+                <View className="flex-1 pr-2">
+                  <Text className="text-xs font-bold text-text">
+                    Только предзаказы
+                  </Text>
+                  <Text className="text-2xs text-text-muted mt-0.5">
+                    Временно не принимать заказы "на сейчас"
+                  </Text>
+                </View>
+                <Switch
+                  value={busyForm.preOrdersOnly}
+                  onValueChange={(v) =>
+                    applyBusyMode({ ...busyForm, preOrdersOnly: v })
+                  }
+                  disabled={busyModeSaving}
+                  trackColor={{ true: "#F26A4A", false: "#ECE6DA" }}
+                  thumbColor="#FFFFFF"
+                />
+              </View>
+            </View>
+          )}
+        </View>
 
         <Text className="text-xs text-text-muted font-bold mb-1.5 uppercase tracking-wider">
           Минимальный заказ (сом.)

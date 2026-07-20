@@ -1,3 +1,4 @@
+// dastbadast-multivendor-api/src/models/Restaurant.js
 import mongoose from "mongoose";
 
 const RestaurantSchema = new mongoose.Schema(
@@ -20,9 +21,32 @@ const RestaurantSchema = new mongoose.Schema(
     passwordHash: { type: String, required: true },
     tax: { type: Number, default: 0 },
     minimumOrder: { type: Number, default: 0 },
-    averageRating: { type: Number, default: 0, min: 0, max: 5 }, 
+    averageRating: { type: Number, default: 0, min: 0, max: 5 },
     totalRatings: { type: Number, default: 0, min: 0 },
     isAvailable: { type: Boolean, default: true },
+
+    // ⭐ ШАГ 5 (FIX): "Пятничный завал" — раньше ресторан мог влиять на
+    // загрузку кухни только вручную указывая prepTime на КАЖДЫЙ заказ по
+    // отдельности (см. acceptOrder). Не было способа сказать "сейчас у нас
+    // общая перегрузка" одним переключателем — ни +N минут ко всем новым
+    // заказам сразу, ни режима "принимаем только предзаказы".
+    busyMode: {
+      enabled: { type: Boolean, default: false },
+      // Добавляется к suggestedPrepTime в kitchenLoad (см. resolvers/order.js)
+      // — то есть влияет на РЕКОМЕНДАЦИЮ, которую видит менеджер в модалке
+      // принятия заказа, а не жёстко навязывает время без его участия.
+      extraPrepMinutes: { type: Number, default: 0, min: 0, max: 60 },
+      // ⚠️ Пока не имеет полноценного flow "предзаказ на конкретное время"
+      // (это отдельная фича — планирование заказов). На данном этапе
+      // preOrdersOnly=true просто блокирует немедленные заказы (placeOrder)
+      // с понятным сообщением клиенту — временная мера до полноценных
+      // pre-orders.
+      preOrdersOnly: { type: Boolean, default: false },
+      enabledAt: { type: Date, default: null },
+      // Опциональное сообщение для клиента в корзине/на странице ресторана,
+      // например "Высокая загрузка, доставка может занять больше времени".
+      note: { type: String, default: "", maxlength: 200 },
+    },
   },
 
   { timestamps: true },

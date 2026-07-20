@@ -166,7 +166,7 @@ import {
   refreshOrderStatus,
   kitchenLoad,
 } from "./order.js";
-import { acceptOrder, cancelOrder } from "./order-actions.js";
+import { acceptOrder, cancelOrder, ackOrderReceived } from "./order-actions.js";
 import { foodReviews, addFoodReview, foodRatingStats } from "./food-review.js";
 import {
   createCategory,
@@ -212,6 +212,7 @@ import {
   availableOrdersForRiders,
   riderLogin,
   claimOrder,
+  declineAssignedOrder,
   updateOrderStatusRider,
   updateRiderLocation,
   toggleRider,
@@ -483,6 +484,7 @@ export const resolvers = {
     assignRider,
     riderLogin,
     claimOrder,
+    declineAssignedOrder,
     updateOrderStatusRider,
     confirmOrderReceived,
     updateRiderLocation,
@@ -493,6 +495,7 @@ export const resolvers = {
     markChatRead,
     sendTypingStatus,
     // ⭐ NEW: чат поддержки
+    ackOrderReceived,
     startSupportThread,
     sendSupportMessage,
     assignSupportThread,

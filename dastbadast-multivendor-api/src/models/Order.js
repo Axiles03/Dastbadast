@@ -108,6 +108,12 @@ const OrderSchema = new mongoose.Schema(
       tax: { type: Number, default: 0 },
       deliveryFee: { type: Number, default: 0 },
       total: { type: Number, required: true },
+      // ⭐ Фаза 1 (аудит): зафиксировано на заказе для аудита/поддержки —
+      // какой множитель/компенсация реально применились, независимо от
+      // того, что стоит в Configuration/Zone СЕЙЧАС (они могут поменяться
+      // после того, как заказ уже создан).
+      surgeMultiplier: { type: Number, default: 1 },
+      waitCompensation: { type: Number, default: 0 },
     },
 
     zoneId: { type: mongoose.Schema.Types.ObjectId, ref: "Zone" },
@@ -118,6 +124,10 @@ const OrderSchema = new mongoose.Schema(
       preparingAt: Date,
       readyAt: Date,
       assignedAt: Date,
+      // ⭐ Фаза 1 (аудит): курьер физически доехал до ресторана и ждёт заказ
+      // (авто-детект по геозоне, см. resolvers/rider.js) — используется для
+      // расчёта waitCompensation при переходе в PICKED.
+      arrivedAtPickupAt: Date,
       pickedAt: Date,
       enRouteToDropOffAt: Date,
       arrivedAtDropOffAt: Date,
@@ -135,7 +145,40 @@ const OrderSchema = new mongoose.Schema(
         initialPushedAt: { type: Date, default: null },
         escalationPushedAt: { type: Date, default: null },
       },
+      // ⭐ ШАГ 4 (FIX): ACK-механизм "ресторан реально увидел заказ".
+      // Раньше сервер только паблишил событие (subscription/push) и не имел
+      // способа узнать, дошло ли оно и было ли отображено на экране.
+      // Store App вызывает мутацию ackOrderReceived() в момент, когда заказ
+      // фактически отрендерен на экране "Новые заказы" и сыграл звук — это
+      // и есть точка истины для SLA "увидел заказ за N секунд".
+      // Поле пишется ОДИН раз (первый ACK побеждает) — см. order-actions.js:
+      // ackOrderReceived фильтрует по restaurantAckedAt: null, так что более
+      // поздние вызовы (например, второй планшет того же ресторана) не
+      // перезатирают самое раннее время подтверждения.
+      restaurantAckedAt: { type: Date, default: null },
+      // Через какой канал дошло: SUBSCRIPTION (WS) / POLL (fallback-опрос
+      // раз в 15 сек) / PUSH (Expo push открыл приложение). Диагностика:
+      // если в проде большинство ACK идёт через POLL, а не SUBSCRIPTION —
+      // сигнал, что WS-канал ненадёжен и не удерживает соединение.
+      restaurantAckedVia: {
+        type: String,
+        enum: ["SUBSCRIPTION", "POLL", "PUSH", null],
+        default: null,
+      },
     },
+
+    // ⭐ Фаза 0 (аудит): антифрод-флаг для markDelivered.
+    // Не блокирует доставку (у курьера может быть законная причина —
+    // оставил у ворот, погрешность GPS в высотке) — только маркирует
+    // заказ для ручного ревью/аналитики. См. resolvers/delivery.js.
+    deliveryLocationMismatch: { type: Boolean, default: false },
+    deliveryLocationMismatchDistanceM: { type: Number, default: null },
+
+    // ⭐ Фаза 0 (аудит): причина последнего отказа курьера от уже
+    // назначенного заказа (declineAssignedOrder). Хранится только
+    // последняя — для истории отказов есть RiderDeclineLog в будущем,
+    // здесь достаточно для базовой аналитики/саппорта.
+    lastDeclineReason: { type: String, default: "" },
 
     fastAcceptBonus: { type: Number, default: 0 },
 

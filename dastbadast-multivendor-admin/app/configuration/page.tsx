@@ -19,6 +19,7 @@ import {
   Smartphone,
   Ruler,
   Check,
+  Clock,
 } from "lucide-react";
 import { RoleGate } from "@/lib/hooks/useRequireAuth";
 import { NAV_ACCESS, ACTION_ACCESS } from "@/lib/page-access";
@@ -67,7 +68,9 @@ function ConfigurationInner() {
     deliveryBaseKm: 3,
     deliveryBasePrice: 10,
     deliveryPerKmPrice: 3,
-    testOtp: "123456",
+    testOtp: "123456",  
+    waitCompensationFreeMinutes: 7,
+    waitCompensationPerMinute: 0,
   });
 
   const [savedOk, setSavedOk] = useState(false);
@@ -86,6 +89,8 @@ function ConfigurationInner() {
         deliveryPerKmPrice:
           typeof c.deliveryPerKmPrice === "number" ? c.deliveryPerKmPrice : 3,
         testOtp: c.testOtp ?? "123456",
+        waitCompensationFreeMinutes: c.waitCompensationFreeMinutes ?? 7,
+        waitCompensationPerMinute: c.waitCompensationPerMinute ?? 0,
       });
     }
   }, [data]);
@@ -104,6 +109,7 @@ function ConfigurationInner() {
           deliveryBasePrice: Number(form.deliveryBasePrice),
           deliveryPerKmPrice: Number(form.deliveryPerKmPrice),
           testOtp: form.testOtp,
+          waitCompensationFreeMinutes: form.waitCompensationFreeMinutes,
         },
       },
     });
@@ -238,6 +244,38 @@ function ConfigurationInner() {
                       deliveryPerKmPrice: Math.max(0, parseFloat(v || "0")),
                     })
                   }
+                />
+                <FormField
+                  icon={<Clock className="w-3.5 h-3.5" />}
+                  label="Время с безопасностью (мин)"
+                  hint="Через сколько минут доставка без оплаты компенсации"
+                  type="number"
+                  value={String(form.waitCompensationFreeMinutes)}
+                  onChange={(v) =>
+                    setForm({
+                      ...form,
+                      waitCompensationFreeMinutes: Math.max(
+                        0,
+                        parseFloat(v || "0"),
+                      ),
+                    })
+                  } 
+                />
+                <FormField
+                  icon={<Clock className="w-3.5 h-3.5" />}
+                  label="Время с безопасностью (мин)"
+                  hint="Через сколько минут доставка без оплаты компенсации"
+                  type="number"
+                  value={String(form.waitCompensationPerMinute)}
+                  onChange={(v) =>
+                    setForm({
+                      ...form,
+                      waitCompensationPerMinute: Math.max(
+                        0,
+                        parseFloat(v || "0"),
+                      ),
+                    })
+                  } 
                 />
               </div>
               <div className="mt-3 bg-soft-info-soft border border-soft-info/20 rounded-xl p-3 flex items-start gap-2">

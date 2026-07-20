@@ -17,6 +17,13 @@ const ConfigurationSchema = new mongoose.Schema(
     skipEmailVerification: { type: Boolean, default: true },
     skipMobileVerification: { type: Boolean, default: true },
     testOtp: { type: String, default: "123456" },
+
+    // ⭐ Фаза 1 (аудит): компенсация курьеру за ожидание в ресторане.
+    // Первые waitCompensationFreeMinutes — бесплатно (это нормальная часть
+    // работы), сверх — waitCompensationPerMinute сомони/мин добавляется к
+    // deliveryFee при переходе в PICKED. См. resolvers/rider.js.
+    waitCompensationFreeMinutes: { type: Number, default: 7 },
+    waitCompensationPerMinute: { type: Number, default: 1 },
   },
   { timestamps: true, _id: false },
 );

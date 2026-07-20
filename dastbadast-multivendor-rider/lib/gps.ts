@@ -72,6 +72,9 @@ type QueuedPing = {
   lng: number;
   lat: number;
   bearing: number | null;
+  // ⭐ Фаза 1 (аудит): Android mock-location флаг из expo-location.
+  // На iOS всегда null/undefined — API его не предоставляет.
+  mocked: boolean | null;
   capturedAt: number; // Date.now() в момент, когда координата была получена
 };
 
@@ -166,6 +169,7 @@ async function sendRawPing(input: {
   lng: number;
   lat: number;
   bearing: number | null;
+  mocked?: boolean | null;
 }): Promise<"ok" | "network" | "dropped"> {
   if (!client) return "dropped";
   try {
@@ -207,6 +211,7 @@ async function flushRetryQueue(): Promise<boolean> {
         lng: next.lng,
         lat: next.lat,
         bearing: next.bearing,
+        mocked: next.mocked,
       });
       if (result === "ok" || result === "dropped") {
         retryQueue.shift();
@@ -242,6 +247,7 @@ async function sendLocationToServer(
   lng: number,
   lat: number,
   isBackground = false,
+  mocked: boolean | null = null,
 ): Promise<void> {
   if (!client) return;
   const token = (globalThis as any).__DBD_RIDER_TOKEN__;
@@ -258,11 +264,11 @@ async function sendLocationToServer(
   // ставим свежую точку в очередь, не тратя лишний mutate.
   const networkLooksUp = await flushRetryQueue();
   if (!networkLooksUp) {
-    await enqueueRetry({ lng, lat, bearing, capturedAt: Date.now() });
+    await enqueueRetry({ lng, lat, bearing, mocked, capturedAt: Date.now() });
     return;
   }
 
-  const result = await sendRawPing({ lng, lat, bearing });
+  const result = await sendRawPing({ lng, lat, bearing, mocked });
   if (result === "ok") {
     if (__DEV__) {
       console.log(`[GPS${isBackground ? "-BG" : ""}] sent`, {
@@ -272,7 +278,7 @@ async function sendLocationToServer(
       });
     }
   } else if (result === "network") {
-    await enqueueRetry({ lng, lat, bearing, capturedAt: Date.now() });
+    await enqueueRetry({ lng, lat, bearing, mocked, capturedAt: Date.now() });
   }
   // "dropped" — уже залогировано/не имеет смысла ретраить, ничего не делаем
 }
@@ -286,7 +292,15 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const { locations } = data as { locations: Location.LocationObject[] };
   if (!locations?.length) return;
   const loc = locations[locations.length - 1];
-  await sendLocationToServer(loc.coords.longitude, loc.coords.latitude, true);
+  // ⭐ Фаза 1 (аудит): `mocked` — поле expo-location, заполняется на Android
+  // при активном mock-location провайдере (Developer Options → Select
+  // mock location app). На iOS отсутствует — там придёт undefined → null.
+  await sendLocationToServer(
+    loc.coords.longitude,
+    loc.coords.latitude,
+    true,
+    (loc as any).mocked ?? null,
+  );
 });
 
 /**
@@ -449,6 +463,7 @@ async function sendOnce(): Promise<void> {
       pos.coords.longitude,
       pos.coords.latitude,
       false,
+      (pos as any).mocked ?? null,
     );
   } catch (e) {
     const msg = String((e as Error)?.message ?? e);

@@ -248,6 +248,8 @@ export const GET_CONFIGURATION = gql`
       skipEmailVerification
       skipMobileVerification
       testOtp
+      waitCompensationFreeMinutes
+      waitCompensationPerMinute
     }
   }
 `;
@@ -263,6 +265,8 @@ export const UPDATE_CONFIGURATION = gql`
       deliveryBasePrice
       deliveryPerKmPrice
       testOtp
+      waitCompensationFreeMinutes
+      waitCompensationPerMinute
     }
   }
 `;
@@ -516,6 +520,7 @@ export const ZONES = gql`
       description
       isActive
       polygon
+      surgeMultiplier
     }
   }
 `;
@@ -539,6 +544,7 @@ export const CREATE_ZONE = gql`
       name
       description
       isActive
+      surgeMultiplier
     }
   }
 `;
@@ -550,6 +556,7 @@ export const UPDATE_ZONE = gql`
       name
       description
       isActive
+      surgeMultiplier
     }
   }
 `;

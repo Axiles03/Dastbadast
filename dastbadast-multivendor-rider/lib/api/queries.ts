@@ -146,6 +146,16 @@ export const CLAIM_ORDER = gql`
   }
 `;
 
+export const DECLINE_ASSIGNED_ORDER = gql`
+  mutation DeclineAssignedOrder($input: DeclineAssignedOrderInput!) {
+    declineAssignedOrder(input: $input) {
+      id
+      orderId
+      orderStatus
+    }
+  }
+`;
+
 export const UPDATE_STATUS = gql`
   mutation UpdateStatus($input: UpdateOrderStatusRiderInput!) {
     updateOrderStatusRider(input: $input) {

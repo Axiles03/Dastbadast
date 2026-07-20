@@ -1,3 +1,4 @@
+// dastbadast-multivendor-api/src/lib/api/graphql/queries.ts
 import { gql } from "@apollo/client";
 
 export const RESTAURANT_LOGIN = gql`
@@ -7,6 +8,30 @@ export const RESTAURANT_LOGIN = gql`
       restaurant {
         id
         name
+      }
+    }
+  }
+`;
+
+export const ACK_ORDER_RECEIVED = gql`
+  mutation AckOrderReceived($input: AckOrderReceivedInput!) {
+    ackOrderReceived(input: $input) {
+      id
+      orderId
+      orderStatus
+    }
+  }
+`;
+
+export const SET_RESTAURANT_BUSY_MODE = gql`
+  mutation SetRestaurantBusyMode($input: SetRestaurantBusyModeInput!) {
+    setRestaurantBusyMode(input: $input) {
+      id
+      busyMode {
+        enabled
+        extraPrepMinutes
+        preOrdersOnly
+        note
       }
     }
   }

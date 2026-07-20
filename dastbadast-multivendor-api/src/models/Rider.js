@@ -82,6 +82,20 @@ const RiderSchema = new mongoose.Schema(
     averageRating: { type: Number, default: 0, min: 0, max: 5 },
     totalRatings: { type: Number, default: 0, min: 0 },
     totalDeliveries: { type: Number, default: 0, min: 0 },
+
+    // ⭐ Фаза 0 (аудит): базовый учёт отказов от уже назначенных заказов
+    // (declineAssignedOrder). Пока не влияет на диспетчинг — задел для
+    // Фазы 2 (приоритезация по acceptance rate при высокой плотности).
+    declinedOrdersCount: { type: Number, default: 0, min: 0 },
+    lastDeclinedAt: { type: Date, default: null },
+
+    // ⭐ Фаза 1 (аудит): базовый антифрод-счётчик по GPS — инкрементируется,
+    // когда сервер видит физически неправдоподобную скорость (см.
+    // MAX_PLAUSIBLE_SPEED_KMH в resolvers/rider.js) или когда клиент
+    // сообщает mocked:true (Android mock-location). Не блокирует курьера —
+    // задел для будущего trust score/ручного ревью, Фаза 1 только считает.
+    gpsAnomalyCount: { type: Number, default: 0, min: 0 },
+    lastGpsAnomalyAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

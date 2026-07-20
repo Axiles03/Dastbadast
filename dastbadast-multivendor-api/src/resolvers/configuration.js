@@ -40,10 +40,29 @@ export const configuration = async () => {
 
 export const updateConfiguration = async (_p, { input }, ctx) => {
   requireRole(["SUPER_ADMIN", "FINANCE"])(ctx);
-  // ... валидация ...
-  const result = await Configuration.findByIdAndUpdate(/* ... */);
 
-  // ⭐ Шаг 2: инвалидация кэша
+  const allowed = [
+    "currency",
+    "currencySymbol",
+    "taxPercent",
+    "deliveryBaseKm",
+    "deliveryBasePrice",
+    "deliveryPerKmPrice",
+    "testOtp",
+    "waitCompensationFreeMinutes",
+    "waitCompensationPerMinute",
+  ];
+  const update = {};
+  for (const key of allowed) {
+    if (input[key] !== undefined) update[key] = input[key];
+  }
+
+  const result = await Configuration.findByIdAndUpdate("singleton", update, {
+    new: true,
+    upsert: true,
+    setDefaultsOnInsert: true,
+  });
+
   await invalidateCache("configuration");
 
   return result;

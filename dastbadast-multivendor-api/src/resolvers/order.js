@@ -202,6 +202,17 @@ export const placeOrder = async (_p, { input }, ctx) => {
     );
   }
 
+  // ⭐ ШАГ 5 (FIX): "Пятничный завал" — режим preOrdersOnly. Пока в системе
+  // нет полноценных предзаказов (scheduledFor), поэтому честно отклоняем
+  // немедленный заказ с понятной причиной, а не тихо принимаем его,
+  // игнорируя явно выставленный ресторатором сигнал перегрузки.
+  if (restaurant.busyMode?.enabled && restaurant.busyMode?.preOrdersOnly) {
+    throw new GraphQLError(
+      "Restaurant is currently accepting pre-orders only due to high load. Please try again later.",
+      { extensions: { code: "RESTAURANT_BUSY_PREORDERS_ONLY" } },
+    );
+  }
+
   // ⭐⭐⭐ ШАГ 4: валидация и расчёт блюд (без изменений из Шага 1)
   const Food = (await import("../models/Food.js")).Food;
   const items = [];
@@ -314,6 +325,9 @@ export const placeOrder = async (_p, { input }, ctx) => {
       tax,
       deliveryFee: deliveryPrice, // ⭐⭐⭐ ШАГ 4: ТОЛЬКО серверное значение
       total,
+      // ⭐ Фаза 1 (аудит): фиксируем, какой surge реально применился к
+      // ЭТОМУ заказу — Zone.surgeMultiplier может поменяться позже.
+      surgeMultiplier: deliveryBreakdown?.surgeMultiplier ?? 1,
     },
     // ⭐⭐⭐ ШАГ 4: сохраняем разбивку для чека в UI
     statusTimestamps: { pendingAt: new Date() },
@@ -484,6 +498,10 @@ export const kitchenLoad = async (_p, _a, ctx) => {
     }
   }
 
+  const extraPrepMinutes = restaurant.busyMode?.enabled
+    ? (restaurant.busyMode?.extraPrepMinutes ?? 0)
+    : 0;
+
   // ⭐ Формула рекомендации: базовое время (среднее фактическое, либо 30
   // мин по умолчанию, если истории ещё нет) + запас за каждый заказ в
   // очереди сверх первого (кухня же не готовит все заказы параллельно
@@ -491,13 +509,13 @@ export const kitchenLoad = async (_p, _a, ctx) => {
   // диапазоном 20..60 (тот же диапазон, что был в старом статичном списке).
   const base = avgActualPrepMin ?? 30;
   const queuePenalty = Math.max(0, queueLength - 1) * 5;
-  let suggested = Math.ceil((base + queuePenalty) / 5) * 5;
-  suggested = Math.min(60, Math.max(20, suggested));
+  let suggested = Math.ceil((base + queuePenalty + extraPrepMinutes) / 5) * 5;
+  suggested = Math.min(90, Math.max(20, suggested));
 
   return {
     queueLength,
     avgActualPrepMin: avgActualPrepMin ? Math.round(avgActualPrepMin) : null,
     suggestedPrepTime: suggested,
-    isBusy: queueLength >= 3, // ⭐ порог "кухня загружена" для UI-бейджа
+    isBusy: queueLength >= 3 || Boolean(restaurant.busyMode?.enabled), // ⭐ порог "кухня загружена" для UI-бейджа
   };
 };

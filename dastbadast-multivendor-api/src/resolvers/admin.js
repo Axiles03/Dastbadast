@@ -666,6 +666,11 @@ export const createZone = async (_p, { input }, ctx) => {
       coordinates: [input.polygon],
     },
     isActive: input.isActive !== false,
+    // ⭐ Фаза 1 (аудит): surge задаётся при создании опционально — по
+    // умолчанию 1 (без наценки), схема сама клампит в [1, 5].
+    ...(Number.isFinite(input.surgeMultiplier)
+      ? { surgeMultiplier: input.surgeMultiplier }
+      : {}),
   });
 
   await invalidateCache("restaurants"); // зоны входят в homepage
@@ -692,6 +697,13 @@ export const updateZone = async (_p, { id, input }, ctx) => {
   if (input.description !== undefined)
     zone.description = input.description.trim();
   if (typeof input.isActive === "boolean") zone.isActive = input.isActive;
+  // ⭐ Фаза 1 (аудит): полу-ручной триггер surge — админ поднимает
+  // множитель для зоны, где дефицит курьеров/пик спроса. Валидация
+  // диапазона [1, 5] — на схеме (min/max), здесь дополнительно отбрасываем
+  // явно некорректный ввод, чтобы не улетело NaN/отрицательное в save().
+  if (Number.isFinite(input.surgeMultiplier)) {
+    zone.surgeMultiplier = Math.min(5, Math.max(1, input.surgeMultiplier));
+  }
   if (Array.isArray(input.polygon) && input.polygon.length >= 3) {
     zone.location = {
       type: "Polygon",

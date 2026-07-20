@@ -68,6 +68,7 @@ function ZonesInner() {
     description: string;
     polygon: number[][];
     isActive: boolean;
+    surgeMultiplier: number;
   } | null>(null);
   const [creatingMode, setCreatingMode] = useState(false);
   const [draftPolygon, setDraftPolygon] = useState<number[][]>([]);
@@ -91,6 +92,7 @@ function ZonesInner() {
       description: "",
       polygon: [],
       isActive: true,
+      surgeMultiplier: 1,
     });
     setCreatingMode(true);
     setDraftPolygon([]);
@@ -107,6 +109,7 @@ function ZonesInner() {
       description: z.description || "",
       polygon: poly || [],
       isActive: z.isActive,
+      surgeMultiplier: z.surgeMultiplier || 1,
     });
     setCreatingMode(false);
     setDraftPolygon(poly || []);
@@ -148,6 +151,7 @@ function ZonesInner() {
               description: editing.description,
               polygon: closedPolygon,
               isActive: editing.isActive,
+              surgeMultiplier: editing.surgeMultiplier,
             },
           },
         });
@@ -161,6 +165,7 @@ function ZonesInner() {
               description: editing.description,
               polygon: closedPolygon,
               isActive: editing.isActive,
+              surgeMultiplier: editing.surgeMultiplier,
             },
           },
         });
@@ -352,6 +357,29 @@ function ZonesInner() {
                   Зона активна
                 </span>
               </label>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-soft-text-soft px-1">
+                  Множитель surge (1 = без наценки, макс. 5)
+                </label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="1"
+                  max="5"
+                  value={editing.surgeMultiplier}
+                  onChange={(e) =>
+                    setEditing({
+                      ...editing,
+                      surgeMultiplier: Math.min(
+                        5,
+                        Math.max(1, Number(e.target.value) || 1),
+                      ),
+                    })
+                  }
+                  className="w-full px-3.5 py-2.5 bg-soft-surface-2 border border-soft-border text-soft-text placeholder-soft-text-muted rounded-xl text-sm focus:outline-none focus:border-soft-accent focus:bg-soft-surface transition-colors"
+                />
+              </div>
 
               <div className="flex gap-2">
                 <button

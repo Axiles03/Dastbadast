@@ -111,16 +111,23 @@ export function calculateDeliveryPrice(from, to, opts = {}) {
   const perKmPrice = Number.isFinite(opts.perKmPrice)
     ? opts.perKmPrice
     : DELIVERY_PRICING.perKmPrice;
+  // ⭐ Фаза 1 (аудит): множитель зоны/спроса. По умолчанию 1 — поведение
+  // не меняется для зон без surge. Сознательно клампим в [1, 5] здесь же
+  // (а не только на Zone-схеме) — эта функция чистая и может быть вызвана
+  // напрямую с произвольными opts, не полагаясь на валидацию схемы выше.
+  const surgeMultiplier = Number.isFinite(opts.surgeMultiplier)
+    ? Math.min(5, Math.max(1, opts.surgeMultiplier))
+    : 1;
   const rounding = ROUNDING_FN[opts.rounding] ? opts.rounding : "exact";
   const fn = ROUNDING_FN[rounding];
 
   const dist = distanceKmSync(from, to);
-  if (dist === null) return basePrice;
+  if (dist === null) return fn(basePrice * surgeMultiplier);
 
-  if (dist <= baseKm) return fn(basePrice);
+  if (dist <= baseKm) return fn(basePrice * surgeMultiplier);
 
   const extra = (dist - baseKm) * perKmPrice;
-  return fn(basePrice + extra);
+  return fn((basePrice + extra) * surgeMultiplier);
 }
 
 /**
@@ -149,28 +156,34 @@ export function calculateDeliveryPriceBreakdown(from, to, opts = {}) {
   const perKmPrice = Number.isFinite(opts.perKmPrice)
     ? opts.perKmPrice
     : DELIVERY_PRICING.perKmPrice;
+  const surgeMultiplier = Number.isFinite(opts.surgeMultiplier)
+    ? Math.min(5, Math.max(1, opts.surgeMultiplier))
+    : 1;
   const rounding = ROUNDING_FN[opts.rounding] ? opts.rounding : "exact";
   const fn = ROUNDING_FN[rounding];
 
   const dist = distanceKmSync(from, to);
   if (dist === null) {
+    const total = fn(basePrice * surgeMultiplier);
     return {
       base: basePrice,
       perKm: 0,
       distanceKm: null,
-      total: basePrice,
+      surgeMultiplier,
+      total,
       isOverBase: false,
     };
   }
 
   const isOverBase = dist > baseKm;
-  const perKm = isOverBase ? fn((dist - baseKm) * perKmPrice) : 0;
-  const total = fn(basePrice + perKm);
+  const perKm = isOverBase ? (dist - baseKm) * perKmPrice : 0;
+  const total = fn((basePrice + perKm) * surgeMultiplier);
 
   return {
     base: basePrice,
-    perKm,
+    perKm: fn(perKm),
     distanceKm: +dist.toFixed(3),
+    surgeMultiplier,
     total,
     isOverBase,
   };

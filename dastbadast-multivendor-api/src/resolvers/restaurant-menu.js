@@ -1,6 +1,8 @@
+// dastbadast-multivendor-api/src/resolvers/restaurant-menu.js
 import { GraphQLError } from "graphql";
 import { Category } from "../models/Category.js";
 import { Food } from "../models/Food.js";
+import { Restaurant } from "../models/Restaurant.js"; // ⭐ ШАГ 5
 
 function requireRestaurant(ctx) {
   if (!ctx.restaurant) {
@@ -200,6 +202,58 @@ export const updateMyRestaurant = async (_p, { input }, ctx) => {
   }
   await r.save();
   return r;
+};
+
+/**
+ * ⭐ ШАГ 5 (FIX): "Пятничный завал" — раньше ресторан мог влиять на общую
+ * загрузку кухни только вручную, указывая prepTime на КАЖДЫЙ заказ отдельно
+ * (см. acceptOrder в order-actions.js). Не было единого переключателя
+ * "сейчас у нас перегрузка" — ни +N минут ко всем заказам разом, ни режима
+ * "только предзаказы".
+ *
+ * extraPrepMinutes влияет на suggestedPrepTime в kitchenLoad (order.js) —
+ * то есть на РЕКОМЕНДАЦИЮ в модалке принятия заказа, менеджер по-прежнему
+ * выбирает финальное время сам. preOrdersOnly временно блокирует
+ * немедленные заказы в placeOrder (order.js) — полноценный flow
+ * "запланировать заказ на конкретное время" не входит в этот шаг и требует
+ * отдельной фичи (поле scheduledFor в Order + отдельная очередь диспетчинга).
+ */
+export const setRestaurantBusyMode = async (_p, { input }, ctx) => {
+  const r = requireRestaurant(ctx);
+
+  if (
+    input.extraPrepMinutes != null &&
+    (input.extraPrepMinutes < 0 || input.extraPrepMinutes > 60)
+  ) {
+    throw new GraphQLError("extraPrepMinutes должно быть в диапазоне 0..60", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+  if (typeof input.note === "string" && input.note.length > 200) {
+    throw new GraphQLError("note не может быть длиннее 200 символов", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  const updated = await Restaurant.findByIdAndUpdate(
+    r._id,
+    {
+      $set: {
+        "busyMode.enabled": input.enabled,
+        "busyMode.extraPrepMinutes": input.enabled
+          ? (input.extraPrepMinutes ?? 0)
+          : 0,
+        "busyMode.preOrdersOnly": input.enabled
+          ? Boolean(input.preOrdersOnly)
+          : false,
+        "busyMode.note": input.enabled ? (input.note ?? "") : "",
+        "busyMode.enabledAt": input.enabled ? new Date() : null,
+      },
+    },
+    { new: true },
+  );
+
+  return updated;
 };
 
 export const deleteFood = async (_p, { id }, ctx) => {

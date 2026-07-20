@@ -2,9 +2,25 @@
 //
 // ⭐⭐⭐ Redis-based PubSub для multi-instance API.
 // Каждое publish() транслирует payload во ВСЕ инстансы через Redis pub/sub.
-// Каждый инстанс подписывается на ВСЕ каналы и фильтрует локально (через AsyncIterator).
 //
-// Преимущества над in-memory:
+// ⭐ Фаза 3 (аудит), п.10: раньше каждый инстанс подписывался на ВСЕ каналы
+// системы через `PSUBSCRIBE "*"` и фильтровал локально в JS — то есть
+// каждое событие (включая самый частый тип — GPS-пинги курьеров каждые
+// 10 сек) сериализовалось и доставлялось на каждый инстанс, независимо от
+// того, есть ли там реально заинтересованный WS-подписчик. Нагрузка на
+// инстанс росла с ОБЩИМ трафиком системы, а не с числом его собственных
+// подписчиков — то есть без предела при росте кластера.
+//
+// Теперь — точечная подписка: каждый инстанс подписывается ТОЛЬКО на те
+// конкретные каналы, на которые у него ЕСТЬ хотя бы один локальный
+// слушатель (реф-каунт), и отписывается, когда последний слушатель уходит
+// (закрытие WS-соединения на клиенте → return() у AsyncIterator). Это
+// возможно ровно потому, что в этом проекте КАЖДЫЙ триггер в TOPICS —
+// уже конкретное имя канала с ID (см. pubsub-legacy.js: `ORDER_TRACK_${orderId}`
+// и т.п.), а не паттерн — значит, wildcard-подписка вообще не была нужна
+// по сути задачи, только по реализации.
+//
+// Преимущества над in-memory (не изменились):
 //   - WebSocket-клиент на инстансе A получает события, опубликованные на инстансе B
 //   - При перезапуске инстанса — клиенты автоматически переподключаются, и pubsub снова работает
 //   - Можно запускать 2+ воркеров API за nginx/PM2 cluster
@@ -13,6 +29,20 @@
 //   - Redis 5.0+ (pub/sub)
 //   - Для at-least-once: Redis AOF persistence
 //   - Пропускная способность: 1 канал = 1 key, payload сериализуется в JSON (~1KB на событие)
+//
+// ⚠️ Известный компромисс точечной подписки (честно, не скрываем): между
+// моментом, когда `asyncIterator()` регистрирует локального слушателя, и
+// моментом, когда SUBSCRIBE реально долетает до Redis (обычно единицы-
+// десятки миллисекунд), есть окно, в которое publish с ДРУГОГО инстанса
+// теоретически может быть пропущен для ЭТОГО КОНКРЕТНОГО канала — но
+// только для его самого первого подписчика в рамках инстанса (реф-каунт
+// 0→1). У прежней версии это окно тоже было, просто один раз при самом
+// первом обращении к pubsub за всё время жизни процесса (после — уже
+// подписаны на всё). На практике для событий с периодической природой
+// (GPS-трекинг раз в 10 сек, статус заказа) это самовосстанавливается
+// на следующем событии; для одноразовых событий это тот же класс риска,
+// что уже принят в проекте для publish() ниже ("потеря события лучше,
+// чем падение resolver'а").
 
 import { Redis } from "ioredis";
 import { getRedis, isRedisReady } from "../utils/redis.js";
@@ -30,7 +60,6 @@ let subscriberClient = null;
 // Локальный Map: trigger → Set<{resolve, reject}>
 // (стандартный паттерн graphql-subscriptions)
 const localListeners = new Map();
-let subscriptionInitialized = false;
 
 function localListenersKey(trigger) {
   if (!localListeners.has(trigger)) {
@@ -59,28 +88,73 @@ function getSubscriberClient() {
 
 export class RedisPubSub {
   constructor() {
-    this.subscribedChannels = new Set();
+    // ⭐ Фаза 3: реф-каунт активных ЛОКАЛЬНЫХ (в рамках этого инстанса)
+    // слушателей на канал. 0→1 — реальный SUBSCRIBE в Redis; N→0 —
+    // реальный UNSUBSCRIBE. Не путать с localListeners (Map канал→Set
+    // резолверов) ниже — тот уже существовал, это новый, отдельный счётчик
+    // именно для управления самой Redis-подпиской.
+    this.channelRefCounts = new Map();
+    this._messageHandlerAttached = false;
   }
 
   /**
-   * Инициализировать подписку на все каналы (вызывается один раз при старте инстанса).
-   * Внутренний handler диспатчит payload локальным слушателям.
+   * ⭐ Фаза 3: подписаться на КОНКРЕТНЫЙ канал, если ещё не подписаны
+   * (реф-каунт 0→1). Повторные вызовы для уже активного канала просто
+   * увеличивают счётчик, не шлют лишний SUBSCRIBE в Redis.
    */
-  async init() {
-    if (subscriptionInitialized) return;
-    subscriptionInitialized = true;
+  async subscribeToChannel(channel) {
+    this._ensureMessageHandler();
+
+    const count = this.channelRefCounts.get(channel) || 0;
+    this.channelRefCounts.set(channel, count + 1);
+    if (count > 0) return; // уже подписаны — просто увеличили счётчик
 
     const sub = getSubscriberClient();
+    await sub.subscribe(channel);
+    debugLog("RedisPubSub", "subscribed", { channel, instance: INSTANCE_ID });
+  }
 
-    // ⭐ Subscribe на ВСЕ каналы через PSUBSCRIBE (паттерн *)
-    // Это единственный способ: мы не знаем заранее, какие каналы появятся.
-    // Каждое событие проходит через Redis → handler → проверка темы → resolve promise.
-    await sub.psubscribe("*");
-    debugLog("RedisPubSub", "psubscribed to all channels", {
-      instance: INSTANCE_ID,
-    });
+  /**
+   * ⭐ Фаза 3: снять ОДНУ ссылку на канал; когда счётчик доходит до 0 —
+   * реальный UNSUBSCRIBE в Redis. Вызывается из cleanup() в asyncIterator
+   * при закрытии WS-соединения клиента (return()/throw()).
+   */
+  async unsubscribeFromChannel(channel) {
+    const count = this.channelRefCounts.get(channel) || 0;
+    if (count <= 1) {
+      this.channelRefCounts.delete(channel);
+      try {
+        const sub = getSubscriberClient();
+        await sub.unsubscribe(channel);
+        debugLog("RedisPubSub", "unsubscribed", {
+          channel,
+          instance: INSTANCE_ID,
+        });
+      } catch (e) {
+        // Не критично — если соединение уже рвётся при шатдауне процесса,
+        // сам факт "не отписались явно" не течёт (Redis сам закроет
+        // подписку при разрыве TCP-соединения subscriber-клиента).
+        debugWarn("RedisPubSub", "unsubscribe failed (non-fatal)", {
+          channel,
+          message: e?.message,
+        });
+      }
+    } else {
+      this.channelRefCounts.set(channel, count - 1);
+    }
+  }
 
-    sub.on("pmessage", (pattern, channel, message) => {
+  /**
+   * ⭐ Фаза 3: один общий обработчик "message" на весь subscriber-клиент
+   * (не per-channel — ioredis эмитит один и тот же event для ЛЮБОГО
+   * канала, на который мы подписаны через subscribe()). Вешаем один раз.
+   */
+  _ensureMessageHandler() {
+    if (this._messageHandlerAttached) return;
+    this._messageHandlerAttached = true;
+
+    const sub = getSubscriberClient();
+    sub.on("message", (channel, message) => {
       try {
         const payload = JSON.parse(message);
         // ⭐ Фильтруем собственные сообщения (не дубль-доставка)
@@ -97,7 +171,7 @@ export class RedisPubSub {
           }
         }
       } catch (e) {
-        debugError("RedisPubSub", "pmessage parse error", e?.message);
+        debugError("RedisPubSub", "message parse error", e?.message);
       }
     });
   }
@@ -107,15 +181,20 @@ export class RedisPubSub {
    * Возвращает AsyncIterator, который резолвит новые payload'ы по триггерам.
    */
   asyncIterator(triggers) {
-    // ⭐ При первом вызове — инициализируем глобальную подписку
-    if (!subscriptionInitialized) {
-      // Неблокирующая инициализация (fire-and-forget, чтобы не задерживать resolver)
-      this.init().catch((e) =>
-        debugError("RedisPubSub", "init failed", e?.message),
+    const triggerList = Array.isArray(triggers) ? triggers : [triggers];
+
+    // ⭐ Фаза 3: подписываемся ТОЛЬКО на запрошенные каналы (не на "*").
+    // Fire-and-forget — не блокируем создание итератора ожиданием сети;
+    // см. комментарий вверху файла про компромисс с окном гонки.
+    for (const trigger of triggerList) {
+      this.subscribeToChannel(trigger).catch((e) =>
+        debugError("RedisPubSub", "subscribeToChannel failed", {
+          trigger,
+          message: e?.message,
+        }),
       );
     }
 
-    const triggerList = Array.isArray(triggers) ? triggers : [triggers];
     // ⭐ GraphQL Yoga / graphql-subscriptions ожидает именно AsyncIterable,
     // где resolve() подкидывает новые значения. Реализуем минимальный AsyncIterator.
     const queue = [];
@@ -145,6 +224,16 @@ export class RedisPubSub {
       set.add(resolver);
       cleanups.push(() => {
         set.delete(resolver);
+        // ⭐ Фаза 3: снимаем реф-каунт и, если это был последний локальный
+        // слушатель канала, реально отписываемся от него в Redis — это и
+        // есть та часть, которой не было в версии с "*" (там отписываться
+        // было не от чего, подписка одна на всё и на весь процесс).
+        this.unsubscribeFromChannel(trigger).catch((e) =>
+          debugError("RedisPubSub", "unsubscribeFromChannel failed", {
+            trigger,
+            message: e?.message,
+          }),
+        );
       });
     }
 

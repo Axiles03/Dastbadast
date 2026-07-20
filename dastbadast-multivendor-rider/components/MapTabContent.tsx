@@ -25,6 +25,7 @@ type Props = {
   selectedId: string | null;
   setSelectedId: (id: string | null) => void;
   onClaim: (orderId: string) => void | Promise<void>;
+  onDecline: (orderId: string, reason?: string) => void | Promise<void>;
   onPickUp: (orderId: string) => void | Promise<void>;
   onDeliver: (orderId: string) => void | Promise<void>;
   onOpenChat: (orderId: string) => void;
@@ -50,6 +51,7 @@ export function MapTabContent(props: Props) {
     onPickUp,
     onDeliver,
     onOpenChat,
+    onDecline,
     riderPos,
   } = props;
 
@@ -293,6 +295,7 @@ export function MapTabContent(props: Props) {
         onPickUp={onPickUp}
         onDeliver={onDeliver}
         onOpenChat={onOpenChat}
+        onDecline={onDecline}
       />
     </View>
   );

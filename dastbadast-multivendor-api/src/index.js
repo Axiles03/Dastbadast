@@ -10,6 +10,8 @@
 import { createServer } from "./server.js";
 import { initRedis } from "./utils/redis.js";
 import { startRiderLocationFlushJob } from "./jobs/rider-location-flush.job.js";
+import { startOrderExpiryJob } from "./jobs/order-expiry.job.js"; // ⭐ ШАГ 2
+import { startDispatchWorker } from "./queues/dispatch-worker.js"; // ⭐ ШАГ 4
 import { startMemoryCleanupJob } from "./cleanup-cron.js";
 import { startCacheInvalidationSubscriber } from "./middleware/cache.js";
 import { setupGracefulShutdown } from "./middleware/graceful-shutdown.js";
@@ -142,8 +144,10 @@ async function bootstrap() {
     }
   });
 
-  // 3) Запускаем cron-задачи
+  // 3) Запускаем cron-задачи + воркеры очередей
   startRiderLocationFlushJob();
+  startOrderExpiryJob(); // ⭐ ШАГ 2: persistent-таймаут для PENDING-заказов
+  await startDispatchWorker(); // ⭐ ШАГ 4: persistent курьерский диспетчинг
   startMemoryCleanupJob();
   startCacheInvalidationSubscriber();
 

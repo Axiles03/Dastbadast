@@ -30,6 +30,7 @@ import {
   SUB_RIDER_ORDER_COMPLETED,
   SUB_RIDER_LOCATION,
   COURIER_SEARCH_NOTIFY,
+  DECLINE_ASSIGNED_ORDER,
 } from "../../lib/api/queries";
 import { useAuth } from "../../lib/auth-context";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -156,6 +157,9 @@ export default function OrdersScreen() {
 
   // ===== MUTATIONS =====
   const [claimOrder, { loading: claiming }] = useMutation(CLAIM_ORDER);
+  const [declineOrder, { loading: declining }] = useMutation(
+    DECLINE_ASSIGNED_ORDER,
+  );
   const [updateStatus, { loading: updating }] = useMutation(UPDATE_STATUS);
   const [toggleRider] = useMutation(TOGGLE);
 
@@ -319,6 +323,19 @@ export default function OrdersScreen() {
       }
     },
     [toggleRider, refetchPool, client],
+  );
+
+  const onDecline = useCallback(
+    async (orderId: string, reason?: string) => {
+      try {
+        await declineOrder({ variables: { input: { orderId, reason } } });
+        refetchMine();
+        refetchPool();
+      } catch (e: any) {
+        Alert.alert("Ошибка", e?.message ?? "");
+      }
+    },
+    [declineOrder, refetchMine, refetchPool],
   );
 
   const setStatus = useCallback(
@@ -538,6 +555,7 @@ export default function OrdersScreen() {
           selectedId={selectedId}
           setSelectedId={setSelectedId}
           onClaim={onClaim}
+          onDecline={onDecline}
           onPickUp={(orderId) => setStatus(orderId, "PICKED")}
           onDeliver={(orderId) => setStatus(orderId, "AWAITING_CONFIRMATION")}
           onOpenChat={onOpenChat}

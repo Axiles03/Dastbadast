@@ -14,6 +14,7 @@ import { dispatchCourierSearch } from "./order-search.js";
 import { etaForRiderToAddress } from "../utils/eta.js";
 import { haversineKm } from "../utils/geo.js";
 import { getRiderLocationFromRedis } from "../services/rider-location.service.js";
+import { debugWarn } from "../debug-log.js";
 
 // ⭐⭐⭐ NEW: multi-stop dispatch — курьер, который УЖЕ везёт один заказ,
 // может взять второй, только если он приблизился к клиенту первого заказа
@@ -87,6 +88,45 @@ async function assertCanTakeAnotherOrder(rider) {
       { extensions: { code: "TOO_FAR_FOR_MULTI_STOP" } },
     );
   }
+}
+
+// ⭐⭐⭐ Фаза 0 (аудит): markDelivered раньше не сверял позицию курьера с
+// адресом доставки вообще — курьер мог закрыть заказ из другого района
+// города. Не блокируем (законные причины бывают: оставил у ворот,
+// погрешность GPS в высотке), а помечаем заказ флагом для ревью/аналитики.
+// 250 м — заметно шире строгого авто-геофенса прибытия (60 м, см.
+// resolvers/rider.js AUTO_ARRIVED_RADIUS_M): та проверка уже "заперла"
+// большинство честных курьеров в узком радиусе на шаге ARRIVED_AT_DROP_OFF,
+// здесь нужен запас на COD-кейсы вроде "поднялся в квартиру без телефона в руке".
+const DELIVERY_MISMATCH_RADIUS_M = 250;
+
+/**
+ * ⭐ Сверяет последнюю известную позицию курьера (Redis, затем Mongo-fallback)
+ * с координатами адреса доставки.
+ * @returns {Promise<{mismatch: boolean, distanceM: number|null}>}
+ */
+async function checkDeliveryLocationMismatch(order, rider) {
+  const destCoords = order.deliveryAddress?.location?.coordinates;
+  if (!Array.isArray(destCoords) || destCoords.length < 2) {
+    return { mismatch: false, distanceM: null };
+  }
+
+  const liveLoc = await getRiderLocationFromRedis(rider._id.toString());
+  const riderLat = liveLoc?.lat ?? rider.location?.coordinates?.[1];
+  const riderLng = liveLoc?.lng ?? rider.location?.coordinates?.[0];
+  if (typeof riderLat !== "number" || typeof riderLng !== "number") {
+    // Нет свежей позиции курьера — не можем проверить. Безопаснее НЕ
+    // считать это мисматчем (иначе флаг сработает на каждый заказ, если
+    // Redis/GPS временно недоступны, и потеряет диагностическую ценность).
+    return { mismatch: false, distanceM: null };
+  }
+
+  const [destLng, destLat] = destCoords;
+  const distanceM = haversineKm(riderLat, riderLng, destLat, destLng) * 1000;
+  return {
+    mismatch: distanceM > DELIVERY_MISMATCH_RADIUS_M,
+    distanceM: Math.round(distanceM),
+  };
 }
 
 /* ================== HELPERS ================== */
@@ -437,6 +477,21 @@ export const markDelivered = async (_p, { orderId }, ctx) => {
   order.orderStatus = "AWAITING_CONFIRMATION";
   order.statusTimestamps = order.statusTimestamps || {};
   order.statusTimestamps.deliveredAt = new Date();
+
+  // ⭐ Фаза 0 (аудит): антифрод-проверка позиции курьера, см. функцию выше.
+  const { mismatch, distanceM } = await checkDeliveryLocationMismatch(
+    order,
+    rider,
+  );
+  order.deliveryLocationMismatch = mismatch;
+  order.deliveryLocationMismatchDistanceM = distanceM;
+  if (mismatch) {
+    debugWarn("delivery", "markDelivered: rider location mismatch", {
+      orderId: order._id.toString(),
+      riderId: rider._id.toString(),
+      distanceM,
+    });
+  }
 
   // Если COD — деньги сразу зафиксированы
   if (order.paymentMethod === "COD") {

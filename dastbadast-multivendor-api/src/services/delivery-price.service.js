@@ -118,6 +118,28 @@ async function assertPointInActiveZone(lng, lat) {
 }
 
 /**
+ * ⭐ Фаза 1 (аудит): множитель зоны для surge pricing. Намеренно читаем
+ * ИМЕННО restaurant.zoneId, а не "любую активную зону, куда попадает
+ * адрес" (как делает assertPointInActiveZone ниже) — это разные вещи:
+ * там проверяется физическая доставляемость адреса, здесь — тариф
+ * конкретного ресторана. Если у ресторана зона не задана — 1 (без surge),
+ * без ошибки: отсутствие зоны не должно ломать оформление заказа.
+ */
+async function getZoneSurgeMultiplier(zoneId) {
+  if (!zoneId) return 1;
+  try {
+    const zone = await Zone.findById(zoneId).select("surgeMultiplier").lean();
+    return Number.isFinite(zone?.surgeMultiplier) ? zone.surgeMultiplier : 1;
+  } catch (e) {
+    debugWarn(SERVICE, "zone surge read failed, defaulting to 1", {
+      zoneId: String(zoneId),
+      message: e?.message,
+    });
+    return 1;
+  }
+}
+
+/**
  * ⭐⭐⭐ ОСНОВНАЯ ФУНКЦИЯ: расчитать стоимость доставки для placeOrder.
  *
  * Клиент НИКОГДА не влияет на цену. Мы принимаем из input только
@@ -191,6 +213,9 @@ export async function calculateServerDeliveryPrice({
   // 4. Загрузка тарифа
   const pricing = await getPricingConfig();
 
+  // ⭐ Фаза 1 (аудит): surge зоны ресторана
+  const surgeMultiplier = await getZoneSurgeMultiplier(restaurant.zoneId);
+
   // 5. Расчёт через единую утилиту (Шаг 1)
   const deliveryFee = calculateDeliveryPrice(
     [restaurantLng, restaurantLat],
@@ -199,6 +224,7 @@ export async function calculateServerDeliveryPrice({
       basePrice: pricing.basePrice,
       baseKm: pricing.baseKm,
       perKmPrice: pricing.perKmPrice,
+      surgeMultiplier,
     },
   );
 
@@ -212,6 +238,7 @@ export async function calculateServerDeliveryPrice({
       basePrice: pricing.basePrice,
       baseKm: pricing.baseKm,
       perKmPrice: pricing.perKmPrice,
+      surgeMultiplier,
     },
   );
 
@@ -221,6 +248,7 @@ export async function calculateServerDeliveryPrice({
     restaurantId,
     addressId,
     distanceKm: breakdown?.distanceKm,
+    surgeMultiplier,
     deliveryFee,
   });
 

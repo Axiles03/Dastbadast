@@ -14,6 +14,9 @@
 
 import { debugLog, debugWarn } from "../debug-log.js";
 import { stopRiderLocationFlushJob } from "../jobs/rider-location-flush.job.js";
+import { stopOrderExpiryJob } from "../jobs/order-expiry.job.js"; // ⭐ ШАГ 2
+import { stopDispatchWorker } from "../queues/dispatch-worker.js"; // ⭐ ШАГ 4
+import { closeDispatchQueue } from "../queues/dispatch-queue.js"; // ⭐ ШАГ 4
 import { stopMemoryCleanupJob } from "../cleanup-cron.js";
 
 const SHUTDOWN_TIMEOUT_MS = 25_000; // 25 сек (k8s default 30)
@@ -64,17 +67,23 @@ export function setupGracefulShutdown({
         }
       }
 
-      // 4) Останавливаем cron-задачи
-      debugLog("shutdown", "step 4/6: stopping cron jobs");
+      // 4) Останавливаем cron-задачи и воркеры очередей
+      debugLog("shutdown", "step 4/7: stopping cron jobs and workers");
       try {
         stopRiderLocationFlushJob();
+        stopOrderExpiryJob(); // ⭐ ШАГ 2
         stopMemoryCleanupJob();
+        // ⭐ ШАГ 4: дожидаемся, пока воркер добьёт текущий job (BullMQ сам
+        // не убьёт job в процессе — close() ждёт завершения активных),
+        // затем закрываем очередь и её Redis-соединение.
+        await stopDispatchWorker();
+        await closeDispatchQueue();
       } catch (e) {
-        debugWarn("shutdown", "cron stop error", e?.message);
+        debugWarn("shutdown", "cron/worker stop error", e?.message);
       }
 
       // 5) Закрываем Mongo (import dynamic, чтобы не тянуть mongoose сюда)
-      debugLog("shutdown", "step 5/6: closing mongo");
+      debugLog("shutdown", "step 5/7: closing mongo");
       try {
         const mongoose = await import("mongoose");
         await mongoose.disconnect();
@@ -83,7 +92,7 @@ export function setupGracefulShutdown({
       }
 
       // 6) Закрываем Redis
-      debugLog("shutdown", "step 6/6: closing redis");
+      debugLog("shutdown", "step 6/7: closing redis (hot-path client)");
       try {
         const { getRedis } = await import("../utils/redis.js");
         const client = getRedis();

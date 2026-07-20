@@ -1,3 +1,4 @@
+// dastbadast-multivendor-api/src/schema.js
 export const typeDefs = /* GraphQL */ `
   scalar JSON
   scalar DateTime
@@ -30,6 +31,8 @@ export const typeDefs = /* GraphQL */ `
     skipEmailVerification: Boolean
     skipMobileVerification: Boolean
     testOtp: String
+    waitCompensationFreeMinutes: Float
+    waitCompensationPerMinute: Float
   }
 
   type Zone {
@@ -38,6 +41,8 @@ export const typeDefs = /* GraphQL */ `
     description: String
     isActive: Boolean
     polygon: JSON
+    # ⭐ Фаза 1 (аудит): см. models/Zone.js
+    surgeMultiplier: Float
   }
 
   type DeliveryZone {
@@ -147,6 +152,7 @@ export const typeDefs = /* GraphQL */ `
     description: String
     polygon: JSON!
     isActive: Boolean
+    surgeMultiplier: Float
   }
 
   input UpdateZoneInput {
@@ -154,6 +160,7 @@ export const typeDefs = /* GraphQL */ `
     description: String
     polygon: JSON
     isActive: Boolean
+    surgeMultiplier: Float
   }
 
   enum OtpPurpose {
@@ -293,6 +300,12 @@ export const typeDefs = /* GraphQL */ `
     averageRating: Float!
     totalRatings: Int!
     totalDeliveries: Int!
+    # ⭐ Фаза 0 (аудит): задел для будущей приоритезации по acceptance rate
+    declinedOrdersCount: Int
+    lastDeclinedAt: String
+    # ⭐ Фаза 1 (аудит): см. models/Rider.js
+    gpsAnomalyCount: Int
+    lastGpsAnomalyAt: String
     # ratings — не возвращаем в общем списке (там могут быть тысячи).
     # Если нужны — отдельный query.
   }
@@ -589,6 +602,9 @@ export const typeDefs = /* GraphQL */ `
     tax: Float!
     deliveryFee: Float!
     total: Float!
+    # ⭐ Фаза 1 (аудит): см. models/Order.js
+    surgeMultiplier: Float
+    waitCompensation: Float
   }
   type DeliveryAddress {
     label: String
@@ -612,6 +628,8 @@ export const typeDefs = /* GraphQL */ `
     cancelledAt: String
     prepTime: Int
     courierSearchTimestamps: CourierSearchTimestamps
+    restaurantAckedAt: String
+    restaurantAckedVia: String
   }
   type CourierSearchTimestamps {
     initialPushedAt: String
@@ -645,6 +663,10 @@ export const typeDefs = /* GraphQL */ `
     routeDistanceKm: Float
     etaToCustomer: Int
     riderLocation: RiderLocation
+    # ⭐ Фаза 0 (аудит): антифрод-флаг markDelivered — см. resolvers/delivery.js
+    deliveryLocationMismatch: Boolean
+    deliveryLocationMismatchDistanceM: Int
+    lastDeclineReason: String
   }
 
   type RiderLocation {
@@ -676,9 +698,29 @@ export const typeDefs = /* GraphQL */ `
     orderId: ID!
     reason: String
   }
+  """
+  ⭐ ШАГ 4: via — канал, через который Store App узнал о заказе.
+  """
+  input AckOrderReceivedInput {
+    orderId: ID!
+    via: OrderAckChannel = SUBSCRIPTION
+  }
+  enum OrderAckChannel {
+    SUBSCRIPTION
+    POLL
+    PUSH
+  }
   input AssignRiderInput {
     orderId: ID!
     riderId: ID!
+  }
+  """
+  ⭐ Фаза 0 (аудит): курьер отказывается от УЖЕ назначенного заказа
+  (orderStatus === ASSIGNED, т.е. до фактического pickupDelivery).
+  """
+  input DeclineAssignedOrderInput {
+    orderId: ID!
+    reason: String
   }
   input UpdateOrderStatusRiderInput {
     orderId: ID!
@@ -691,6 +733,10 @@ export const typeDefs = /* GraphQL */ `
     lng: Float!
     lat: Float!
     bearing: Float
+    # ⭐ Фаза 1 (аудит): Android mock-location флаг из expo-location
+    # (loc.mocked). Не блокирует отправку координат — сервер только
+    # считает аномалии. См. resolvers/rider.js updateRiderLocation.
+    mocked: Boolean
   }
   input CreateRestaurantInput {
     name: String!
@@ -748,6 +794,8 @@ export const typeDefs = /* GraphQL */ `
     deliveryBasePrice: Float
     deliveryPerKmPrice: Float
     testOtp: String
+    waitCompensationFreeMinutes: Float
+    waitCompensationPerMinute: Float
   }
 
   type RiderLocationUpdate {
@@ -876,6 +924,9 @@ export const typeDefs = /* GraphQL */ `
     restaurantName: String!
     restaurantLocation: JSON
     riderIds: [String!]!
+    # ⭐ Фаза 2 (аудит): подмножество riderIds, отобранное как
+    # батчинг/стекинг-кандидаты (уже везут другой заказ по пути).
+    stackedRiderIds: [String!]
     radiusKm: Float!
     escalation: Boolean!
     fastAcceptBonus: Float!
@@ -1168,6 +1219,11 @@ export const typeDefs = /* GraphQL */ `
     restaurantLogin(input: LoginRestaurantInput!): AuthPayloadRestaurant!
     acceptOrder(input: AcceptOrderInput!): Order!
     cancelOrder(input: CancelOrderInput!): Order!
+    """
+    ⭐ ШАГ 4: подтверждение, что Store App отобразил заказ на экране
+    и проиграл звук. Идемпотентно — побеждает первый вызов.
+    """
+    ackOrderReceived(input: AckOrderReceivedInput!): Order!
     createCategory(input: CreateCategoryInput!): Category!
     updateCategory(id: ID!, input: UpdateCategoryInput!): Category!
     deleteCategory(id: ID!): Boolean!
@@ -1180,6 +1236,7 @@ export const typeDefs = /* GraphQL */ `
     assignRider(input: AssignRiderInput!): Order!
     riderLogin(input: LoginRiderInput!): AuthPayloadRider!
     claimOrder(orderId: ID!): Order!
+    declineAssignedOrder(input: DeclineAssignedOrderInput!): Order!
     updateOrderStatusRider(input: UpdateOrderStatusRiderInput!): Order!
     confirmOrderReceived(input: ConfirmOrderInput!): Order!
     refreshOrderStatus(id: ID!): Order! # ← ДОБАВЬ

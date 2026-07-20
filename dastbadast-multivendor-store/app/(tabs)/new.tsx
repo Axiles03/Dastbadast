@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useCallback, useState } from "react";
+// dastbadast-multivendor-store/app/(tabs)/new.tsx
+import { useEffect, useMemo, useCallback, useState, useRef } from "react";
 import {
   View,
   Text,
@@ -22,6 +23,7 @@ import {
   SUB_PLACE_ORDER,
   MARK_ORDER_READY,
   KITCHEN_LOAD,
+  ACK_ORDER_RECEIVED, // ⭐ ШАГ 4
 } from "../../lib/api/graphql/queries";
 import { useAuth } from "../../lib/auth-context";
 import Toast from "react-native-toast-message";
@@ -55,21 +57,60 @@ export default function NewOrders() {
     skip: !restaurant?.id,
   }) as any;
 
-  useSubscription(SUB_PLACE_ORDER, {
-    variables: { restaurantId: restaurant?.id },
-    skip: !restaurant?.id,
-    onData: ({ data: subData, client }: any) => {
-      const order = subData?.data?.subscribePlaceOrder;
-      if (!order) return;
+  // ⭐ ШАГ 4 (FIX): раньше `playNewOrderSignal` импортировался, но НИГДЕ не
+  // вызывался — звук при новом заказе физически не проигрывался ни разу, это
+  // мёртвый импорт. Плюс: subscription — не единственный канал, по которому
+  // ресторан узнаёт о заказе (см. Блок 1 аудита) — если WS-соединение
+  // порвано (спящий планшет), заказ всё равно появится через `pollInterval`
+  // polling. Раньше в этом случае НЕ было ни звука, ни хаптики, ни ACK —
+  // заказ просто молча возникал в списке.
+  //
+  // `seenOrderIds` — какие PENDING-заказы уже были "объявлены" в этой сессии
+  // экрана (звук + haptics + ACK), чтобы не дублировать при каждом опросе.
+  // `initializedRef` — при первом рендере СУЩЕСТВУЮЩИЕ PENDING-заказы просто
+  // помечаются как виденные, БЕЗ объявления — иначе при каждом открытии
+  // вкладки будет играть звук на старые, уже висящие заказы.
+  const seenOrderIds = useRef<Set<string>>(new Set());
+  const initializedRef = useRef(false);
+  const [ackOrderReceivedMutation] = useMutation(ACK_ORDER_RECEIVED);
+
+  const announceNewOrder = useCallback(
+    (order: any, via: "SUBSCRIPTION" | "POLL") => {
+      if (!order?.id || seenOrderIds.current.has(order.id)) return;
+      seenOrderIds.current.add(order.id);
+
+      playNewOrderSignal().catch(() => {});
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
         () => {},
       );
       Toast.show({
         type: "success",
         text1: "🔔 Новый заказ!",
-        text2: `Сумма: ${order.amounts?.subtotal} сом.`,
+        text2: order.amounts?.subtotal
+          ? `Сумма: ${order.amounts.subtotal} сом.`
+          : undefined,
         visibilityTime: 5000,
       });
+
+      // ⭐ ACK: сообщаем серверу, что заказ реально отображён на экране и
+      // сыграл звук. Fire-and-forget — не блокируем UI; если сеть моргнула,
+      // ack просто не запишется, это не критично для UX (в отличие от
+      // самого заказа) и переживать за retry здесь не нужно — сервер
+      // получит ack при следующем успешном показе с любого устройства.
+      ackOrderReceivedMutation({
+        variables: { input: { orderId: order.id, via } },
+      }).catch(() => {});
+    },
+    [ackOrderReceivedMutation],
+  );
+
+  useSubscription(SUB_PLACE_ORDER, {
+    variables: { restaurantId: restaurant?.id },
+    skip: !restaurant?.id,
+    onData: ({ data: subData, client }: any) => {
+      const order = subData?.data?.subscribePlaceOrder;
+      if (!order) return;
+      announceNewOrder(order, "SUBSCRIPTION");
       client.refetchQueries({ include: [RESTAURANT_ORDERS] });
     },
   });
@@ -77,6 +118,23 @@ export default function NewOrders() {
   useEffect(() => {
     if (restaurant?.id) refetch();
   }, [restaurant?.id, refetch]);
+
+  // ⭐ Резервный канал объявления: если заказ появился в списке через
+  // polling (RESTAURANT_ORDERS), а не через WS-подписку — например, WS был
+  // разорван (спящий планшет) — тоже проигрываем звук и шлём ACK.
+  useEffect(() => {
+    const list = data?.restaurantOrders ?? [];
+    if (!initializedRef.current) {
+      // Первая загрузка экрана: помечаем уже существующие заказы как
+      // виденные молча, без звука/ACK.
+      for (const o of list) seenOrderIds.current.add(o.id);
+      initializedRef.current = true;
+      return;
+    }
+    for (const o of list) {
+      if (o.orderStatus === "PENDING") announceNewOrder(o, "POLL");
+    }
+  }, [data, announceNewOrder]);
 
   const [acceptOrder, { loading: acLoading }] = useMutation(ACCEPT_ORDER);
   const [cancelOrder, { loading: cancelLoading }] = useMutation(CANCEL_ORDER);

@@ -71,13 +71,17 @@ type Props = {
   online: boolean;
   onClose: () => void;
   onClaim: (orderId: string) => void | Promise<void>;
+  onDecline: (orderId: string, reason?: string) => void | Promise<void>;
+
   onPickUp: (orderId: string) => void | Promise<void>;
   onDeliver: (orderId: string) => void | Promise<void>;
   onOpenChat: (orderId: string) => void;
+
   loading?: {
     claim?: boolean;
     pickUp?: boolean;
     deliver?: boolean;
+    decline?: boolean;
   };
 };
 
@@ -91,6 +95,7 @@ export function OrderBottomSheet({
   onDeliver,
   onOpenChat,
   loading,
+  onDecline,
 }: Props) {
   const insets = useSafeAreaInsets();
   const [now, setNow] = useState(Date.now());
@@ -326,6 +331,14 @@ export function OrderBottomSheet({
                   variant="info"
                   loading={loading?.pickUp}
                   onPress={() => onPickUp(order.id)}
+                />
+              )}
+              {isAssigned && (
+                <ActionButton
+                  label="❌ Отказаться от заказа"
+                  variant="danger"
+                  loading={loading?.decline}
+                  onPress={() => onDecline(order.id)}
                 />
               )}
               {isDelivering && (
