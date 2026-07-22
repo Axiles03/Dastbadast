@@ -1,6 +1,6 @@
 // dastbadast-multivendor-api/src/jobs/order-expiry.job.js
 //
-// ⭐ ШАГ 2 (FIX): персистентная автоотмена "зависших" PENDING-заказов.
+// персистентная автоотмена "зависших" PENDING-заказов.
 //
 // Раньше единственным местом, где заказ переводился из PENDING в
 // CANCELLED/AUTO_EXPIRED, была `expireIfPending()` (см. lib/order-timeouts.js) —
@@ -69,7 +69,6 @@ export async function runOrderExpirySweep() {
   for (const { _id } of candidates) {
     try {
       // ⭐ Атомарно: условие orderStatus="PENDING" в фильтре защищает от
-      // гонки с acceptOrder/cancelOrder (см. order-actions.js, ШАГ 1) —
       // если ресторан только что принял заказ, этот update просто не
       // сработает (вернёт null), и мы его пропустим.
       const order = await Order.findOneAndUpdate(
@@ -77,7 +76,7 @@ export async function runOrderExpirySweep() {
         {
           $set: {
             orderStatus: "CANCELLED",
-            cancelReason: "AUTO_EXPIRED",
+            cancelReasonCode: "AUTO_EXPIRED",
             "statusTimestamps.cancelledAt": new Date(),
           },
         },

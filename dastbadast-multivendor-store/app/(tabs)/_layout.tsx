@@ -109,6 +109,16 @@ export default function TabsLayout() {
             ),
           }}
         />
+        <Tabs.Screen
+          name="kds"
+          options={{
+            title: "Кухня",
+            tabBarLabel: "Кухня",
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="restaurant-outline" color={color} size={size} />
+            ),
+          }}
+        />
       </Tabs>
       <Toast />
     </GestureHandlerRootView>

@@ -225,6 +225,7 @@ export async function calculateServerDeliveryPrice({
       baseKm: pricing.baseKm,
       perKmPrice: pricing.perKmPrice,
       surgeMultiplier,
+      rounding: "round",
     },
   );
 
@@ -239,6 +240,7 @@ export async function calculateServerDeliveryPrice({
       baseKm: pricing.baseKm,
       perKmPrice: pricing.perKmPrice,
       surgeMultiplier,
+      rounding: "round",
     },
   );
 

@@ -14,6 +14,8 @@ import { requireRole, requireOwner } from "../middleware/rbac.js";
 import { pubsub, TOPICS } from "../pubsub.js";
 import { invalidateCache } from "../middleware/cache.js";
 import { Parser } from "json2csv";
+import { WalletTransaction } from "../models/WalletTransaction.js";
+import { tryRedis } from "../utils/redis.js";
 
 const VALID_OWNER_ROLES = [
   "SUPER_ADMIN",
@@ -246,12 +248,20 @@ export const assignRider = async (_p, { input }, ctx) => {
 export const adminAccounting = async (_p, { from, to } = {}, ctx) => {
   requireRole(["SUPER_ADMIN", "FINANCE", "ANALYST"])(ctx);
 
+  const cacheKey = `accounting:${from || "all"}:${to || "all"}`;
+  const cached = await tryRedis((c) => c.get(cacheKey), null);
+  if (cached) return JSON.parse(cached);
+
   const cfgDoc = await Configuration.findById("singleton")
     .select("taxPercent")
     .lean();
   const taxPercent = Number(
     typeof cfgDoc?.taxPercent === "number" ? cfgDoc.taxPercent : 10,
   );
+  const ledgerMatch = {
+    type: { $in: ["ORDER_PAYOUT", "COMMISSION", "CANCELLATION_FEE"] },
+    ...(Object.keys(dateFilter).length && { createdAt: dateFilter }),
+  };
 
   let dateFilter = {};
   if (from || to) {
@@ -285,40 +295,62 @@ export const adminAccounting = async (_p, { from, to } = {}, ctx) => {
     };
   }
 
-  const restaurantRows = await Order.aggregate([
-    { $match: { orderStatus: "DELIVERED" } },
+  const restaurantRows = await WalletTransaction.aggregate([
+    { $match: ledgerMatch },
     {
       $group: {
         _id: "$restaurantId",
-        orderCount: { $sum: 1 },
-        // ⭐ ШАГ 2 FIX: было $amounts.total (с доставкой), стало $amounts.subtotal
-        revenue: { $sum: "$amounts.subtotal" },
+        payout: {
+          $sum: { $cond: [{ $eq: ["$type", "ORDER_PAYOUT"] }, "$amount", 0] },
+        },
+        commission: {
+          $sum: {
+            $cond: [{ $eq: ["$type", "COMMISSION"] }, { $abs: "$amount" }, 0],
+          },
+        },
+        cancellationFees: {
+          $sum: {
+            $cond: [{ $eq: ["$type", "CANCELLATION_FEE"] }, "$amount", 0],
+          },
+        },
+        orderCount: {
+          $addToSet: {
+            $cond: [{ $eq: ["$type", "ORDER_PAYOUT"] }, "$orderId", "$$REMOVE"],
+          },
+        },
       },
     },
   ]);
 
   const restaurantIds = restaurantRows.map((r) => r._id).filter(Boolean);
   const restaurants = restaurantIds.length
-    ? await Restaurant.find({ _id: { $in: restaurantIds } }).lean()
+    ? await Restaurant.find({ _id: { $in: restaurantIds } })
+        .select("name commissionPercent")
+        .lean()
     : [];
   const restMap = new Map(restaurants.map((r) => [r._id.toString(), r]));
 
   const restaurantStats = restaurantRows.map((row) => {
-    const revenue = +Number(row.revenue || 0).toFixed(2);
-    const commission = +(revenue * (taxPercent / 100)).toFixed(2);
+    const revenue = +(row.payout + row.commission).toFixed(2); // до вычета комиссии
     return {
       restaurantId: row._id.toString(),
       restaurantName: restMap.get(row._id.toString())?.name ?? "Без названия",
-      orderCount: row.orderCount,
-      revenue, // ⭐ теперь это subtotal (выручка ресторана за еду)
-      commission, // ⭐ комиссия платформы (НЕ видна клиенту)
-      payout: +(revenue - commission).toFixed(2), // ⭐ к выплате ресторану
+      orderCount: row.orderCount.length,
+      revenue,
+      commission: +row.commission.toFixed(2),
+      commissionPercent:
+        restMap.get(row._id.toString())?.commissionPercent ?? taxPercent,
+      cancellationFees: +row.cancellationFees.toFixed(2), // ⭐ Фаза 2, п.8: видно отдельно
+      payout: +row.payout.toFixed(2),
     };
   });
 
   const totalDelivered = restaurantStats.reduce((s, r) => s + r.orderCount, 0);
   const totalCommission = +restaurantStats
     .reduce((s, r) => s + r.commission, 0)
+    .toFixed(2);
+  const totalCancellationFees = +restaurantStats
+    .reduce((s, r) => s + r.cancellationFees, 0)
     .toFixed(2);
 
   const totalRevenueAgg = await Order.aggregate([
@@ -328,12 +360,13 @@ export const adminAccounting = async (_p, { from, to } = {}, ctx) => {
   const totalRevenue = +(totalRevenueAgg[0]?.total ?? 0).toFixed(2);
 
   const riderRows = await Order.aggregate([
-    { $match: { orderStatus: "DELIVERED", riderId: { $ne: null } } },
     {
-      $group: {
-        _id: "$riderId",
-        deliveredCount: { $sum: 1 },
-        totalEarnings: { $sum: "$amounts.deliveryFee" },
+      $match: {
+        orderStatus: "DELIVERED",
+        riderId: { $ne: null },
+        ...(Object.keys(dateFilter).length && {
+          "statusTimestamps.deliveredAt": dateFilter,
+        }),
       },
     },
   ]);
@@ -355,13 +388,19 @@ export const adminAccounting = async (_p, { from, to } = {}, ctx) => {
     };
   });
 
-  return {
-    totalRevenue, // Оборот (subtotal + deliveryFee по всем доставленным)
+  const result = {
+    totalRevenue: +restaurantStats
+      .reduce((s, r) => s + r.revenue, 0)
+      .toFixed(2),
     totalDelivered,
-    totalCommission, // Комиссия платформы = sum(subtotals) * taxPercent/100
+    totalCommission,
+    totalCancellationFees, // ⭐ новое поле в GraphQL-типе AdminAccounting
     restaurants: restaurantStats.sort((a, b) => b.revenue - a.revenue),
     riders: riderStats.sort((a, b) => b.totalEarnings - a.totalEarnings),
   };
+
+  await tryRedis((c) => c.setex(cacheKey, 300, JSON.stringify(result)), null); // 5 минут, no-op если Redis недоступен
+  return result;
 };
 
 // =================== OWNER MANAGEMENT (только SUPER_ADMIN) ===================

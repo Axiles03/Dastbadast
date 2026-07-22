@@ -3,6 +3,7 @@ import { GraphQLError } from "graphql";
 import { Category } from "../models/Category.js";
 import { Food } from "../models/Food.js";
 import { Restaurant } from "../models/Restaurant.js"; // ⭐ ШАГ 5
+import { pubsub, TOPICS } from "../pubsub.js";
 
 function requireRestaurant(ctx) {
   if (!ctx.restaurant) {
@@ -135,6 +136,7 @@ export const createFood = async (_p, { input }, ctx) => {
 export const updateFood = async (_p, { id, input }, ctx) => {
   const r = requireRestaurant(ctx);
   const food = await assertFoodOwned(id, r._id);
+  const wasAvailable = food.isAvailable;
   if (input.categoryId) {
     await assertCategoryOwned(input.categoryId, r._id);
     food.categoryId = input.categoryId;
@@ -176,11 +178,93 @@ export const updateFood = async (_p, { id, input }, ctx) => {
   if (Array.isArray(input.allergens)) food.allergens = input.allergens;
   if (Array.isArray(input.optionGroups)) food.optionGroups = input.optionGroups;
   await food.save();
+
+  if (wasAvailable !== food.isAvailable) {
+    pubsub.publish(TOPICS.MENU_AVAILABILITY_CHANGED(r._id.toString()), {
+      subscriptionMenuAvailability: {
+        foodId: food._id.toString(),
+        restaurantId: r._id.toString(),
+        isAvailable: food.isAvailable,
+      },
+    });
+  }
   return food;
+};
+
+export const setFoodUnavailableUntil = async (
+  _p,
+  { id, minutesFromNow },
+  ctx,
+) => {
+  const r = requireRestaurant(ctx);
+  const food = await assertFoodOwned(id, r._id);
+
+  if (!minutesFromNow || minutesFromNow <= 0) {
+    throw new GraphQLError("minutesFromNow должен быть положительным", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  food.isAvailable = false;
+  food.unavailableUntil = new Date(Date.now() + minutesFromNow * 60_000);
+  await food.save();
+
+  pubsub.publish(TOPICS.MENU_AVAILABILITY_CHANGED(r._id.toString()), {
+    subscriptionMenuAvailability: {
+      foodId: food._id.toString(),
+      restaurantId: r._id.toString(),
+      isAvailable: false,
+    },
+  });
+
+  return food;
+};
+
+export const bulkSetFoodAvailability = async (
+  _p,
+  { foodIds, isAvailable },
+  ctx,
+) => {
+  const r = requireRestaurant(ctx);
+
+  if (!Array.isArray(foodIds) || foodIds.length === 0) {
+    throw new GraphQLError("foodIds не может быть пустым", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+  if (foodIds.length > 200) {
+    throw new GraphQLError("Максимум 200 позиций за раз", {
+      extensions: { code: "BAD_USER_INPUT" },
+    });
+  }
+
+  // ⭐ restaurantId в фильтре — защита от чужого меню (owner ресторана A
+  // не может выключить блюда ресторана B, даже зная их id).
+  const result = await Food.updateMany(
+    { _id: { $in: foodIds }, restaurantId: r._id },
+    { $set: { isAvailable, unavailableUntil: null } },
+  );
+
+  // ⭐ Одно событие на весь батч (не N событий на N блюд) — клиент,
+  // слушающий MENU_AVAILABILITY_CHANGED, реагирует на batch-обновление
+  // рефетчем меню целиком, а не точечным патчем состояния (это ок для
+  // группового 86 — обычно происходит с частотой "раз в час", в отличие
+  // от одиночного 86, где точечный патч важен для UX-скорости).
+  pubsub.publish(TOPICS.MENU_AVAILABILITY_CHANGED(r._id.toString()), {
+    subscriptionMenuAvailability: {
+      foodId: null,
+      restaurantId: r._id.toString(),
+      isAvailable,
+      bulk: true,
+    },
+  });
+
+  return { modifiedCount: result.modifiedCount };
 };
 
 export const updateMyRestaurant = async (_p, { input }, ctx) => {
   const r = requireRestaurant(ctx);
+  const wasAvailable = r.isAvailable;
   if (input.minimumOrder != null) {
     if (input.minimumOrder < 0) {
       throw new GraphQLError("minimumOrder не может быть отрицательным", {
@@ -201,6 +285,16 @@ export const updateMyRestaurant = async (_p, { input }, ctx) => {
     };
   }
   await r.save();
+
+  if (wasAvailable !== r.isAvailable) {
+    pubsub.publish(TOPICS.MENU_AVAILABILITY_CHANGED(r._id.toString()), {
+      subscriptionMenuAvailability: {
+        foodId: null,
+        restaurantId: r._id.toString(),
+        isAvailable: r.isAvailable,
+      },
+    });
+  }
   return r;
 };
 
@@ -262,5 +356,13 @@ export const deleteFood = async (_p, { id }, ctx) => {
   food.isActive = false;
   food.isAvailable = false;
   await food.save();
+
+  pubsub.publish(TOPICS.MENU_AVAILABILITY_CHANGED(r._id.toString()), {
+    subscriptionMenuAvailability: {
+      foodId: food._id.toString(),
+      restaurantId: r._id.toString(),
+      isAvailable: false,
+    },
+  });
   return true;
 };

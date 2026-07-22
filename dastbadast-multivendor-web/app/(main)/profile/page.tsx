@@ -16,6 +16,7 @@ import {
   MapPin,
   Pencil,
   Shield,
+  Wallet,
 } from "lucide-react";
 import { RequireAuth } from "@/components/RequireAuth";
 
@@ -105,6 +106,12 @@ function ProfileInner() {
           icon={<Pencil className="w-5 h-5" />}
           title="Редактировать профиль"
           subtitle="Имя, email, телефон, аватар"
+        />
+        <LinkItem
+          href="/wallet"
+          icon={<Wallet className="w-5 h-5" />}
+          title="Баланс"
+          subtitle="Пополнение и история операций"
         />
         <LinkItem
           href="/security"

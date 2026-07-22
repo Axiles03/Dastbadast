@@ -20,6 +20,8 @@ const RestaurantSchema = new mongoose.Schema(
     username: { type: String, required: true, unique: true },
     passwordHash: { type: String, required: true },
     tax: { type: Number, default: 0 },
+    balance: { type: Number, default: 0 },
+    commissionPercent: { type: Number, default: null, min: 0, max: 100 },
     minimumOrder: { type: Number, default: 0 },
     averageRating: { type: Number, default: 0, min: 0, max: 5 },
     totalRatings: { type: Number, default: 0, min: 0 },

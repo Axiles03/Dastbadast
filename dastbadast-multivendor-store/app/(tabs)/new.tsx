@@ -28,7 +28,6 @@ import {
 import { useAuth } from "../../lib/auth-context";
 import Toast from "react-native-toast-message";
 import * as Haptics from "expo-haptics";
-import { playNewOrderSignal } from "../../lib/sound";
 import {
   formatTimeAgo,
   formatOrdersCount,
@@ -37,6 +36,9 @@ import {
 import { EmptyState } from "../../components/EmptyState";
 import { cn } from "../../lib/cn";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useOrderAlerts } from "../../lib/use-order-alerts"; // Фаза 1
+import { buildKitchenTicket } from "../../lib/printer/escpos"; // Фаза 3
+import { printTicket } from "../../lib/printer/printer"; // Фаза 3
 
 // Предустановленные опции времени приготовления (мин).
 // Шаг 5, диапазон 20..60.
@@ -56,6 +58,9 @@ export default function NewOrders() {
     pollInterval: 15_000,
     skip: !restaurant?.id,
   }) as any;
+
+  const pendingCount = (data?.restaurantOrders ?? []).length;
+  const { activateSignal, silenceSignal } = useOrderAlerts(pendingCount);
 
   // ⭐ ШАГ 4 (FIX): раньше `playNewOrderSignal` импортировался, но НИГДЕ не
   // вызывался — звук при новом заказе физически не проигрывался ни разу, это
@@ -79,7 +84,7 @@ export default function NewOrders() {
       if (!order?.id || seenOrderIds.current.has(order.id)) return;
       seenOrderIds.current.add(order.id);
 
-      playNewOrderSignal().catch(() => {});
+      activateSignal();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
         () => {},
       );
@@ -101,7 +106,7 @@ export default function NewOrders() {
         variables: { input: { orderId: order.id, via } },
       }).catch(() => {});
     },
-    [ackOrderReceivedMutation],
+    [ackOrderReceivedMutation, activateSignal],
   );
 
   useSubscription(SUB_PLACE_ORDER, {
@@ -190,6 +195,35 @@ export default function NewOrders() {
           input: { orderId: prepModal.orderId, prepTime },
         },
       });
+
+      silenceSignal(); // ⭐ Фаза 1: заказ принят — сигнал больше не нужен
+
+      // ⭐ Фаза 3: печать кухонного чека — fire-and-forget, не блокирует UI
+      // и не роняет принятие заказа, если принтер офлайн/не настроен.
+      printTicket(
+        buildKitchenTicket({
+          shortId: prepModal.orderId.slice(-6),
+          createdAt: prepModal.order.createdAt,
+          paymentMethod: prepModal.order.paymentMethod,
+          paid: prepModal.order.paid,
+          note: prepModal.order.note,
+          items: prepModal.order.items,
+          deliveryAddress: prepModal.order.deliveryAddress,
+        }),
+      ).then((result) => {
+        if (
+          !result.ok &&
+          result.reason !== "not-configured" &&
+          result.reason !== "disabled"
+        ) {
+          Toast.show({
+            type: "error",
+            text1: "Не удалось напечатать чек",
+            text2: "Заказ принят, но проверьте принтер на кухне",
+          });
+        }
+      });
+
       Toast.show({
         type: "success",
         text1: "✅ Заказ принят",
@@ -199,6 +233,49 @@ export default function NewOrders() {
       refetch();
     } catch (e: any) {
       Alert.alert("Ошибка", e?.message ?? "Не удалось принять");
+    }
+  };
+
+  const handleAccept = async (order: any, prepTime: number) => {
+    try {
+      await acceptOrderMutation({
+        variables: { input: { orderId: order.id, prepTime } },
+      });
+      silenceSignal(); // из Фазы 1
+
+      // ⭐ ФАЗА 3, п.11: печать кухонного чека сразу при принятии заказа —
+      // не блокирует UI (fire-and-forget), не должна ронять флоу принятия
+      // заказа, если принтер офлайн/не настроен.
+      printTicket(
+        buildKitchenTicket({
+          shortId: order.id.slice(-6),
+          createdAt: order.createdAt,
+          paymentMethod: order.paymentMethod,
+          paid: order.paid,
+          note: order.note,
+          items: order.items,
+          deliveryAddress: order.deliveryAddress,
+        }),
+      ).then((result) => {
+        if (
+          !result.ok &&
+          result.reason !== "not-configured" &&
+          result.reason !== "disabled"
+        ) {
+          // Принтер настроен, но печать не прошла — единственный случай,
+          // когда стоит явно предупредить менеджера (если принтер просто
+          // не настроен/выключен — это осознанный выбор, молчим).
+          Toast.show({
+            type: "error",
+            text1: "Не удалось напечатать чек",
+            text2: "Заказ принят, но проверьте принтер на кухне",
+          });
+        }
+      });
+
+      await refetch();
+    } catch (e: any) {
+      Alert.alert("Ошибка", e?.message ?? "Не удалось принять заказ");
     }
   };
 
@@ -634,4 +711,9 @@ function PrepTimeModal({
       </View>
     </Modal>
   );
+}
+function acceptOrderMutation(arg0: {
+  variables: { input: { orderId: any; prepTime: number } };
+}) {
+  throw new Error("Function not implemented.");
 }

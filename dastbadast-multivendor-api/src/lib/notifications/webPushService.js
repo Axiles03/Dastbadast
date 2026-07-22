@@ -1,6 +1,6 @@
 // dastbadast-multivendor-api/src/lib/notifications/webPushService.js
 //
-// ⭐ Шаг 4: отправка Web Push через VAPID (без сторонних провайдеров вроде Firebase).
+//  отправка Web Push через VAPID (без сторонних провайдеров вроде Firebase).
 // Работает через стандартный PushManager браузера — endpoint у Chrome ведёт
 // на его собственный push-сервис (FCM под капотом у Google, но мы к нему
 // не обращаемся напрямую, это делает браузер/библиотека web-push сама).

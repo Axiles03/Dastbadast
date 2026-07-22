@@ -45,7 +45,28 @@ export const GET_PROFILE_FULL = gql`
       hasPassword
       avatar
       avatarUnlocksAt
+      balance
     }
+  }
+`;
+
+export const GET_WALLET_TRANSACTIONS = gql`
+  query MyWalletTransactions($limit: Int, $offset: Int) {
+    myWalletTransactions(limit: $limit, offset: $offset) {
+      id
+      type
+      amount
+      balanceAfter
+      note
+      orderId
+      createdAt
+    }
+  }
+`;
+
+export const TOP_UP_BALANCE = gql`
+  mutation TopUpBalance($amount: Float!) {
+    topUpBalance(amount: $amount)
   }
 `;
 

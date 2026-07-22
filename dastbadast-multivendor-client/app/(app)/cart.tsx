@@ -19,6 +19,7 @@ import {
   PLACE_ORDER,
   CALCULATE_DELIVERY_PRICE_BREAKDOWN,
   GET_ORDERS,
+  GET_PROFILE_FULL,
 } from "../../lib/api/queries";
 
 import { getApolloClient } from "../../lib/apollo-provider";
@@ -43,6 +44,10 @@ export default function CartPage() {
   // ⭐ useQuery<any> — фикс типов
   const { data: addrData } = useQuery<any>(GET_ADDRESSES);
   const { data: cfg } = useQuery<any>(GET_CONFIGURATION);
+  const { data: profileData } = useQuery<any>(GET_PROFILE_FULL, {
+    fetchPolicy: "cache-and-network",
+  });
+  const balance: number = profileData?.profile?.balance ?? 0;
   const {
     data: restData,
     loading: restLoading,
@@ -56,6 +61,7 @@ export default function CartPage() {
   const [addressId, setAddressId] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [placing, setPlacing] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<"COD" | "BALANCE">("COD"); // ⭐ NEW — пока только для заказов с балансом
 
   if (!hydrated) {
     return (
@@ -144,6 +150,11 @@ export default function CartPage() {
     blocks.push(
       `💰 Минимальная сумма заказа: ${minimumOrder} ${sym}. Добавьте ещё на ${(minimumOrder - subtotal).toFixed(0)} ${sym}.`,
     );
+  // ⭐ NEW: оплата балансом, но денег не хватает
+  if (paymentMethod === "BALANCE" && balance < total)
+    blocks.push(
+      `💳 Недостаточно средств на балансе (${balance} ${sym} из ${total} ${sym}). Пополните баланс или выберите оплату наличными.`,
+    );
   // ⭐ ШАГ 4: проверка расчёта цены доставки
   if (
     addressId &&
@@ -166,8 +177,9 @@ export default function CartPage() {
           input: {
             restaurantId,
             addressId,
-            paymentMethod: "COD",
+            paymentMethod, // ⭐ NEW: было захардкожено "COD"
             note: note.trim() || undefined,
+            deliveryPrice: deliveryFee,
             items: items.map((i) => ({
               foodId: i.foodId,
               quantity: i.quantity,
@@ -176,11 +188,17 @@ export default function CartPage() {
                 optionId: o.optionId,
               })),
             })),
-            refetchQueries: [{ query: GET_ORDERS }],
-            deliveryPrice: deliveryFee,
-            awaitRefetchQueries: true,
           },
         },
+        // ⭐ FIX: refetchQueries/awaitRefetchQueries — опции client.mutate(),
+        // а не поля GraphQL PlaceOrderInput. Раньше лежали внутри
+        // variables.input — сервер отклонял запрос на валидации схемы
+        // (та же ошибка уже была найдена и исправлена в веб-версии).
+        refetchQueries:
+          paymentMethod === "BALANCE"
+            ? [{ query: GET_ORDERS }, { query: GET_PROFILE_FULL }]
+            : [{ query: GET_ORDERS }],
+        awaitRefetchQueries: true,
       });
       const orderId = (res.data as any)?.placeOrder?.id;
       if (!orderId) {
@@ -349,6 +367,51 @@ export default function CartPage() {
           </View>
         )}
 
+        {/* Способ оплаты */}
+        <View className="mx-5 mt-3 bg-soft-surface border border-border rounded-2xl p-4 shadow-soft-sm">
+          <Text className="font-extrabold text-text mb-2.5">Способ оплаты</Text>
+          <View className="gap-2">
+            <Pressable
+              onPress={() => setPaymentMethod("COD")}
+              className={`p-3 rounded-2xl border flex-row items-center justify-between ${
+                paymentMethod === "COD"
+                  ? "bg-accent-soft border-accent"
+                  : "bg-soft-surface-2 border-border"
+              }`}
+            >
+              <Text
+                className={`text-sm font-bold ${
+                  paymentMethod === "COD" ? "text-accent" : "text-text"
+                }`}
+              >
+                Наличными при получении
+              </Text>
+              {paymentMethod === "COD" && (
+                <Ionicons name="checkmark-circle" size={18} color="#F26A4A" />
+              )}
+            </Pressable>
+            <Pressable
+              onPress={() => setPaymentMethod("BALANCE")}
+              className={`p-3 rounded-2xl border flex-row items-center justify-between ${
+                paymentMethod === "BALANCE"
+                  ? "bg-accent-soft border-accent"
+                  : "bg-soft-surface-2 border-border"
+              }`}
+            >
+              <Text
+                className={`text-sm font-bold ${
+                  paymentMethod === "BALANCE" ? "text-accent" : "text-text"
+                }`}
+              >
+                С баланса
+              </Text>
+              <Text className="text-xs text-text-muted">
+                {balance} {sym}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+
         {/* Totals */}
         <View className="mx-5 mt-3 bg-soft-surface border border-border rounded-2xl p-4 shadow-soft-sm">
           <Row label="Подытог" value={`${subtotal} ${sym}`} />
@@ -399,7 +462,9 @@ export default function CartPage() {
           </View>
 
           <Text className="text-2xs text-text-muted mt-1.5">
-            Оплата наличными при получении.
+            {paymentMethod === "BALANCE"
+              ? "Оплата спишется с баланса сразу при оформлении."
+              : "Оплата наличными при получении."}
           </Text>
         </View>
       </ScrollView>
@@ -424,7 +489,7 @@ export default function CartPage() {
               }`}
             >
               {canOrder
-                ? `Заказать (наличными) — ${total} ${sym}`
+                ? `Заказать (${paymentMethod === "BALANCE" ? "с баланса" : "наличными"}) — ${total} ${sym}`
                 : "Сначала устраните блокировки"}
             </Text>
           )}

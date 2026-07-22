@@ -24,6 +24,12 @@ import {
   calculateDeliveryPrice,
   calculateDeliveryPriceBreakdown,
 } from "../utils/delivery-price.js";
+import {
+  creditRestaurantForOrder,
+  creditRiderForDelivery,
+  holdUserBalanceForOrder,
+} from "../lib/wallet.js";
+import { Configuration } from "../models/Configuration.js";
 
 async function assertAddressInZone(addr) {
   const coords = addr?.location?.coordinates;
@@ -76,8 +82,39 @@ async function autoConfirmIfExpired(order) {
   if (!order.paidAt) order.paidAt = new Date();
   await order.save();
 
+  try {
+    const restaurant = await Restaurant.findById(order.restaurantId);
+    const config = await Configuration.findOne(); // как и в admin.js::accounting
+    if (restaurant) {
+      await creditRestaurantForOrder(
+        order,
+        restaurant,
+        config?.taxPercent ?? 0,
+      );
+    }
+  } catch (e) {
+    // ⭐ Начисление не должно ронять подтверждение заказа для клиента —
+    // если что-то пошло не так, залогировать и разобраться отдельно,
+    // а не блокировать confirmOrderReceived (WalletTransaction можно
+    // досоздать вручную/повторным cron-сверщиком, заказ при этом уже
+    // корректно закрыт для клиента).
+    debugError("wallet", "creditRestaurantForOrder failed", {
+      orderId: order._id.toString(),
+      error: e.message,
+    });
+  }
+
   if (order.riderId) {
     await Rider.findByIdAndUpdate(order.riderId, { available: true });
+    try {
+      const rider = await Rider.findById(order.riderId);
+      if (rider) await creditRiderForDelivery(order, rider);
+    } catch (e) {
+      debugError("wallet", "creditRiderForDelivery failed", {
+        orderId: order._id.toString(),
+        error: e.message,
+      });
+    }
     pubsub.publish(TOPICS.RIDER_ORDER_COMPLETED(order.riderId.toString()), {
       subscriptionRiderOrderCompleted: order,
     });
@@ -154,10 +191,15 @@ export const placeOrder = async (_p, { input }, ctx) => {
 
   // --- ВАЛИДАЦИЯ ВХОДНЫХ ДАННЫХ (без изменений, оставлено для контекста) ---
 
-  if (input.paymentMethod !== "COD") {
-    throw new GraphQLError("Only COD is available in MVP", {
-      extensions: { code: "PAYMENT_NOT_AVAILABLE" },
-    });
+  // ⭐ NEW: теперь доступны COD и BALANCE. ALIF_MOBI/DS_BANK остаются
+  // заблокированы — под них ещё нет реальной интеграции с банком (см.
+  // src/payments/alif.js, dc.js — там только заглушки).
+  const ALLOWED_PAYMENT_METHODS = ["COD", "BALANCE"];
+  if (!ALLOWED_PAYMENT_METHODS.includes(input.paymentMethod)) {
+    throw new GraphQLError(
+      "Оплата картой онлайн пока недоступна — выберите наличные или баланс",
+      { extensions: { code: "PAYMENT_NOT_AVAILABLE" } },
+    );
   }
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new GraphQLError("Cart is empty", {
@@ -263,19 +305,16 @@ export const placeOrder = async (_p, { input }, ctx) => {
     items.push({
       foodId: food._id,
       title: food.title,
-      price: +(food.price + optionsTotal).toFixed(2),
+      price: Math.round(food.price + optionsTotal),
       basePrice: food.price,
-      optionsTotal: +optionsTotal.toFixed(2),
+      optionsTotal: Math.round(optionsTotal),
       quantity: qty,
       image: food.image,
       description: food.description,
       selectedOptions: selectedOptionsResolved,
     });
   }
-  const subtotal = items.reduce(
-    (s, i) => s + (i.basePrice + i.optionsTotal) * i.quantity,
-    0,
-  );
+  const subtotal = items.reduce((s, i) => s + i.price * i.quantity, 0);
   const tax = 0;
 
   // ⭐⭐⭐ ШАГ 4: серверная валидация координат + расчёт цены доставки
@@ -287,7 +326,7 @@ export const placeOrder = async (_p, { input }, ctx) => {
       userId: u._id,
     });
 
-  const total = +(subtotal + deliveryPrice).toFixed(2);
+  const total = subtotal + deliveryPrice;
 
   // Минимальная сумма
   if (subtotal < (restaurant.minimumOrder || 0)) {
@@ -304,7 +343,7 @@ export const placeOrder = async (_p, { input }, ctx) => {
     zoneId: restaurant.zoneId,
     items,
     orderStatus: "PENDING",
-    paymentMethod: "COD",
+    paymentMethod: input.paymentMethod || "COD", // ⭐ NEW: было захардкожено "COD"
     paid: false,
     note: (input.note || "").trim(),
     deliveryAddress: {
@@ -321,7 +360,7 @@ export const placeOrder = async (_p, { input }, ctx) => {
       location: restaurant.location,
     },
     amounts: {
-      subtotal: +subtotal.toFixed(2),
+      subtotal,
       tax,
       deliveryFee: deliveryPrice, // ⭐⭐⭐ ШАГ 4: ТОЛЬКО серверное значение
       total,
@@ -332,6 +371,33 @@ export const placeOrder = async (_p, { input }, ctx) => {
     // ⭐⭐⭐ ШАГ 4: сохраняем разбивку для чека в UI
     statusTimestamps: { pendingAt: new Date() },
   });
+
+  // ⭐ NEW: заказ уже создан (нужен created._id как идемпотентный ключ
+  // проводки в WalletTransaction), теперь пробуем заморозить сумму заказа,
+  // если оплата балансом. Делаем это ДО pubsub.publish — если денег не
+  // хватит, ресторан вообще не должен увидеть этот заказ.
+  if (created.paymentMethod === "BALANCE") {
+    try {
+      await holdUserBalanceForOrder(created, user._id);
+      created.paid = true;
+      created.paymentStatus = "PAID";
+      created.paidAt = new Date();
+      await created.save();
+    } catch (e) {
+      created.orderStatus = "CANCELLED";
+      created.cancelReasonCode = "PAYMENT_FAILED";
+      created.statusTimestamps = created.statusTimestamps || {};
+      created.statusTimestamps.cancelledAt = new Date();
+      await created.save();
+
+      if (e?.code === "INSUFFICIENT_BALANCE") {
+        throw new GraphQLError("Недостаточно средств на балансе", {
+          extensions: { code: "INSUFFICIENT_BALANCE" },
+        });
+      }
+      throw e;
+    }
+  }
 
   // ⭐⭐⭐ ШАГ 4: НЕ сохраняем input.deliveryPrice в какие-либо поля.
   // Если хотите разбивку в заказе — нужно расширить Order.js (Шаг 5).
@@ -416,8 +482,34 @@ export const confirmOrderReceived = async (_p, { input }, ctx) => {
   if (!order.paidAt) order.paidAt = new Date();
   await order.save();
 
+  try {
+    const restaurant = await Restaurant.findById(order.restaurantId);
+    const config = await Configuration.findOne();
+    if (restaurant) {
+      await creditRestaurantForOrder(
+        order,
+        restaurant,
+        config?.taxPercent ?? 0,
+      );
+    }
+  } catch (e) {
+    debugError("wallet", "creditRestaurantForOrder failed", {
+      orderId: order._id.toString(),
+      error: e.message,
+    });
+  }
+
   if (order.riderId) {
     await Rider.findByIdAndUpdate(order.riderId, { available: true });
+    try {
+      const rider = await Rider.findById(order.riderId);
+      if (rider) await creditRiderForDelivery(order, rider);
+    } catch (e) {
+      debugError("wallet", "creditRiderForDelivery failed", {
+        orderId: order._id.toString(),
+        error: e.message,
+      });
+    }
     pubsub.publish(TOPICS.RIDER_ORDER_COMPLETED(order.riderId.toString()), {
       subscriptionRiderOrderCompleted: order,
     });

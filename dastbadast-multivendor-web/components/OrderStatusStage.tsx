@@ -52,6 +52,25 @@ const STAGES: Record<string, Stage> = {
     ringColor: "#F26A4A",
     liveTimer: true,
   },
+  PREPARING: {
+    icon: ChefHat,
+    image:
+      "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=600&q=80",
+    headline: "Заказ готовится",
+    minutes: 12,
+    subline: "Шеф-повар готовит ваш заказ",
+    ringColor: "#F26A4A",
+    liveTimer: true,
+  },
+  READY_FOR_PICKUP: {
+    icon: PackageCheck,
+    image:
+      "https://images.unsplash.com/photo-1526367790999-0150786686a2?w=600&q=80",
+    headline: "Заказ готов, ждём курьера",
+    minutes: 5,
+    subline: "Мы уже ищем ближайшего свободного курьера",
+    ringColor: "#6E5BFF",
+  },
   ASSIGNED: {
     icon: Bike,
     image:
@@ -121,7 +140,7 @@ export function OrderStatusStage({
   // ⭐ УСИЛЕННАЯ ПРОВЕРКА: живой режим только если ВСЁ есть
   const useLive =
     s.liveTimer === true &&
-    status === "ACCEPTED" &&
+    (status === "ACCEPTED" || status === "PREPARING") &&
     !!acceptedAt &&
     !!prepTime &&
     Number(prepTime) > 0;
@@ -132,10 +151,12 @@ export function OrderStatusStage({
   const liveTotalSec = useLive ? getPrepTotalSeconds(prepTime!) : -1;
 
   // ⭐⭐⭐ ШАГ 3: живой режим для статусов курьера в пути (PICKED / EN_ROUTE_TO_DROP_OFF / ARRIVED_AT_DROP_OFF)
-  const isRiderEnRoute =
+  const isRiderToRestaurant = status === "ASSIGNED";
+  const isRiderToCustomer =
     status === "PICKED" ||
     status === "EN_ROUTE_TO_DROP_OFF" ||
     status === "ARRIVED_AT_DROP_OFF";
+  const isRiderEnRoute = isRiderToRestaurant || isRiderToCustomer;
   const useRiderEta = isRiderEnRoute && etaMin != null && etaMin > 0;
 
   // Что показывать в блоке «X минут»
@@ -149,7 +170,9 @@ export function OrderStatusStage({
   const sublineText = useLive
     ? `Шеф-повар готовит. Срок: ${prepTime} мин. с момента принятия.`
     : useRiderEta
-      ? "Курьер уже в пути к вам. ETA обновляется в реальном времени."
+      ? isRiderToRestaurant
+        ? "Курьер уже едет в ресторан за вашим заказом. ETA обновляется в реальном времени."
+        : "Курьер уже в пути к вам. ETA обновляется в реальном времени."
       : s.subline;
 
   // Прогресс готовки (0–100%), если есть динамика
@@ -168,7 +191,9 @@ export function OrderStatusStage({
   const headerLabel = useLive
     ? "Заказ будет готов через"
     : useRiderEta
-      ? "Заказ будет доставлен через"
+      ? isRiderToRestaurant
+        ? "Курьер будет в ресторане через"
+        : "Заказ будет доставлен через"
       : "Ваш заказ будет готов через";
 
   return (
@@ -202,7 +227,9 @@ export function OrderStatusStage({
             ⏱ {Math.round(etaMin!)} {minutesWord(Math.round(etaMin!))}
           </div>
           <div className="text-2xs text-soft-text-muted font-medium">
-            от текущего положения курьера до вас
+            {isRiderToRestaurant
+              ? "от текущего положения курьера до ресторана"
+              : "от текущего положения курьера до вас"}{" "}
           </div>
         </div>
       )}

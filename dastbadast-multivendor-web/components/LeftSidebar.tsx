@@ -16,6 +16,7 @@ import {
   LogOut,
   X,
   Heart,
+  Wallet,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useShell } from "@/lib/shell-context";
@@ -25,6 +26,7 @@ import { useHasMounted } from "@/lib/hooks/useHasMounted"; // ⭐ NEW
 const MENU_ITEMS = [
   { id: "menu", label: "Меню", href: "/", icon: UtensilsCrossed },
   { id: "favorites", label: "Избранное", href: "/favorites", icon: Heart },
+  { id: "wallet", label: "Баланс", href: "/wallet", icon: Wallet },
   { id: "history", label: "История", href: "/orders", icon: History },
   { id: "address", label: "Адрес", href: "/address", icon: MapPin },
 ];

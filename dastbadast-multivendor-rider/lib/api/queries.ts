@@ -11,6 +11,7 @@ export const RIDER_LOGIN = gql`
         phone
         email
         photo
+        balance
       }
     }
   }
@@ -28,7 +29,28 @@ export const ME_RIDER = gql`
       email
       photo
       available
+      balance
     }
+  }
+`;
+
+export const RIDER_WALLET_TRANSACTIONS = gql`
+  query MyWalletTransactions($limit: Int, $offset: Int) {
+    myWalletTransactions(limit: $limit, offset: $offset) {
+      id
+      type
+      amount
+      balanceAfter
+      note
+      orderId
+      createdAt
+    }
+  }
+`;
+
+export const RIDER_TOP_UP_BALANCE = gql`
+  mutation TopUpBalance($amount: Float!) {
+    topUpBalance(amount: $amount)
   }
 `;
 
@@ -96,6 +118,7 @@ export const AVAILABLE_ORDERS = gql`
       statusTimestamps {
         pendingAt
         acceptedAt
+        prepTime
         courierSearchTimestamps {
           initialPushedAt
           escalationPushedAt
@@ -131,6 +154,10 @@ export const MY_ORDERS = gql`
       }
       amounts {
         deliveryFee
+      }
+      statusTimestamps {
+        acceptedAt
+        prepTime
       }
     }
   }

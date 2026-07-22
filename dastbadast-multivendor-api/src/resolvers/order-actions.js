@@ -4,6 +4,10 @@ import { Order } from "../models/Order.js";
 import { Rider } from "../models/Rider.js";
 import { pubsub, TOPICS } from "../pubsub.js";
 import { scheduleJustInTimeDispatch } from "./order-search.js";
+import {
+  compensateRestaurantForCancellation,
+  refundUserForOrder,
+} from "../lib/wallet.js";
 
 function requireRestaurant(ctx) {
   if (!ctx.restaurant)
@@ -85,6 +89,26 @@ export const acceptOrder = async (_p, { input }, ctx) => {
     { new: true },
   );
 
+  const wasAlreadyAccepted = order.statusTimestamps?.acceptedAt != null;
+  const cancelledByRestaurant = !!ctx.restaurant; // ресторан отменяет сам себя — компенсации нет
+
+  if (wasAlreadyAccepted && !cancelledByRestaurant) {
+    const restaurant = await Restaurant.findById(order.restaurantId);
+    if (restaurant) {
+      // ⭐ Фиксированная политика компенсации на старте: 100% стоимости
+      // блюд (без учёта комиссии платформы — потерянные продукты не
+      // должны облагаться комиссией). Сделать конфигурируемым процентом
+      // при необходимости — сейчас захардкожено для прозрачности.
+      const compensation = order.amounts?.subtotal ?? 0;
+      await compensateRestaurantForCancellation(
+        order,
+        restaurant,
+        compensation,
+        `Компенсация за отменённый заказ #${order._id.toString().slice(-6)} (принят в работу, отменён ${cancelledByRestaurant ? "рестораном" : "не рестораном"})`,
+      );
+    }
+  }
+
   if (!order) {
     throw new GraphQLError(
       "Заказ уже был обработан (принят/отменён) — обновите список",
@@ -132,7 +156,8 @@ export const cancelOrder = async (_p, { input }, ctx) => {
     {
       $set: {
         orderStatus: "CANCELLED",
-        cancelReason: input.reason || "Отменено рестораном",
+        cancelReasonCode: input.reasonCode || "OTHER",
+        cancelReasonNote: input.reason || "",
         "statusTimestamps.cancelledAt": new Date(),
       },
     },
@@ -144,6 +169,22 @@ export const cancelOrder = async (_p, { input }, ctx) => {
       "Заказ уже был обработан (принят/отменён/доставлен) — обновите список",
       { extensions: { code: "CONFLICT" } },
     );
+  }
+
+  // ⭐ NEW: если заказ был оплачен с баланса — деньги уже заморожены
+  // (см. resolvers/order.js::placeOrder), возвращаем их пользователю.
+  // Не блокируем саму отмену, если возврат вдруг упадёт — заказ уже
+  // отменён в БД атомарным findOneAndUpdate выше, откатывать это не нужно;
+  // ошибку просто логируем для ручного разбора.
+  if (order.paymentMethod === "BALANCE" && order.paid) {
+    try {
+      await refundUserForOrder(
+        order,
+        `Возврат за отменённый заказ #${order._id.toString().slice(-6)}`,
+      );
+    } catch (e) {
+      console.warn("[order-actions] refundUserForOrder failed:", e?.message);
+    }
   }
 
   if (order.riderId) {

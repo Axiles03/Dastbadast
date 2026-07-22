@@ -6,6 +6,7 @@
 // Клиент видит это как «истёкший» заказ.
 
 import { pubsub, TOPICS } from "../pubsub.js";
+import { refundUserForOrder } from "./wallet.js";
 
 /**
  * ⭐ Константа: через сколько секунд PENDING-заказ автоотменяется.
@@ -39,14 +40,27 @@ export async function expireIfPending(order) {
   try {
     await order.save();
   } catch (e) {
-    // Если save упал (например, БД моргнула) — не блокируем UI.
-    // Вернём обновлённый in-memory объект, клиент увидит EXPIRED,
-    // а на следующий запрос БД вернёт актуальное состояние.
     console.warn(
       "[order-timeouts] save failed, but marking as EXPIRED in-memory:",
       e?.message,
     );
   }
+
+  // ⭐ NEW: возврат денег, если заказ был оплачен с баланса — деньги
+  // заморожены при оформлении (placeOrder), а ресторан так и не ответил
+  // за отведённое время.
+  if (order.paymentMethod === "BALANCE" && order.paid) {
+    try {
+      await refundUserForOrder(
+        order,
+        `Возврат за автоотменённый заказ #${order._id.toString().slice(-6)} (истёк таймаут подтверждения рестораном)`,
+      );
+    } catch (e) {
+      console.warn("[order-timeouts] refundUserForOrder failed:", e?.message);
+    }
+  }
+
+  // ── Публикуем события для всех подписчиков (web + rider) ──
 
   // ── Публикуем события для всех подписчиков (web + rider) ──
   try {

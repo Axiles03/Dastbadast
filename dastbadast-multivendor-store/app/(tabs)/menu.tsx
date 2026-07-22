@@ -25,11 +25,14 @@ import {
   CREATE_FOOD,
   UPDATE_FOOD,
   DELETE_FOOD,
+  BULK_SET_FOOD_AVAILABILITY,
+  SET_FOOD_UNAVAILABLE_UNTIL,
 } from "../../lib/api/graphql/queries";
 import { useAuth } from "../../lib/auth-context";
 import { EmptyState } from "../../components/EmptyState";
 import { pluralize } from "../../lib/format";
 import { SafeAreaView } from "react-native-safe-area-context";
+import Toast from "react-native-toast-message";
 
 type Food = {
   id: string;
@@ -46,6 +49,13 @@ type Category = {
   foods: Food[];
 };
 
+function minutesUntilEndOfDay(): number {
+  const now = new Date();
+  const endOfDay = new Date(now);
+  endOfDay.setHours(23, 59, 59, 999);
+  return Math.max(1, Math.round((endOfDay.getTime() - now.getTime()) / 60000));
+}
+
 export default function MenuScreen() {
   const { restaurant } = useAuth();
   const { data, loading, refetch } = useQuery<any>(MY_MENU, {
@@ -57,6 +67,59 @@ export default function MenuScreen() {
   const [createFood] = useMutation(CREATE_FOOD);
   const [updateFood] = useMutation(UPDATE_FOOD);
   const [deleteFood] = useMutation(DELETE_FOOD);
+
+  const [bulkMutation] = useMutation(BULK_SET_FOOD_AVAILABILITY);
+  const [ttlMutation] = useMutation(SET_FOOD_UNAVAILABLE_UNTIL);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedFoodIds, setSelectedFoodIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [ttlModalFoodId, setTtlModalFoodId] = useState<string | null>(null); // для одиночной TTL-заморозки
+
+  const toggleSelected = (id: string) => {
+    setSelectedFoodIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const exitSelectionMode = () => {
+    setSelectionMode(false);
+    setSelectedFoodIds(new Set());
+  };
+
+  const applyBulk = async (isAvailable: boolean) => {
+    if (selectedFoodIds.size === 0) return;
+    try {
+      await bulkMutation({
+        variables: { foodIds: Array.from(selectedFoodIds), isAvailable },
+      });
+      Toast.show({
+        type: "success",
+        text1: isAvailable ? "Блюда включены" : "Блюда скрыты",
+        text2: `${selectedFoodIds.size} шт.`,
+      });
+      exitSelectionMode();
+      await refetch();
+    } catch (e: any) {
+      Alert.alert("Ошибка", e?.message ?? "Не удалось изменить блюда");
+    }
+  };
+
+  const applyTtl = async (foodId: string, minutes: number) => {
+    try {
+      await ttlMutation({ variables: { id: foodId, minutesFromNow: minutes } });
+      Toast.show({
+        type: "info",
+        text1: `Скрыто на ${minutes < 60 ? `${minutes} мин` : `${Math.round(minutes / 60)} ч`}`,
+      });
+      setTtlModalFoodId(null);
+      await refetch();
+    } catch (e: any) {
+      Alert.alert("Ошибка", e?.message ?? "Не удалось скрыть блюдо");
+    }
+  };
 
   const [catModal, setCatModal] = useState<"add" | "edit" | null>(null);
   const [foodModal, setFoodModal] = useState<"add" | "edit" | null>(null);
@@ -314,6 +377,20 @@ export default function MenuScreen() {
           </Text>
         </View>
 
+        <View className="flex-row items-center justify-between px-4 pt-2">
+          <Text className="text-2xl font-extrabold text-text">Моё меню</Text>
+          <TouchableOpacity
+            onPress={() =>
+              selectionMode ? exitSelectionMode() : setSelectionMode(true)
+            }
+            className="px-3 py-1.5 rounded-lg bg-soft-surface-2"
+          >
+            <Text className="text-xs font-bold text-text">
+              {selectionMode ? "Отмена" : "Выбрать"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
         {/* Кнопки действий */}
         <View className="flex-row gap-2.5 mb-5">
           <TouchableOpacity
@@ -376,6 +453,23 @@ export default function MenuScreen() {
 
               {(cat.foods || []).length === 0 ? (
                 <View className="py-5 items-center">
+                  {selectionMode && (
+                    <TouchableOpacity
+                      onPress={() => toggleSelected(cat.id)}
+                      className={cn(
+                        "w-6 h-6 rounded-md border-2 items-center justify-center mr-2",
+                        selectedFoodIds.has(cat.id)
+                          ? "bg-accent border-accent"
+                          : "border-border",
+                      )}
+                    >
+                      {selectedFoodIds.has(cat.id) && (
+                        <Text className="text-text-inverse text-xs font-bold">
+                          ✓
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  )}
                   <Text className="text-sm text-text-muted">
                     В этой категории пока пусто
                   </Text>
@@ -449,6 +543,17 @@ export default function MenuScreen() {
                           Удал.
                         </Text>
                       </TouchableOpacity>
+                      {!selectionMode && food.isAvailable && (
+                        <TouchableOpacity
+                          onPress={() => setTtlModalFoodId(food.id)}
+                          className="px-3 py-1.5 rounded-lg bg-warning-soft active:opacity-70"
+                          hitSlop={4}
+                        >
+                          <Text className="text-2xs font-bold text-warning-dark">
+                            ⏸ До...
+                          </Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
                   </View>
                 ))
@@ -467,7 +572,63 @@ export default function MenuScreen() {
             </View>
           ))
         )}
+        {selectionMode && selectedFoodIds.size > 0 && (
+          <View className="absolute bottom-0 left-0 right-0 bg-soft-surface border-t border-border p-4 flex-row gap-2">
+            <TouchableOpacity
+              onPress={() => applyBulk(false)}
+              className="flex-1 h-12 rounded-2xl items-center justify-center bg-red-soft"
+            >
+              <Text className="text-red-dark font-extrabold">
+                Скрыть ({selectedFoodIds.size})
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => applyBulk(true)}
+              className="flex-1 h-12 rounded-2xl items-center justify-center bg-accent"
+            >
+              <Text className="text-text-inverse font-extrabold">
+                Показать ({selectedFoodIds.size})
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </ScrollView>
+
+      <Modal
+        visible={ttlModalFoodId !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTtlModalFoodId(null)}
+      >
+        <TouchableOpacity
+          className="flex-1 bg-black/50 justify-center items-center"
+          onPress={() => setTtlModalFoodId(null)}
+        >
+          <View
+            className="bg-soft-surface rounded-2xl p-5 w-72"
+            onStartShouldSetResponder={() => true}
+          >
+            <Text className="text-base font-extrabold text-text mb-4">
+              Скрыть блюдо на...
+            </Text>
+            {[
+              { label: "1 час", minutes: 60 },
+              { label: "3 часа", minutes: 180 },
+              { label: "До конца дня", minutes: minutesUntilEndOfDay() },
+            ].map((opt) => (
+              <TouchableOpacity
+                key={opt.label}
+                onPress={() =>
+                  ttlModalFoodId && applyTtl(ttlModalFoodId, opt.minutes)
+                }
+                className="py-3 border-b border-border"
+              >
+                <Text className="text-text font-semibold">{opt.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Модалка категории */}
       <Modal

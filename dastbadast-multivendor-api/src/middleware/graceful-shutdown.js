@@ -14,9 +14,9 @@
 
 import { debugLog, debugWarn } from "../debug-log.js";
 import { stopRiderLocationFlushJob } from "../jobs/rider-location-flush.job.js";
-import { stopOrderExpiryJob } from "../jobs/order-expiry.job.js"; // ⭐ ШАГ 2
-import { stopDispatchWorker } from "../queues/dispatch-worker.js"; // ⭐ ШАГ 4
-import { closeDispatchQueue } from "../queues/dispatch-queue.js"; // ⭐ ШАГ 4
+import { stopOrderExpiryJob } from "../jobs/order-expiry.job.js"; 
+import { stopDispatchWorker } from "../queues/dispatch-worker.js"; 
+import { closeDispatchQueue } from "../queues/dispatch-queue.js"; 
 import { stopMemoryCleanupJob } from "../cleanup-cron.js";
 
 const SHUTDOWN_TIMEOUT_MS = 25_000; // 25 сек (k8s default 30)
@@ -71,9 +71,9 @@ export function setupGracefulShutdown({
       debugLog("shutdown", "step 4/7: stopping cron jobs and workers");
       try {
         stopRiderLocationFlushJob();
-        stopOrderExpiryJob(); // ⭐ ШАГ 2
+        stopOrderExpiryJob(); // 
         stopMemoryCleanupJob();
-        // ⭐ ШАГ 4: дожидаемся, пока воркер добьёт текущий job (BullMQ сам
+        // дожидаемся, пока воркер добьёт текущий job (BullMQ сам
         // не убьёт job в процессе — close() ждёт завершения активных),
         // затем закрываем очередь и её Redis-соединение.
         await stopDispatchWorker();

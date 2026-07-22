@@ -10,6 +10,7 @@ import {
   GET_CONFIGURATION,
   GET_RESTAURANT_CHECK,
   GET_ORDERS,
+  GET_PROFILE,
 } from "@/lib/queries";
 import { useShell } from "@/lib/shell-context";
 import { useRouter } from "next/navigation";
@@ -67,6 +68,11 @@ function CartInner() {
   } = useShell();
   const { data: addrData } = useQuery(GET_ADDRESSES, { skip: !user });
   const { data: cfg } = useQuery(GET_CONFIGURATION);
+  const { data: profileData } = useQuery(GET_PROFILE, {
+    skip: !user,
+    fetchPolicy: "cache-and-network",
+  });
+  const balance: number = profileData?.profile?.balance ?? 0;
   const {
     data: restData,
     loading: restLoading,
@@ -79,6 +85,7 @@ function CartInner() {
   const [addressId, setAddressId] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<"COD" | "BALANCE">("COD"); // ⭐ NEW
   const [placeOrder, { loading: placing }] = useMutation(PLACE_ORDER);
 
   useEffect(() => {
@@ -157,6 +164,11 @@ function CartInner() {
   else if (minimumOrder > 0 && subtotal < minimumOrder)
     blockReasons.push(
       `💰 Минимальная сумма заказа: ${minimumOrder} ${sym}. Добавьте ещё на ${(minimumOrder - subtotal).toFixed(0)} ${sym}.`,
+    );
+  // ⭐ NEW — оплата балансом, но денег не хватает
+  if (paymentMethod === "BALANCE" && balance < total)
+    blockReasons.push(
+      `💳 Недостаточно средств на балансе (${balance} ${sym} из ${total} ${sym}). Пополните баланс или выберите оплату наличными.`,
     );
   if (!restaurantCoords || !addressCoords)
     blockReasons.push("📍 Выберите адрес в зоне доставки");
@@ -306,6 +318,7 @@ function CartInner() {
         />
       </section>
 
+      {/* === Итог === */}
       {!canOrder && (
         <div className="bg-soft-accent-soft text-soft-accent border border-soft-accent/20 rounded-2xl p-4 text-sm font-semibold">
           <div className="font-extrabold mb-1">Невозможно оформить заказ:</div>
@@ -316,6 +329,56 @@ function CartInner() {
           </ul>
         </div>
       )}
+
+      {/* === Способ оплаты === */}
+      <section className="bg-soft-surface border border-soft-border rounded-3xl p-5 shadow-soft-sm">
+        <h2 className="font-extrabold text-soft-text mb-3">Способ оплаты</h2>
+        <div className="space-y-2">
+          <label
+            className={`flex items-center justify-between gap-3 p-3 rounded-2xl border cursor-pointer transition-colors ${
+              paymentMethod === "COD"
+                ? "bg-soft-accent-soft border-soft-accent"
+                : "bg-soft-surface-2 border-soft-border hover:border-soft-accent"
+            }`}
+          >
+            <span className="flex items-center gap-3">
+              <input
+                type="radio"
+                name="paymentMethod"
+                checked={paymentMethod === "COD"}
+                onChange={() => setPaymentMethod("COD")}
+                className="accent-soft-accent w-4 h-4 cursor-pointer"
+              />
+              <span className="font-bold text-soft-text text-sm">
+                Наличными при получении
+              </span>
+            </span>
+          </label>
+          <label
+            className={`flex items-center justify-between gap-3 p-3 rounded-2xl border cursor-pointer transition-colors ${
+              paymentMethod === "BALANCE"
+                ? "bg-soft-accent-soft border-soft-accent"
+                : "bg-soft-surface-2 border-soft-border hover:border-soft-accent"
+            }`}
+          >
+            <span className="flex items-center gap-3">
+              <input
+                type="radio"
+                name="paymentMethod"
+                checked={paymentMethod === "BALANCE"}
+                onChange={() => setPaymentMethod("BALANCE")}
+                className="accent-soft-accent w-4 h-4 cursor-pointer"
+              />
+              <span className="font-bold text-soft-text text-sm">
+                С баланса
+              </span>
+            </span>
+            <span className="text-xs text-soft-text-muted font-semibold">
+              {balance} {sym}
+            </span>
+          </label>
+        </div>
+      </section>
 
       {/* === Итог === */}
       <section className="bg-soft-surface border border-soft-border rounded-3xl p-5 text-sm space-y-2 shadow-soft-sm">
@@ -392,7 +455,9 @@ function CartInner() {
           </span>
         </div>
         <p className="text-xs text-soft-text-muted pt-1">
-          Оплата наличными или картой курьеру при получении.
+          {paymentMethod === "BALANCE"
+            ? "Оплата спишется с баланса сразу при оформлении."
+            : "Оплата наличными или картой курьеру при получении."}
         </p>
       </section>
 
@@ -427,7 +492,7 @@ function CartInner() {
                 input: {
                   restaurantId,
                   addressId,
-                  paymentMethod: "COD",
+                  paymentMethod, // ⭐ NEW: было захардкожено "COD"
                   note: note.trim() || undefined,
                   idempotencyKey: idempotencyKeyRef.current,
                   deliveryPrice: deliveryFee,
@@ -441,7 +506,10 @@ function CartInner() {
                   })),
                 },
               },
-              refetchQueries: [{ query: GET_ORDERS }],
+              refetchQueries:
+                paymentMethod === "BALANCE"
+                  ? [{ query: GET_ORDERS }, { query: GET_PROFILE }]
+                  : [{ query: GET_ORDERS }],
               awaitRefetchQueries: true,
             });
             const orderId = res.data?.placeOrder?.id;
@@ -468,7 +536,7 @@ function CartInner() {
         {placing
           ? "Оформляем заказ…"
           : canOrder
-            ? "Заказать (наличными)"
+            ? `Заказать (${paymentMethod === "BALANCE" ? "с баланса" : "наличными"})`
             : `Заблокировано (${blockReasons.length})`}
       </button>
     </div>

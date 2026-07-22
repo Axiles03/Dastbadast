@@ -99,8 +99,26 @@ function WaitingInner() {
       refetch();
     }
   }, [orderId, refetch]);
-  
+
   const o = data?.order;
+
+  useEffect(() => {
+    const status = o?.orderStatus;
+    if (
+      o?.id &&
+      [
+        "READY_FOR_PICKUP",
+        "ASSIGNED",
+        "PICKED",
+        "EN_ROUTE_TO_DROP_OFF",
+        "ARRIVED_AT_DROP_OFF",
+        "AWAITING_CONFIRMATION",
+        "DELIVERED",
+      ].includes(status)
+    ) {
+      router.replace(`/order/${o.id}/tracking`);
+    }
+  }, [o?.id, o?.orderStatus, router]);
 
   if (loading) {
     return (
@@ -150,7 +168,8 @@ function WaitingInner() {
   let view: "pending" | "accepted" | "expired" | "cancelled" = "pending";
   if (isExpired) view = "expired";
   else if (o.orderStatus === "CANCELLED") view = "cancelled";
-  else if (o.orderStatus === "ACCEPTED") view = "accepted";
+  else if (o.orderStatus === "ACCEPTED" || o.orderStatus === "PREPARING")
+    view = "accepted";
   else if (o.orderStatus === "PENDING") view = "pending";
 
   return (

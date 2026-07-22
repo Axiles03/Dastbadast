@@ -46,6 +46,7 @@ const UserSchema = new mongoose.Schema(
       type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Food" }],
       default: [],
     },
+    balance: { type: Number, default: 0, min: 0 },
   },
   { timestamps: true },
 );

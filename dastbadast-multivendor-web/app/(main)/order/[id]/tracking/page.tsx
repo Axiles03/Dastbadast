@@ -154,9 +154,10 @@ function TrackingInner() {
 
   // ⭐⭐⭐ FIX: защита от undefined через optional chaining + nullish coalescing
   const isSearchingRider =
-    !o?.riderId && // ⬅️ было: !o.riderId
-    (o?.orderStatus === "PENDING" || o?.orderStatus === "ACCEPTED");
-
+    !o?.riderId &&
+    ["PENDING", "ACCEPTED", "PREPARING", "READY_FOR_PICKUP"].includes(
+      o?.orderStatus,
+    );
   useEffect(() => {
     if (!o || o.orderStatus !== "AWAITING_CONFIRMATION") return;
     const interval = setInterval(async () => {

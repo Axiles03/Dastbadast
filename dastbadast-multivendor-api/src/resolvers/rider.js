@@ -410,14 +410,28 @@ export const riderOrders = async (_p, { status }, ctx) => {
 
 /**
  * FIX: добавлен zone-фильтр. Курьер видит только заказы своей зоны.
- * Если rider.zoneId не задан — видит всё (fallback).
- */
+ * Если rider.zoneId не задан — видит всё (fallback). 
+  ⭐ ШАГ 1 (FIX): раньше фильтр был только `orderStatus: "ACCEPTED"`.
+ * Из-за этого, как только ресторан переводил заказ в PREPARING/READY_FOR_PICKUP
+ * (нажимал «Готово, забирайте»), заказ мгновенно пропадал из пула у ВСЕХ
+ * курьеров — включая того, кто в этот момент нажимал «Взять заказ» и уже
+ * видел карточку на экране. См. также CLAIMABLE_STATUSES в claimOrder ниже —
+ * оба места держим в синхроне (аналог `["ACCEPTED","PREPARING","READY_FOR_PICKUP"]`
+ * из acceptDelivery/delivery.js).
+  */
+
+const CLAIMABLE_STATUSES = ["ACCEPTED", "PREPARING", "READY_FOR_PICKUP"];
+
 export const availableOrdersForRiders = async (_p, _a, ctx) => {
   const r = requireRider(ctx);
-  const baseFilter = { orderStatus: "ACCEPTED", riderId: null };
+  const baseFilter = {
+    orderStatus: { $in: CLAIMABLE_STATUSES },
+    riderId: null,
+  };
   if (r.zoneId) {
     baseFilter.zoneId = r.zoneId;
   }
+
   return Order.find(baseFilter).sort({ createdAt: 1 }).limit(50);
 };
 
@@ -480,7 +494,7 @@ export const claimOrder = async (_p, { orderId }, ctx) => {
   }
 
   const order = await Order.findOneAndUpdate(
-    { _id: orderId, orderStatus: "ACCEPTED", riderId: null },
+    { _id: orderId, orderStatus: { $in: CLAIMABLE_STATUSES }, riderId: null },
     {
       $set: {
         riderId: r._id,

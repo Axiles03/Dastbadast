@@ -1,11 +1,10 @@
 import mongoose from "mongoose";
 
 /**
- * ⭐⭐⭐ ШАГ 2: подсхема выбранной опции модификатора в корзине.
+ * подсхема выбранной опции модификатора в корзине.
  *
- * Дубликат OrderItemOptionSchema из Order.js (Шаг 1) — намеренно,
+ * Дубликат OrderItemOptionSchema из Order.js
  * чтобы избежать циклических импортов и не ломать существующий Order.js.
- * Структура 1:1 — в Шаге 5 (placeOrder refactor) можно вынести в shared.
  */
 const CartItemOptionSchema = new mongoose.Schema(
   {
@@ -19,9 +18,9 @@ const CartItemOptionSchema = new mongoose.Schema(
 );
 
 /**
- * ⭐⭐⭐ ШАГ 2: подсхема позиции корзины.
+ * подсхема позиции корзины.
  *
- * Зеркало OrderItemSchema из Order.js (Шаг 1) — структура одинаковая,
+ * Зеркало OrderItemSchema из Order.js
  * чтобы placeOrder мог атомарно «перелить» корзину в Order без
  * трансформаций. Разница только в том, что у корзины нет deliveryAddress,
  * rider, статуса и timestamps.
@@ -36,12 +35,12 @@ const CartItemSchema = new mongoose.Schema(
     title: { type: String, required: true, trim: true, maxlength: 120 },
     image: { type: String, default: "", maxlength: 1000 },
     description: { type: String, default: "", maxlength: 1000 },
-    // ⭐ Снапшот цены на момент добавления (Шаг 1: base + options + total)
+    // ⭐ Снапшот цены на момент добавления 
     basePrice: { type: Number, required: true, min: 0 },
     optionsTotal: { type: Number, required: true, min: 0, default: 0 },
     price: { type: Number, required: true, min: 0 },
     quantity: { type: Number, required: true, min: 1, max: 99 },
-    // ⭐ Выбранные модификаторы (Шаг 1) — снапшот с title и price
+    // ⭐ Выбранные модификаторы 
     selectedOptions: { type: [CartItemOptionSchema], default: [] },
   },
   { _id: false },
@@ -73,7 +72,7 @@ const CartSchema = new mongoose.Schema(
 );
 
 /**
- * ⭐⭐⭐ ШАГ 2: TTL-индекс.
+ * TTL-индекс.
  *
  * Удаляет неактивные корзины через 30 дней.
  * Решает задачу "забытых" корзин от неавторизованных / потерявших сессию юзеров.

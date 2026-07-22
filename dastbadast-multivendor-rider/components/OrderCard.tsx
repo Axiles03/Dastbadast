@@ -12,6 +12,7 @@ import React from "react";
 import { View, Text, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { cn } from "../lib/cn";
+import { usePrepRemainingMs, formatPrepRemaining } from "../lib/prep-timer";
 
 /* ============== Локальный pluralize (без зависимости от lib/format) ============== */
 
@@ -79,10 +80,69 @@ export type Urgency = "normal" | "warning" | "urgent" | null;
 const STATUS_LABEL: Record<string, { label: string; emoji: string }> = {
   PENDING: { label: "Ждёт курьера", emoji: "🛵" },
   ACCEPTED: { label: "Ждёт курьера", emoji: "🛵" },
+  PREPARING: { label: "Готовится", emoji: "👨‍🍳" },
+  READY_FOR_PICKUP: { label: "Готово, заберите", emoji: "✅" },
   ASSIGNED: { label: "Курьер едет в ресторан", emoji: "🏪" },
   PICKED: { label: "Доставляется", emoji: "🛵" },
   AWAITING_CONFIRMATION: { label: "Ждём подтверждения", emoji: "⏳" },
 };
+
+function PrepTimerInfo({ order }: { order: Order }) {
+  const relevant = ["ACCEPTED", "PREPARING", "ASSIGNED"].includes(
+    order.orderStatus,
+  );
+  const acceptedAt = relevant
+    ? (order.statusTimestamps?.acceptedAt ?? null)
+    : null;
+  const prepTime = relevant ? (order.statusTimestamps?.prepTime ?? null) : null;
+  const { remainingMs, isLate } = usePrepRemainingMs(acceptedAt, prepTime);
+
+  if (order.orderStatus === "READY_FOR_PICKUP") {
+    return (
+      <View className="mt-2.5 bg-success-soft border border-success/30 rounded-xl px-3 py-2 flex-row items-center gap-2">
+        <Text className="text-base">✅</Text>
+        <Text className="text-sm font-extrabold text-success-dark">
+          Готово — заберите в ресторане
+        </Text>
+      </View>
+    );
+  }
+
+  if (!relevant || !acceptedAt || !prepTime) return null;
+
+  return (
+    <View
+      className={cn(
+        "mt-2.5 border rounded-xl px-3 py-2 flex-row items-center gap-2",
+        isLate
+          ? "bg-warning-soft border-warning/30"
+          : "bg-info-soft border-info/30",
+      )}
+    >
+      <Text className="text-base">👨‍🍳</Text>
+      <View className="flex-1">
+        <Text
+          className={cn(
+            "text-2xs font-bold uppercase tracking-wider",
+            isLate ? "text-warning-dark" : "text-info-dark",
+          )}
+        >
+          {isLate ? "Готовка задерживается" : "Готовка ресторана"}
+        </Text>
+        <Text
+          className={cn(
+            "text-sm font-extrabold",
+            isLate ? "text-warning-dark" : "text-info-dark",
+          )}
+        >
+          {isLate
+            ? "Уже должно быть готово"
+            : `${formatPrepRemaining(remainingMs)} до готовности`}
+        </Text>
+      </View>
+    </View>
+  );
+}
 
 /**
  * Подсчёт urgency по давности pendingAt + escalation-флагу.
@@ -188,7 +248,7 @@ type OrderCardProps = {
     hint?: string;
     onPress: () => void;
     etaMin?: number | null;
-    // ⭐ ШАГ 5: target — pickup или delivery (для подписи)
+    // target — pickup или delivery (для подписи)
     etaTarget?: "pickup" | "delivery";
   } | null;
   /** Доп. кнопка рядом (например "Чат") */
@@ -198,9 +258,9 @@ type OrderCardProps = {
   } | null;
   /** ⭐ Колбэк клика по самой карточке (для будущего Шага 3) */
   onPress?: () => void;
-  // ⭐ ШАГ 5: ETA в минутах до цели (для курьера)
+  // ETA в минутах до цели (для курьера)
   etaMin?: number | null;
-  // ⭐ ШАГ 5: target — pickup или delivery (для подписи)
+  // target — pickup или delivery (для подписи)
   etaTarget?: "pickup" | "delivery";
 };
 
@@ -287,7 +347,10 @@ export function OrderCard({
         </Text>
       </View>
 
-      {/* ⭐ ШАГ 5: ETA-инфо для курьера — до pickup или до delivery */}
+      {/* сколько ресторану осталось готовить / уже готово */}
+      <PrepTimerInfo order={order} />
+
+      {/*  ETA-инфо для курьера — до pickup или до delivery */}
       {etaMin != null && etaTarget && (
         <View className="mt-2.5 bg-info-soft border border-info/30 rounded-xl px-3 py-2 flex-row items-center gap-2">
           <Text className="text-base">⏱</Text>

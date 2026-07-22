@@ -6,6 +6,8 @@ import { categoryIcon, foodImageUrl } from "@/lib/category-icons";
 import { FoodDetailModal } from "./FoodDetailModal";
 import { AddToCartButton } from "./AddToCartButton";
 import { useCart } from "@/lib/cart-context";
+import { SUB_MENU_AVAILABILITY, GET_RESTAURANT } from "@/lib/queries";
+import { useSubscription, useApolloClient } from "@apollo/client";
 
 type Review = {
   id: string;
@@ -28,6 +30,7 @@ type Food = {
   isVegan?: boolean;
   spiceLevel?: number;
   allergens?: string[];
+  isAvailable?: boolean;
 };
 
 type Category = {
@@ -49,6 +52,43 @@ export function RestaurantMenu({
   currencySymbol: string;
   disabled?: boolean;
 }) {
+  const client = useApolloClient();
+  const [restaurantClosed, setRestaurantClosed] = useState(false);
+
+  useSubscription(SUB_MENU_AVAILABILITY, {
+    variables: { restaurantId },
+    onData: ({ data }) => {
+      const event = data?.data?.subscriptionMenuAvailability;
+      if (!event) return;
+
+      if (event.bulk) {
+        // Групповое 86 сразу многих позиций — надёжнее перезапросить меню
+        // целиком, чем точечно гадать, каких блюд это коснулось.
+        client.refetchQueries({ include: [GET_RESTAURANT] });
+        return;
+      }
+
+      if (event.foodId) {
+        // Точечное 86 одной позиции — патчим конкретную карточку без
+        // рефетча, чтобы клиент, уже смотрящий на меню, увидел это мгновенно.
+        client.cache.modify({
+          id: client.cache.identify({ __typename: "Food", id: event.foodId }),
+          fields: { isAvailable: () => event.isAvailable },
+        });
+        return;
+      }
+
+      // foodId: null и не bulk — ресторан закрылся/открылся целиком.
+      client.cache.modify({
+        id: client.cache.identify({
+          __typename: "Restaurant",
+          id: event.restaurantId,
+        }),
+        fields: { isAvailable: () => event.isAvailable },
+      });
+      setRestaurantClosed(!event.isAvailable);
+    },
+  });
   const [activeId, setActiveId] = useState(categories[0]?.id ?? "");
   const [search, setSearch] = useState("");
   const [detailFood, setDetailFood] = useState<Food | null>(null);
@@ -57,7 +97,6 @@ export function RestaurantMenu({
   const [excludeAllergens, setExcludeAllergens] = useState<string[]>([]);
 
   const { add, items } = useCart();
-
   const activeCategory =
     categories.find((c) => c.id === activeId) ?? categories[0];
 
@@ -101,6 +140,12 @@ export function RestaurantMenu({
           className="flex-1 min-w-0 bg-transparent outline-none text-soft-text placeholder-soft-text-muted text-sm"
         />
       </div>
+
+      {restaurantClosed && (
+        <div className="bg-soft-info-soft text-soft-info border border-soft-info/30 rounded-2xl px-4 py-3 text-sm font-semibold">
+          Ресторан временно не принимает заказы
+        </div>
+      )}
 
       {/* Категории — чипы */}
       <div className="flex gap-3 overflow-x-auto scrollbar-hide pb-2">
@@ -172,8 +217,12 @@ export function RestaurantMenu({
           {foods.map((f) => (
             <article
               key={f.id}
-              className="bg-soft-surface border border-soft-border rounded-2xl p-3 flex gap-3 hover:border-soft-accent transition-colors cursor-pointer items-center min-h-[120px]"
-              onClick={() => setDetailFood(f)}
+              onClick={() => f.isAvailable !== false && setDetailFood(f)}
+              className={`bg-soft-surface border border-soft-border rounded-2xl p-3 flex gap-3 transition-colors items-center min-h-[120px] ${
+                f.isAvailable === false
+                  ? "opacity-50 cursor-not-allowed"
+                  : "hover:border-soft-accent cursor-pointer"
+              }`}
             >
               <div className="relative w-20 h-20 sm:w-24 sm:h-24 rounded-xl overflow-hidden bg-soft-surface-2 shrink-0 border border-soft-border">
                 <img
@@ -186,6 +235,11 @@ export function RestaurantMenu({
                 <div>
                   <h3 className="font-extrabold text-sm leading-snug line-clamp-1 text-soft-text">
                     {f.title}
+                    {f.isAvailable === false && (
+                      <span className="text-[10px] font-bold text-red-600 bg-red-50 px-1.5 py-0.5 rounded-full shrink-0">
+                        Нет в наличии
+                      </span>
+                    )}
                   </h3>
                   {f.description && (
                     <p className="text-xs text-soft-text-soft mt-0.5 line-clamp-2 leading-normal">
@@ -218,7 +272,7 @@ export function RestaurantMenu({
                       restaurantId={restaurantId}
                       restaurantName={restaurantName}
                       compact={true}
-                      disabled={disabled}
+                      disabled={disabled || f.isAvailable === false}
                     />
                   </div>
                 </div>

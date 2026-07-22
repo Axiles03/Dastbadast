@@ -40,5 +40,8 @@ export function getPageMeta(pathname: string): PageMeta {
   if (pathname === "/notifications") {
     return { title: "Уведомления", subtitle: "Push в браузере" };
   }
+  if (pathname === "/wallet") {
+    return { title: "Кошелек", subtitle: "Пополните свой кошелек" };
+  }
   return { title: "Dastbadast", subtitle: "" };
 }

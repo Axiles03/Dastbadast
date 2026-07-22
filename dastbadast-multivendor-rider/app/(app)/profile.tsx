@@ -23,7 +23,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useQuery, useMutation, useApolloClient } from "@apollo/client/react";
 import { useAuth } from "../../lib/auth-context";
-import { MY_HISTORY, TOGGLE, MY_ORDERS } from "../../lib/api/queries";
+import { MY_HISTORY, TOGGLE, MY_ORDERS, ME_RIDER } from "../../lib/api/queries";
 import { cn } from "../../lib/cn";
 
 /* ============== Helpers ============== */
@@ -61,6 +61,12 @@ export default function ProfileScreen() {
     skip: !token,
     pollInterval: 15_000,
   });
+
+  const { data: meData } = useQuery<any>(ME_RIDER, {
+    skip: !token,
+    fetchPolicy: "cache-and-network",
+  });
+  const balance = meData?.meRider?.balance ?? (rider as any)?.balance;
 
   // ──────── Мутация тоггла ────────
   const [toggleRider, { loading: toggleMutating }] = useMutation(TOGGLE);
@@ -217,6 +223,22 @@ export default function ProfileScreen() {
             />
           </View>
         </View>
+
+        {/* ──── Баланс ──── */}
+        <Pressable
+          onPress={() => router.push("/(app)/wallet" as any)}
+          className="mx-5 mt-3 bg-accent rounded-3xl p-5 flex-row items-center justify-between active:opacity-90"
+        >
+          <View>
+            <Text className="text-xs font-bold text-text-inverse/80">
+              Баланс
+            </Text>
+            <Text className="text-2xl font-extrabold text-text-inverse mt-1">
+              {(balance ?? 0).toLocaleString("ru")} сом.{" "}
+            </Text>
+          </View>
+          <Text className="text-text-inverse text-lg">›</Text>
+        </Pressable>
 
         {/* ──── Карточка статистики ──── */}
         <View className="mx-5 mt-3 bg-soft-surface border border-border rounded-3xl p-5 shadow-soft-sm">

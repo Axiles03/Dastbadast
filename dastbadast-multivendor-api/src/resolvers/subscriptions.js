@@ -53,6 +53,11 @@ export const subscriptionOrder = {
     }
   },
 };
+export const subscriptionMenuAvailability = {
+  subscribe: (_p, { restaurantId }) =>
+    pubsub.asyncIterator(TOPICS.MENU_AVAILABILITY_CHANGED(restaurantId)),
+};
+
 export const subscribePlaceOrder = {
   subscribe: (_p, { restaurantId }) =>
     pubsub.asyncIterator(TOPICS.PLACE_ORDER(restaurantId)),

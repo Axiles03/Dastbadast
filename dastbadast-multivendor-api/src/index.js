@@ -10,8 +10,8 @@
 import { createServer } from "./server.js";
 import { initRedis } from "./utils/redis.js";
 import { startRiderLocationFlushJob } from "./jobs/rider-location-flush.job.js";
-import { startOrderExpiryJob } from "./jobs/order-expiry.job.js"; // ⭐ ШАГ 2
-import { startDispatchWorker } from "./queues/dispatch-worker.js"; // ⭐ ШАГ 4
+import { startOrderExpiryJob } from "./jobs/order-expiry.job.js";
+import { startDispatchWorker } from "./queues/dispatch-worker.js"; 
 import { startMemoryCleanupJob } from "./cleanup-cron.js";
 import { startCacheInvalidationSubscriber } from "./middleware/cache.js";
 import { setupGracefulShutdown } from "./middleware/graceful-shutdown.js";
@@ -19,6 +19,33 @@ import { debugLog } from "./debug-log.js";
 
 const PORT = parseInt(process.env.PORT, 10) || 8001;
 const API_INSTANCES = parseInt(process.env.API_INSTANCES, 10) || 1;
+
+function assertPubSubConfigOrThrow() {
+  const usingRedisPubSub = !!(
+    process.env.REDIS_URL && process.env.ENABLE_REDIS_PUBSUB !== "0"
+  );
+
+  if (API_INSTANCES > 1 && !usingRedisPubSub) {
+    // Намеренно валим процесс на старте (а не логируем warning) — PM2
+    // покажет "errored" статус вместо тихо работающего, но теряющего
+    // события кластера. Лучше не подняться вообще, чем поднять кластер,
+    // где ресторан на инстансе B не получает часть заказов.
+    throw new Error(
+      "[boot] API_INSTANCES > 1 требует REDIS_URL и ENABLE_REDIS_PUBSUB=1 " +
+        "(иначе события pubsub не долетают между инстансами кластера). " +
+        `Текущее: REDIS_URL=${process.env.REDIS_URL ? "set" : "MISSING"}, ` +
+        `ENABLE_REDIS_PUBSUB=${process.env.ENABLE_REDIS_PUBSUB ?? "unset"}`,
+    );
+  }
+
+  if (!usingRedisPubSub) {
+    // Одноинстансный dev/staging — не фатально, но должно быть видно в логах.
+    debugLog(
+      "boot",
+      "⚠️ PubSub работает в режиме InMemoryPubSub (single-instance only)",
+    );
+  }
+}
 
 async function bootstrap() {
   debugLog("boot", "starting", { instances: API_INSTANCES, pid: process.pid });
@@ -146,8 +173,8 @@ async function bootstrap() {
 
   // 3) Запускаем cron-задачи + воркеры очередей
   startRiderLocationFlushJob();
-  startOrderExpiryJob(); // ⭐ ШАГ 2: persistent-таймаут для PENDING-заказов
-  await startDispatchWorker(); // ⭐ ШАГ 4: persistent курьерский диспетчинг
+  startOrderExpiryJob(); // persistent-таймаут для PENDING-заказов
+  await startDispatchWorker(); // persistent курьерский диспетчинг
   startMemoryCleanupJob();
   startCacheInvalidationSubscriber();
 

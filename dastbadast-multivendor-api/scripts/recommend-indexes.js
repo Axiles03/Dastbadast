@@ -1,6 +1,6 @@
 // dastbadast-multivendor-api/scripts/recommend-indexes.js
 //
-// ⭐ ШАГ 1: рекомендованные индексы для коллекций Orders и Users.
+// рекомендованные индексы для коллекций Orders и Users.
 // Запустить ОДИН РАЗ после деплоя: `node scripts/recommend-indexes.js`
 //
 // Индексы добавляются идемпотентно (если уже есть — пропускаются).

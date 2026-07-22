@@ -76,6 +76,7 @@ export const typeDefs = /* GraphQL */ `
     avatar: String
     avatarUnlocksAt: DateTime
     addresses: [Address!]
+    balance: Float!
   }
 
   input UpdateUserInput {
@@ -300,14 +301,10 @@ export const typeDefs = /* GraphQL */ `
     averageRating: Float!
     totalRatings: Int!
     totalDeliveries: Int!
-    # ⭐ Фаза 0 (аудит): задел для будущей приоритезации по acceptance rate
     declinedOrdersCount: Int
     lastDeclinedAt: String
-    # ⭐ Фаза 1 (аудит): см. models/Rider.js
     gpsAnomalyCount: Int
     lastGpsAnomalyAt: String
-    # ratings — не возвращаем в общем списке (там могут быть тысячи).
-    # Если нужны — отдельный query.
   }
 
   type RiderRating {
@@ -373,6 +370,13 @@ export const typeDefs = /* GraphQL */ `
     deliveryPriceEstimate: Float
     deliveryTime: Int
     isFavorite: Boolean
+  }
+
+  type MenuAvailabilityEvent {
+    foodId: ID # null = изменился ресторан целиком, а не одно блюдо
+    bulk: Boolean # true = менялись множество блюд
+    restaurantId: ID!
+    isAvailable: Boolean!
   }
 
   type DeliveryEtaInfo {
@@ -526,7 +530,7 @@ export const typeDefs = /* GraphQL */ `
     title: String!
     image: String
     description: String
-    # Цены — снапшот (Шаг 1)
+    # Цены — снапшот 
     basePrice: Float!
     optionsTotal: Float!
     price: Float!
@@ -577,6 +581,7 @@ export const typeDefs = /* GraphQL */ `
     COD
     ALIF_MOBI
     DS_BANK
+    BALANCE
   }
 
   type OrderItem {
@@ -697,10 +702,9 @@ export const typeDefs = /* GraphQL */ `
   input CancelOrderInput {
     orderId: ID!
     reason: String
+    reasonCode: String
   }
-  """
-  ⭐ ШАГ 4: via — канал, через который Store App узнал о заказе.
-  """
+
   input AckOrderReceivedInput {
     orderId: ID!
     via: OrderAckChannel = SUBSCRIPTION
@@ -857,6 +861,7 @@ export const typeDefs = /* GraphQL */ `
     totalRevenue: Float!
     totalDelivered: Int!
     totalCommission: Float!
+    totalCancellationFees: Float!
     restaurants: [RestaurantAccounting!]!
     riders: [RiderAccounting!]!
   }
@@ -866,6 +871,18 @@ export const typeDefs = /* GraphQL */ `
     orderCount: Int!
     revenue: Float!
     commission: Float!
+    commissionPercent: Float! # ⭐ ФАЗА 2 — видно, какой % применён именно к этому ресторану
+    cancellationFees: Float!
+    payout: Float!
+  }
+  type RestaurantAccountingRow {
+    restaurantId: ID!
+    restaurantName: String!
+    orderCount: Int!
+    revenue: Float!
+    commission: Float!
+    commissionPercent: Float! # ⭐ ФАЗА 2 — видно, какой % применён именно к этому ресторану
+    cancellationFees: Float! # ⭐ ФАЗА 2
     payout: Float!
   }
   type RiderAccounting {
@@ -1127,6 +1144,27 @@ export const typeDefs = /* GraphQL */ `
     userAgent: String
   }
 
+  type BulkUpdateResult {
+    modifiedCount: Int!
+  }
+
+  enum WalletOwnerType {
+    RESTAURANT
+    USER
+    RIDER
+  }
+
+  type WalletTransaction {
+    id: ID!
+    ownerType: WalletOwnerType!
+    type: String!
+    amount: Float!
+    balanceAfter: Float!
+    note: String
+    orderId: ID
+    createdAt: String!
+  }
+
   type Query {
     configuration: Configuration
     deliveryZone: DeliveryZone
@@ -1195,12 +1233,13 @@ export const typeDefs = /* GraphQL */ `
     vapidPublicKey: String
     myFavoriteRestaurants: [Restaurant!]!
     myFavoriteFoods: [Food!]!
+    myWalletTransactions(limit: Int, offset: Int): [WalletTransaction!]!
   }
 
   type Mutation {
     createUser(input: CreateUserInput!): AuthPayload!
     login(input: LoginInput!): AuthPayload!
-    # ⭐ Шаг 1: OTP-аутентификация по номеру телефона
+    # OTP-аутентификация по номеру телефона
     requestOtp(phone: String!, purpose: OtpPurpose!): OtpResult!
     registerWithPhone(phone: String!, code: String!): AuthPayload!
     loginWithOtp(phone: String!, code: String!): AuthPayload!
@@ -1219,16 +1258,17 @@ export const typeDefs = /* GraphQL */ `
     restaurantLogin(input: LoginRestaurantInput!): AuthPayloadRestaurant!
     acceptOrder(input: AcceptOrderInput!): Order!
     cancelOrder(input: CancelOrderInput!): Order!
-    """
-    ⭐ ШАГ 4: подтверждение, что Store App отобразил заказ на экране
-    и проиграл звук. Идемпотентно — побеждает первый вызов.
-    """
     ackOrderReceived(input: AckOrderReceivedInput!): Order!
     createCategory(input: CreateCategoryInput!): Category!
     updateCategory(id: ID!, input: UpdateCategoryInput!): Category!
     deleteCategory(id: ID!): Boolean!
     createFood(input: CreateFoodInput!): Food!
     updateFood(id: ID!, input: UpdateFoodInput!): Food!
+    setFoodUnavailableUntil(id: ID!, minutesFromNow: Int!): Food!
+    bulkSetFoodAvailability(
+      foodIds: [ID!]!
+      isAvailable: Boolean!
+    ): BulkUpdateResult!
     deleteFood(id: ID!): Boolean!
     ownerLogin(input: LoginOwnerInput!): AuthPayloadOwner!
     createRider(input: CreateRiderInput!): Rider!
@@ -1293,6 +1333,7 @@ export const typeDefs = /* GraphQL */ `
     cancelPhoneChange: Boolean!
     toggleFavoriteRestaurant(restaurantId: ID!): Restaurant!
     toggleFavoriteFood(foodId: ID!): Food!
+    topUpBalance(amount: Float!): Float!
   }
 
   type Subscription {
@@ -1315,5 +1356,6 @@ export const typeDefs = /* GraphQL */ `
     riderNearDropOff(orderId: ID!): RiderNearDropOffEvent!
     riderLocationStream(riderId: ID!): RiderLocation!
     allOrdersChanged: Order!
+    subscriptionMenuAvailability(restaurantId: ID!): MenuAvailabilityEvent!
   }
 `;

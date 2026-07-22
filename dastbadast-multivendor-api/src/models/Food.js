@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 
 /**
- * ⭐⭐⭐ ШАГ 1: модификаторы блюд (размеры, соусы, добавки).
+ * модификаторы блюд (размеры, соусы, добавки).
  *
  * Структура — аналог UberEats:
  *   optionGroups: [
@@ -38,6 +38,7 @@ const FoodOptionSchema = new mongoose.Schema(
     // 0 = бесплатная опция (например, "без лука").
     price: { type: Number, required: true, default: 0, min: 0 },
     isAvailable: { type: Boolean, default: true },
+    unavailableUntil: { type: Date, default: null, index: true },
   },
   { _id: true }, // ⭐ id нужен: при заказе сохраняем ссылку на конкретную опцию
 );
@@ -80,7 +81,7 @@ const FoodSchema = new mongoose.Schema(
     },
     isActive: { type: Boolean, default: true },
     isAvailable: { type: Boolean, default: true },
-    // ⭐⭐⭐ ШАГ 1: новое поле — массив групп модификаторов
+    // ⭐⭐новое поле — массив групп модификаторов
     optionGroups: { type: [OptionGroupSchema], default: [] },
     isVegetarian: { type: Boolean, default: false },
     isVegan: { type: Boolean, default: false },
@@ -90,7 +91,7 @@ const FoodSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-// ⭐⭐⭐ ШАГ 1: составной индекс для типового запроса
+// ⭐⭐составной индекс для типового запроса
 // (блюда конкретного ресторана в категории, только активные)
 FoodSchema.index({ restaurantId: 1, categoryId: 1, isActive: 1 });
 

@@ -54,10 +54,16 @@ function StatusBadge({ status }: { status: string }) {
         <Clock className="w-3 h-3" /> Ожидает
       </span>
     );
-  if (status === "ACCEPTED")
+  if (status === "ACCEPTED" || status === "PREPARING")
     return (
       <span className="inline-flex items-center gap-1 bg-soft-purple/10 text-soft-purple border border-soft-purple/20 text-xs px-2.5 py-1 rounded-full font-bold">
         <Package className="w-3 h-3" /> Готовится
+      </span>
+    );
+  if (status === "READY_FOR_PICKUP")
+    return (
+      <span className="inline-flex items-center gap-1 bg-soft-accent-soft text-soft-accent border border-soft-accent/30 text-xs px-2.5 py-1 rounded-full font-bold">
+        <Package className="w-3 h-3" /> Готов, ждёт курьера
       </span>
     );
   if (["ASSIGNED", "PICKED", "AWAITING_CONFIRMATION"].includes(status))

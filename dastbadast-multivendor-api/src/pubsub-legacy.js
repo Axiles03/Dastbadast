@@ -3,8 +3,7 @@
 // ⚠️ DEPRECATED: используйте src/pubsub/index.js.
 // Этот файл оставлен только для экспорта констант TOPICS,
 // чтобы не ломать существующие импорты в резолверах.
-//
-// В Шаге 3 (или позже) — переедем на pubsub/index.js полностью.
+
 
 export const TOPICS = {
   ORDER_STATUS_CHANGED: (userId) => `ORDER_STATUS_CHANGED_${userId}`,
@@ -33,9 +32,11 @@ export const TOPICS = {
   RIDER_NEAR_DROP_OFF: (orderId) => `RIDER_NEAR_DROP_OFF_${orderId}`,
   RIDER_NEAR_RESTAURANT: (orderId) => `RIDER_NEAR_RESTAURANT_${orderId}`,
 
-  // ⭐ Шаг 2: каналы инвалидации кэша (для HTTP middleware)
+  // каналы инвалидации кэша (для HTTP middleware)
   CACHE_INVALIDATE_CONFIG: "cache:invalidate:configuration",
   CACHE_INVALIDATE_RESTAURANTS: "cache:invalidate:restaurants",
   CACHE_INVALIDATE_USER_PROFILE: (userId) =>
     `cache:invalidate:user_profile_${userId}`,
+  MENU_AVAILABILITY_CHANGED: (restaurantId) =>
+    `MENU_AVAILABILITY_CHANGED_${restaurantId}`,
 };

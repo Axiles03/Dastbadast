@@ -209,7 +209,28 @@ export const GET_PROFILE = gql`
       hasPassword
       avatar
       avatarUnlocksAt
+      balance
     }
+  }
+`;
+
+export const GET_WALLET_TRANSACTIONS = gql`
+  query MyWalletTransactions($limit: Int, $offset: Int) {
+    myWalletTransactions(limit: $limit, offset: $offset) {
+      id
+      type
+      amount
+      balanceAfter
+      note
+      orderId
+      createdAt
+    }
+  }
+`;
+
+export const TOP_UP_BALANCE = gql`
+  mutation TopUpBalance($amount: Float!) {
+    topUpBalance(amount: $amount)
   }
 `;
 
@@ -359,6 +380,7 @@ export const GET_RESTAURANT = gql`
           spiceLevel
           allergens
           isFavorite
+          isAvailable
           reviews {
             id
             userName
@@ -400,6 +422,17 @@ export const TOGGLE_FAVORITE_RESTAURANT = gql`
     toggleFavoriteRestaurant(restaurantId: $restaurantId) {
       id
       isFavorite
+    }
+  }
+`;
+
+export const SUB_MENU_AVAILABILITY = gql`
+  subscription SubscriptionMenuAvailability($restaurantId: ID!) {
+    subscriptionMenuAvailability(restaurantId: $restaurantId) {
+      restaurantId
+      foodId
+      bulk
+      isAvailable
     }
   }
 `;

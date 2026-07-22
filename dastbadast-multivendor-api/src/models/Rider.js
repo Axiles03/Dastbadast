@@ -9,7 +9,7 @@ const LocationSchema = new mongoose.Schema(
 );
 
 /**
- * ⭐⭐⭐ ШАГ 1: подсхема для истории оценок курьера.
+ * подсхема для истории оценок курьера.
  * Хранит сырые числа 1..5 — это позволяет легко
  * пересчитывать averageRating без отдельной агрегации.
  */
@@ -44,7 +44,7 @@ const RiderSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
     },
-    photo: { type: String, default: "" }, // ⭐⭐⭐ ШАГ 1: аватарка курьера (для UI)
+    photo: { type: String, default: "" }, // аватарка курьера (для UI)
 
     zoneId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -66,17 +66,17 @@ const RiderSchema = new mongoose.Schema(
 
     isActive: { type: Boolean, default: true },
 
-    // ⭐⭐⭐ ШАГ 1: финансовый баланс курьера.
+    // финансовый баланс курьера.
     // Накапливается при DELIVERED (в `markDelivered` / `markOrderReceived`).
     // Списывается при выплате (вне MVP — админ-операция).
     balance: { type: Number, default: 0, min: 0 },
 
-    // ⭐⭐⭐ ШАГ 1: история оценок.
+    // история оценок.
     // Ограничиваем размер массива (pre-validate ниже), чтобы
     // не разрастаться бесконечно (типичный кейс: 1 оценка на заказ).
     ratings: { type: [RiderRatingSchema], default: [] },
 
-    // ⭐⭐⭐ ШАГ 1: денормализованные агрегаты.
+    // денормализованные агрегаты.
     // Обновляются при добавлении оценки (см. `addRating` ниже).
     // Нужны для быстрых запросов в админке и клиенте.
     averageRating: { type: Number, default: 0, min: 0, max: 5 },
@@ -101,11 +101,11 @@ const RiderSchema = new mongoose.Schema(
 );
 
 RiderSchema.index({ location: "2dsphere" });
-// ⭐⭐⭐ ШАГ 1: индексы для типовых запросов
+// индексы для типовых запросов
 RiderSchema.index({ available: 1, isActive: 1 });
 RiderSchema.index({ averageRating: -1 }); // топ-курьеры
 
-// ⭐⭐⭐ ШАГ 1: ограничиваем размер массива ratings (FIFO).
+// ограничиваем размер массива ratings (FIFO).
 // Максимум 500 последних оценок. Старые — вытесняются.
 const MAX_RATINGS_KEPT = 500;
 RiderSchema.pre("save", function (next) {
@@ -116,7 +116,7 @@ RiderSchema.pre("save", function (next) {
 });
 
 /**
- * ⭐⭐⭐ ШАГ 1: метод добавления оценки с авто-пересчётом агрегатов.
+ * метод добавления оценки с авто-пересчётом агрегатов.
  * Используется в `confirmOrderReceived` (Шаг 5) и в админ-импорте.
  */
 RiderSchema.methods.addRating = function (score, orderId = null, comment = "") {

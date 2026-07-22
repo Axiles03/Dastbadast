@@ -20,13 +20,13 @@ const OrderItemSchema = new mongoose.Schema(
       required: true,
     },
     title: { type: String, required: true }, // снапшот имени
-    basePrice: { type: Number, required: true, min: 0 }, // ⭐⭐⭐ ШАГ 1: было просто `price`
-    optionsTotal: { type: Number, default: 0, min: 0 }, // ⭐⭐⭐ ШАГ 1: Σ(price) по выбранным опциям
-    price: { type: Number, required: true, min: 0 }, // ⭐⭐⭐ ШАГ 1: ИТОГО за единицу = basePrice + optionsTotal (вычисляем перед записью)
+    basePrice: { type: Number, required: true, min: 0 }, // было просто `price`
+    optionsTotal: { type: Number, default: 0, min: 0 }, // Σ(price) по выбранным опциям
+    price: { type: Number, required: true, min: 0 }, // ИТОГО за единицу = basePrice + optionsTotal (вычисляем перед записью)
     quantity: { type: Number, required: true, min: 1 },
     image: { type: String, default: "" }, // снапшот
     description: { type: String, default: "" }, // снапшот
-    // ⭐⭐⭐ ШАГ 1: структурированный список выбранных опций.
+    // структурированный список выбранных опций.
     // Заменяет старые неструктурированные `variation` + `addons`.
     selectedOptions: {
       type: [OrderItemOptionSchema],
@@ -87,7 +87,7 @@ const OrderSchema = new mongoose.Schema(
 
     paymentMethod: {
       type: String,
-      enum: ["COD", "ALIF_MOBI", "DS_BANK"],
+      enum: ["COD", "ALIF_MOBI", "DS_BANK", "BALANCE"],
       default: "COD",
     },
     paid: { type: Boolean, default: false },
@@ -104,7 +104,7 @@ const OrderSchema = new mongoose.Schema(
     },
 
     amounts: {
-      subtotal: { type: Number, required: true }, // ⭐⭐⭐ ШАГ 1: Σ(lineTotal) = Σ((basePrice + optionsTotal) * qty)
+      subtotal: { type: Number, required: true }, // Σ(lineTotal) = Σ((basePrice + optionsTotal) * qty)
       tax: { type: Number, default: 0 },
       deliveryFee: { type: Number, default: 0 },
       total: { type: Number, required: true },
@@ -189,7 +189,21 @@ const OrderSchema = new mongoose.Schema(
     },
     providerRef: { type: String, default: null },
     paidAt: { type: Date, default: null },
-    cancelReason: { type: String, default: "" },
+    cancelReasonCode: {
+      type: String,
+      enum: [
+        "OUT_OF_STOCK", // товара не оказалось на кухне физически
+        "KITCHEN_OVERLOAD", // не успевают приготовить в разумное время
+        "CUSTOMER_UNREACHABLE", // не удалось связаться с клиентом для уточнения
+        "RIDER_NO_SHOW", // курьер не приехал в разумное время
+        "CUSTOMER_CANCELLED", // клиент сам отменил
+        "PAYMENT_FAILED",
+        "AUTO_EXPIRED", // не выбрана человеком — сработал order-expiry.job.js
+        "OTHER",
+      ],
+      default: null,
+    },
+    cancelReasonNote: { type: String, default: "", maxlength: 300 },
     note: { type: String, default: "" },
     pickupAddress: {
       name: String,

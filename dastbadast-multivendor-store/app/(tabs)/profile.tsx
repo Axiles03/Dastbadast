@@ -12,17 +12,20 @@ import {
 } from "react-native";
 import { useQuery, useMutation } from "@apollo/client/react";
 import { useRouter } from "expo-router";
-
 import {
   MY_MENU,
   UPDATE_MY_RESTAURANT,
   SET_RESTAURANT_BUSY_MODE,
-} from "../../lib/api/graphql/queries"; // ⭐ ШАГ 5
+  MY_BALANCE,
+  WALLET_TRANSACTIONS,
+} from "../../lib/api/graphql/queries";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function ProfileScreen() {
   const router = useRouter();
   const { data, loading, refetch } = useQuery<any>(MY_MENU);
+  const { data: balanceData } = useQuery<any>(MY_BALANCE);
+  const balance = balanceData?.meRestaurant?.balance ?? 0;
   const [updateMyRestaurant] = useMutation(UPDATE_MY_RESTAURANT);
   const [setRestaurantBusyMode] = useMutation(SET_RESTAURANT_BUSY_MODE); // ⭐ ШАГ 5
   const [busy, setBusy] = useState(false);
@@ -212,6 +215,22 @@ export default function ProfileScreen() {
                 >
                   <Text className="text-lg font-extrabold text-text">+</Text>
                 </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => router.push("/wallet" as any)}
+                  className="flex-row items-center justify-between mb-4 py-3 px-3.5 bg-accent rounded-xl"
+                >
+                  <View>
+                    <Text className="text-text-inverse text-xs opacity-80">
+                      Баланс
+                    </Text>
+                    <Text className="text-text-inverse text-xl font-extrabold mt-0.5">
+                      {balance.toLocaleString("ru")} сом.
+                    </Text>
+                  </View>
+                  <Text className="text-text-inverse text-xs opacity-80">
+                    История →
+                  </Text>
+                </TouchableOpacity>
                 {busyModeSaving && (
                   <ActivityIndicator size="small" color="#F26A4A" />
                 )}
@@ -305,6 +324,14 @@ export default function ProfileScreen() {
         >
           <Text className="text-text font-extrabold text-base">
             💬 Написать в поддержку
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => router.push("/settings/printer" as any)}
+          className="h-12 rounded-2xl items-center justify-center bg-soft-surface-2 border border-border mt-3"
+        >
+          <Text className="text-text font-extrabold text-base">
+            🖨️ Настройки принтера
           </Text>
         </TouchableOpacity>
       </ScrollView>

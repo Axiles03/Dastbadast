@@ -13,7 +13,7 @@ const FoodReviewSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
-    // ⭐⭐⭐ ШАГ 1: опциональная ссылка на заказ.
+    // опциональная ссылка на заказ.
     // Если указана — отзыв считается «верифицированным покупателем».
     orderId: {
       type: mongoose.Schema.Types.ObjectId,

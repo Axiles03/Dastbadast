@@ -74,6 +74,20 @@ export default function ProfileScreen() {
         </View>
       </View>
 
+      {/* Баланс */}
+      <Pressable
+        onPress={() => router.push("/(app)/wallet" as any)}
+        className="bg-soft-accent rounded-3xl p-5 flex-row items-center justify-between active:opacity-90"
+      >
+        <View>
+          <Text className="text-xs font-bold text-text-inverse/80">Баланс</Text>
+          <Text className="text-2xl font-extrabold text-text-inverse mt-1">
+            {(profile?.balance ?? 0).toLocaleString("ru")} сом.
+          </Text>
+        </View>
+        <Ionicons name="chevron-forward" size={22} color="#FFFFFF" />
+      </Pressable>
+
       {/* Ссылки */}
       <View className="bg-soft-surface border border-border rounded-3xl overflow-hidden">
         <MenuItem

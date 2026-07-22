@@ -353,3 +353,59 @@ export const MARK_SUPPORT_READ = gql`
     markSupportRead(threadId: $threadId)
   }
 `;
+
+export const REGISTER_PUSH_TOKEN = gql`
+  mutation RegisterPushToken($input: PushTokenInput!) {
+    registerPushToken(input: $input) {
+      id
+      platform
+    }
+  }
+`;
+
+export const UNREGISTER_PUSH_TOKEN = gql`
+  mutation UnregisterPushToken($token: String!) {
+    unregisterPushToken(token: $token)
+  }
+`;
+
+export const BULK_SET_FOOD_AVAILABILITY = gql`
+  mutation BulkSetFoodAvailability($foodIds: [ID!]!, $isAvailable: Boolean!) {
+    bulkSetFoodAvailability(foodIds: $foodIds, isAvailable: $isAvailable) {
+      modifiedCount
+    }
+  }
+`;
+
+export const SET_FOOD_UNAVAILABLE_UNTIL = gql`
+  mutation SetFoodUnavailableUntil($id: ID!, $minutesFromNow: Int!) {
+    setFoodUnavailableUntil(id: $id, minutesFromNow: $minutesFromNow) {
+      id
+      isAvailable
+    }
+  }
+`;
+
+export const MY_BALANCE = gql`
+  query MyBalance {
+    meRestaurant {
+      id
+      balance
+      commissionPercent
+    }
+  }
+`;
+
+export const WALLET_TRANSACTIONS = gql`
+  query WalletTransactions($limit: Int, $offset: Int) {
+    walletTransactions(limit: $limit, offset: $offset) {
+      id
+      type
+      amount
+      balanceAfter
+      note
+      orderId
+      createdAt
+    }
+  }
+`;

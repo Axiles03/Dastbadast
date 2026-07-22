@@ -17,7 +17,9 @@
     "migrate-order-status": "node scripts/migrate-order-status.js",
     "migrate-indexes": "node scripts/recommend-indexes.js",
     "cleanup-empty-users": "node scripts/cleanup-empty-users.js",
-    "migrate-restaurant-ratings": "node scripts/migrate-restaurant-ratings.js"
+    "migrate-restaurant-ratings": "node scripts/migrate-restaurant-ratings.js",
+    "migrate-cancel-reason": "node scripts/migrate-cancel-reason.js",
+    "migrate-wallet-owner": "node scripts/migrate-wallet-owner.js"
   },
   "dependencies": {
     "@apollo/server": "^5.5.1",

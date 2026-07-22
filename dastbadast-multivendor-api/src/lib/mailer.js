@@ -1,6 +1,6 @@
 // dastbadast-multivendor-api/src/lib/mailer.js
 //
-// ⭐ Шаг 3: подтверждение email через Nodemailer + личный Gmail-аккаунт.
+// подтверждение email через Nodemailer + личный Gmail-аккаунт.
 //
 // В .env нужно указать:
 //   GMAIL_USER=your-gmail@gmail.com

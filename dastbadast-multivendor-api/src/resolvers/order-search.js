@@ -28,7 +28,10 @@ import { debugLog, debugWarn, debugError } from "../debug-log.js";
 // см. queues/dispatch-queue.js для полного обоснования.
 import { scheduleDispatchJob } from "../queues/dispatch-queue.js";
 // ⭐ Фаза 2 (аудит): road-time re-ranking + batching/stacking
-import { getOsrmDurationSeconds, getOsrmDurationsMatrix } from "../utils/osrm.js";
+import {
+  getOsrmDurationSeconds,
+  getOsrmDurationsMatrix,
+} from "../utils/osrm.js";
 import { getRiderLocationFromRedis } from "../services/rider-location.service.js";
 import { haversineKm } from "../utils/geo.js";
 
@@ -58,7 +61,20 @@ export async function dispatchCourierSearch({
   const order = await Order.findById(orderId).lean();
   if (!order) return [];
   if (order.riderId) return [];
-  if (!["PENDING", "ACCEPTED"].includes(order.orderStatus)) return [];
+  // ⭐ ШАГ 1 (FIX): было `!["PENDING", "ACCEPTED"].includes(...)`.
+  // `readyOrder` (delivery.js) вызывает dispatchCourierSearch({escalation:true})
+  // СРАЗУ ПОСЛЕ того, как сам же перевёл заказ в READY_FOR_PICKUP — то есть
+  // к моменту чтения заказа здесь его статус уже READY_FOR_PICKUP (а иногда
+  // PREPARING, если ресторан отмечает готовку поэтапно). Старая проверка
+  // считала такой заказ "нерелевантным" и тихо возвращала [] — расширенный
+  // срочный поиск курьера («Эшелон 2») фактически НИКОГДА не отправлял пуши
+  // в момент, когда еда уже готова и это наиболее критично.
+  if (
+    !["PENDING", "ACCEPTED", "PREPARING", "READY_FOR_PICKUP"].includes(
+      order.orderStatus,
+    )
+  )
+    return [];
 
   // 2) Лимит волн (защита от бесконечного поиска)
   const tsField = escalation
@@ -339,7 +355,10 @@ async function rerankByRoadTime(origin, candidates) {
     return candidates; // graceful fallback — исходный порядок как был
   }
 
-  const ranked = withCoords.map((c, i) => ({ ...c, roadTimeSec: durations[i] }));
+  const ranked = withCoords.map((c, i) => ({
+    ...c,
+    roadTimeSec: durations[i],
+  }));
   // Недостижимые по дорогам (OSRM вернул null для конкретной пары) — в
   // конец головы, не выбрасываем совсем: курьер физически существует,
   // просто не смогли посчитать маршрут (временный сбой матчинга к графу).
@@ -415,7 +434,12 @@ async function findStackingCandidates(order, restaurantLat, restaurantLng) {
     );
     if (distToRestaurant > STACKING_PREFILTER_RADIUS_KM) continue;
 
-    prefiltered.push({ order: o, riderPos: loc, distToRestaurant, dropoffCoords });
+    prefiltered.push({
+      order: o,
+      riderPos: loc,
+      distToRestaurant,
+      dropoffCoords,
+    });
   }
   if (prefiltered.length === 0) return [];
 
@@ -445,7 +469,9 @@ async function findStackingCandidates(order, restaurantLat, restaurantLng) {
     if (detourMin > STACKING_MAX_DETOUR_MIN) continue;
 
     const rider = await Rider.findById(c.order.riderId)
-      .select("username name available isActive zoneId location lastLocationAt bearing")
+      .select(
+        "username name available isActive zoneId location lastLocationAt bearing",
+      )
       .lean();
     if (!rider) continue;
 

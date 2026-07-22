@@ -9,15 +9,36 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "tj.dastbadast.store"
+      "bundleIdentifier": "tj.dastbadast.store",
+      "infoPlist": {
+        "UIBackgroundModes": ["remote-notification"],
+        "NSLocalNetworkUsageDescription": "Приложению нужен доступ к локальной сети для печати чеков на кухонном принтере."
+      }
     },
     "android": {
-      "package": "tj.dastbadast.store"
+      "package": "tj.dastbadast.store",
+      "permissions": [
+        "WAKE_LOCK",
+        "VIBRATE",
+        "INTERNET",
+        "ACCESS_NETWORK_STATE"
+      ]
     },
     "plugins": [
       "expo-router",
       "expo-status-bar",
-      "expo-splash-screen"
-    ]
+      "expo-splash-screen",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/notification-icon.png"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "REPLACE_WITH_REAL_EAS_PROJECT_ID"
+      }
+    }
   }
 }

@@ -84,13 +84,22 @@ const calculateDeliveryPriceQuery = (
     basePrice,
     baseKm,
     perKmPrice,
+    rounding: "round",
   });
 };
 
-const calculateDeliveryPriceBreakdownQuery = (_p, { fromCoords, toCoords }) => {
+const calculateDeliveryPriceBreakdownQuery = (
+  _p,
+  { fromCoords, toCoords, basePrice, baseKm, perKmPrice },
+) => {
   if (!Array.isArray(fromCoords) || fromCoords.length < 2) return null;
   if (!Array.isArray(toCoords) || toCoords.length < 2) return null;
-  return calculateDeliveryPriceBreakdown(fromCoords, toCoords);
+  return calculateDeliveryPriceBreakdown(fromCoords, toCoords, {
+    basePrice,
+    baseKm,
+    perKmPrice,
+    rounding: "round",
+  });
 };
 import { restaurants, restaurant, isRestaurantOpenNow } from "./restaurant.js";
 import { restaurantReviews as restaurantReviewsQuery } from "./restaurant-reviews.js";
@@ -176,7 +185,10 @@ import {
   updateFood,
   deleteFood,
   updateMyRestaurant,
+  setFoodUnavailableUntil,
+  bulkSetFoodAvailability,
 } from "./restaurant-menu.js";
+import { myWalletTransactions, topUpBalance } from "./wallet.js";
 import {
   allOrders,
   ownerLogin,
@@ -236,6 +248,7 @@ import {
   courierSearchNotify,
   newSupportMessage,
   supportInboxUpdated,
+  subscriptionMenuAvailability,
 } from "./subscriptions.js";
 import { JSONScalar, DateTimeScalar } from "../utils/scalars.js";
 
@@ -282,6 +295,7 @@ export const resolvers = {
         new Date(parent.avatarChangedAt).getTime() + AVATAR_CHANGE_WINDOW_MS;
       return unlocks > Date.now() ? new Date(unlocks) : null;
     },
+    balance: (parent) => parent.balance ?? 0,
   },
   Query: {
     configuration,
@@ -347,6 +361,7 @@ export const resolvers = {
     allRidersWithLocation,
     ordersForMap,
     riderLocationOnMap,
+    myWalletTransactions,
     currentRiderLocation: async (_p, { riderId }, ctx) => {
       if (!riderId) return null;
       if (!ctx.user && !ctx.rider && !ctx.owner) {
@@ -529,6 +544,9 @@ export const resolvers = {
     updateRider,
     toggleRiderActive,
     refreshOrderStatus,
+    setFoodUnavailableUntil,
+    bulkSetFoodAvailability,
+    topUpBalance,
   },
 
   Subscription: {
@@ -546,6 +564,7 @@ export const resolvers = {
     allOrdersChanged,
     newSupportMessage,
     supportInboxUpdated,
+    subscriptionMenuAvailability,
   },
 
   SupportThread: {
@@ -724,10 +743,16 @@ export const resolvers = {
     },
     // ⭐ Шаг 1: вычисляемая стоимость доставки (формула: 10 + 3*(km-3))
     deliveryPrice: (parent) => {
+      // ⭐ FIX: раньше пересчитывалось заново без rounding и без surge/тарифов —
+      // могло не совпадать с тем, что реально списано в amounts.deliveryFee.
+      // Теперь просто отдаём фактически списанную (уже округлённую) сумму.
+      if (typeof parent.amounts?.deliveryFee === "number") {
+        return parent.amounts.deliveryFee;
+      }
       const from = parent.pickupAddress?.location?.coordinates;
       const to = parent.deliveryAddress?.location?.coordinates;
       if (!Array.isArray(from) || !Array.isArray(to)) return null;
-      return calculateDeliveryPrice(from, to);
+      return calculateDeliveryPrice(from, to, { rounding: "round" });
     },
 
     // ⭐⭐⭐ ШАГ 3 NEW: расстояние маршрута в км (0 если не вычислимо).
